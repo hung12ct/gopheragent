@@ -46,6 +46,15 @@ func (t *WebSearchTool) ParametersSchema() tools.ToolSchema {
 				"type":        "string",
 				"description": "The search query to look up on the internet (e.g. 'latest news about AI').",
 			},
+			"topic": map[string]interface{}{
+				"type":        "string",
+				"enum":        []string{"general", "news"},
+				"description": "Search category. Use 'news' for recent events, headlines, or time-sensitive queries. Default: 'general'.",
+			},
+			"days": map[string]interface{}{
+				"type":        "integer",
+				"description": "Only return results from the last N days. Use 1 for 'today', 7 for 'this week'. Only applies when topic is 'news'. Default: 3.",
+			},
 		},
 		Required: []string{"query"},
 	}
@@ -58,9 +67,15 @@ func (t *WebSearchTool) RequiresConfirmation() bool {
 func (t *WebSearchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		Query string `json:"query"`
+		Topic string `json:"topic"`
+		Days  int    `json:"days"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	if args.Topic == "" {
+		args.Topic = "general"
 	}
 
 	reqBody := map[string]interface{}{
@@ -68,7 +83,14 @@ func (t *WebSearchTool) Execute(ctx context.Context, argsJSON string) (string, e
 		"query":          args.Query,
 		"search_depth":   "basic",
 		"include_answer": true,
-		"max_results":    3,
+		"max_results":    5,
+		"topic":          args.Topic,
+	}
+	if args.Topic == "news" {
+		if args.Days <= 0 {
+			args.Days = 3
+		}
+		reqBody["days"] = args.Days
 	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {

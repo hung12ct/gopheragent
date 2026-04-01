@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/cache"
@@ -341,89 +342,127 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		msgs = append(msgs, assistantMsg)
 		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
-		for _, tc := range result.ToolCalls {
-			tool, ok := al.Tools.Get(tc.Name)
-			if !ok {
-				toolErr := &ToolNotFoundError{ToolName: tc.Name}
-				al.emit(ctx, sessionKey, streamChan, errEvent(toolErr))
-				msgs = append(msgs, history.Message{
-					Role:       "tool",
-					Content:    toolErr.Error(),
-					ToolCallID: tc.ID,
-					IsError:    true,
-				})
-				al.Sessions.SetHistory(ctx, sessionKey, msgs)
-				continue
-			}
+		var wg sync.WaitGroup
+		toolMsgs := make([]history.Message, len(result.ToolCalls))
+		var fatalErr error
+		var fatalMu sync.Mutex
+		var hitlMu sync.Mutex
 
-			if tool.RequiresConfirmation() {
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "CRITICAL: Tool requires human confirmation."})
+		for i, tc := range result.ToolCalls {
+			wg.Add(1)
+			go func(idx int, tCall PendingToolCall) {
+				defer wg.Done()
 
-				payload, _ := json.Marshal(map[string]string{"tool": tc.Name, "args": tc.ArgsJSON})
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
-
-				approved := false
-				if al.ConfirmHITL != nil {
-					approved = al.ConfirmHITL(ctx, tc.Name, tc.ArgsJSON)
+				fatalMu.Lock()
+				hasFatal := fatalErr != nil
+				fatalMu.Unlock()
+				if hasFatal {
+					return
 				}
 
-				if !approved {
-					deniedErr := &HITLDeniedError{ToolName: tc.Name}
-					msgs = append(msgs, history.Message{
+				tool, ok := al.Tools.Get(tCall.Name)
+				if !ok {
+					toolErr := &ToolNotFoundError{ToolName: tCall.Name}
+					al.emit(ctx, sessionKey, streamChan, errEvent(toolErr))
+					toolMsgs[idx] = history.Message{
 						Role:       "tool",
-						Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
-						ToolCallID: tc.ID,
+						Content:    toolErr.Error(),
+						ToolCallID: tCall.ID,
 						IsError:    true,
-					})
-					al.Sessions.SetHistory(ctx, sessionKey, msgs)
-					continue
+					}
+					return
 				}
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Human APPROVED tool execution."})
-			}
 
-			cacheKey := tc.Name + ":" + tc.ArgsJSON
-			if al.Cache != nil {
-				if cached, hit := al.Cache.Get(cacheKey); hit {
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tc.Name)})
-					msgs = append(msgs, history.Message{Role: "tool", Content: cached, ToolCallID: tc.ID})
-					al.Sessions.SetHistory(ctx, sessionKey, msgs)
-					continue
+				if tool.RequiresConfirmation() {
+					approved := func() bool {
+						hitlMu.Lock()
+						defer hitlMu.Unlock()
+
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "CRITICAL: Tool requires human confirmation."})
+
+						payload, _ := json.Marshal(map[string]string{"tool": tCall.Name, "args": tCall.ArgsJSON})
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
+
+						appr := false
+						if al.ConfirmHITL != nil {
+							appr = al.ConfirmHITL(ctx, tCall.Name, tCall.ArgsJSON)
+						}
+						return appr
+					}()
+
+					if !approved {
+						deniedErr := &HITLDeniedError{ToolName: tCall.Name}
+						toolMsgs[idx] = history.Message{
+							Role:       "tool",
+							Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
+							ToolCallID: tCall.ID,
+							IsError:    true,
+						}
+						return
+					}
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Human APPROVED tool execution."})
 				}
-			}
 
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "tool_call", Content: fmt.Sprintf("Executing: %s", tc.Name)})
+				cacheKey := tCall.Name + ":" + tCall.ArgsJSON
+				if al.Cache != nil {
+					if cached, hit := al.Cache.Get(cacheKey); hit {
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
+						toolMsgs[idx] = history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}
+						return
+					}
+				}
 
-			toolResult, execErr := tool.Execute(ctx, tc.ArgsJSON)
-			content := toolResult
-			isToolErr := execErr != nil
-			if isToolErr {
-				content = fmt.Sprintf("Error: %v", execErr)
-			}
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "tool_call", Content: fmt.Sprintf("Executing: %s", tCall.Name)})
 
-			if al.Cache != nil && !isToolErr {
-				al.Cache.Put(cacheKey, content)
-			}
+				toolResult, execErr := tool.Execute(ctx, tCall.ArgsJSON)
+				content := toolResult
+				isToolErr := execErr != nil
+				if isToolErr {
+					content = fmt.Sprintf("Error: %v", execErr)
+				}
 
-			loopTracker.AddCall(tc.Name, tc.ArgsJSON, content)
-			warnMessage, loopErr := loopTracker.Detect()
-			if loopErr != nil {
-				al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, loopErr)))
-				al.saveSession(ctx, sessionKey, msgs)
-				return
-			}
-			if warnMessage != "" {
-				content += "\n\n" + warnMessage
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "System inserted an anti-loop warning into context window."})
-			}
+				if al.Cache != nil && !isToolErr {
+					al.Cache.Put(cacheKey, content)
+				}
 
-			msgs = append(msgs, history.Message{
-				Role:       "tool",
-				Content:    content,
-				ToolCallID: tc.ID,
-				IsError:    isToolErr,
-			})
-			al.Sessions.SetHistory(ctx, sessionKey, msgs)
+				loopTracker.AddCall(tCall.Name, tCall.ArgsJSON, content)
+				warnMessage, loopErr := loopTracker.Detect()
+				if loopErr != nil {
+					fatalMu.Lock()
+					if fatalErr == nil {
+						fatalErr = loopErr
+					}
+					fatalMu.Unlock()
+					return
+				}
+				if warnMessage != "" {
+					content += "\n\n" + warnMessage
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "System inserted an anti-loop warning into context window."})
+				}
+
+				toolMsgs[idx] = history.Message{
+					Role:       "tool",
+					Content:    content,
+					ToolCallID: tCall.ID,
+					IsError:    isToolErr,
+				}
+			}(i, tc)
 		}
+
+		wg.Wait()
+
+		if fatalErr != nil {
+			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, fatalErr)))
+			al.saveSession(ctx, sessionKey, msgs)
+			return
+		}
+
+		for _, m := range toolMsgs {
+			if m.Role != "" {
+				msgs = append(msgs, m)
+			}
+		}
+		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 	}
 
 	al.emit(ctx, sessionKey, streamChan, errEvent(ErrMaxIterations))
