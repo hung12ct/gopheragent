@@ -1,0 +1,172 @@
+package history
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+const backgroundSumTriggerThreshold = 20
+const backgroundSumNewMsgThreshold = 10 // min new messages since last summarization before re-triggering
+
+// InMemSessionManager is a thread-safe in-memory session store with optional TTL eviction.
+type InMemSessionManager struct {
+	mu              sync.RWMutex
+	sessions        map[string][]Message
+	behaviors       map[string]string
+	lastSumLen      map[string]int
+	SystemPrompt    string
+	SummaryProvider SummaryProvider // if nil, background summarization is disabled
+
+	// TTL is the idle expiry duration per session (0 = never expire).
+	// A session is evicted when it has not been read or written for TTL duration.
+	// Call StartCleanup to activate background eviction.
+	TTL     time.Duration
+	lastUse sync.Map // sessionKey → time.Time
+}
+
+// NewInMemSessionManager creates a new in-memory session manager.
+// An optional systemPrompt can be provided; defaults to a generic assistant prompt.
+func NewInMemSessionManager(systemPrompt ...string) *InMemSessionManager {
+	sp := "You are an AI assistant."
+	if len(systemPrompt) > 0 && systemPrompt[0] != "" {
+		sp = systemPrompt[0]
+	}
+	return &InMemSessionManager{
+		sessions:     make(map[string][]Message),
+		behaviors:    make(map[string]string),
+		lastSumLen:   make(map[string]int),
+		SystemPrompt: sp,
+	}
+}
+
+// StartCleanup starts a background goroutine that evicts sessions idle for longer
+// than TTL. It runs at the given interval. The goroutine stops when ctx is cancelled.
+// Returns the manager for fluent chaining:
+//
+//	sm := history.NewInMemSessionManager("...").
+//	    WithTTL(30 * time.Minute).
+//	    StartCleanup(ctx, 5 * time.Minute)
+//
+// No-op if TTL == 0.
+func (m *InMemSessionManager) StartCleanup(ctx context.Context, interval time.Duration) *InMemSessionManager {
+	if m.TTL <= 0 {
+		return m
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				m.evictExpired()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return m
+}
+
+// WithTTL sets the idle TTL and returns the manager for fluent chaining.
+func (m *InMemSessionManager) WithTTL(ttl time.Duration) *InMemSessionManager {
+	m.TTL = ttl
+	return m
+}
+
+// evictExpired removes all sessions whose last access time exceeds TTL.
+func (m *InMemSessionManager) evictExpired() {
+	if m.TTL <= 0 {
+		return
+	}
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.sessions {
+		if t, ok := m.lastUse.Load(key); ok {
+			if now.Sub(t.(time.Time)) > m.TTL {
+				delete(m.sessions, key)
+				delete(m.behaviors, key)
+				delete(m.lastSumLen, key)
+				m.lastUse.Delete(key)
+			}
+		}
+	}
+}
+
+// touch records the current time as last access for a session key.
+// Must be called while m.mu (read or write) is held to prevent eviction races.
+func (m *InMemSessionManager) touch(sessionKey string) {
+	if m.TTL > 0 {
+		m.lastUse.Store(sessionKey, time.Now())
+	}
+}
+
+func (m *InMemSessionManager) GetHistory(ctx context.Context, sessionKey string) []Message {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	m.touch(sessionKey)
+
+	systemPrompt := m.SystemPrompt
+	if behavior, ok := m.behaviors[sessionKey]; ok && behavior != "" {
+		systemPrompt += "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + behavior
+	}
+
+	if history, ok := m.sessions[sessionKey]; ok {
+		// Copy FIRST, then mutate the copy — never write to the shared backing array under RLock
+		result := make([]Message, len(history))
+		copy(result, history)
+		if len(result) > 0 && result[0].Role == "system" {
+			result[0].Content = systemPrompt
+		}
+		return result
+	}
+
+	return []Message{{Role: "system", Content: systemPrompt}}
+}
+
+// UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer to inject long-term memory
+func (m *InMemSessionManager) UpdateBehaviorSummary(sessionKey string, newSummary string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.behaviors[sessionKey] = newSummary
+	return nil
+}
+
+// SetHistory stores a copy of the messages for the given session key.
+func (m *InMemSessionManager) SetHistory(_ context.Context, sessionKey string, messages []Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]Message, len(messages))
+	copy(cp, messages)
+	m.sessions[sessionKey] = cp
+	m.touch(sessionKey)
+}
+
+func (m *InMemSessionManager) Save(ctx context.Context, sessionKey string) error {
+	m.mu.Lock()
+	msgs := m.sessions[sessionKey]
+	msgLen := len(msgs)
+	lastLen := m.lastSumLen[sessionKey]
+
+	shouldSummarize := m.SummaryProvider != nil && msgLen >= backgroundSumTriggerThreshold && msgLen >= lastLen+backgroundSumNewMsgThreshold
+	var messages []Message
+	if shouldSummarize {
+		m.lastSumLen[sessionKey] = msgLen
+		messages = make([]Message, msgLen)
+		copy(messages, msgs)
+	}
+	m.mu.Unlock()
+
+	if shouldSummarize {
+		BackgroundBehaviorSummarizer(
+			sessionKey,
+			messages,
+			m.SummaryProvider,
+			m.UpdateBehaviorSummary,
+		)
+	}
+
+	return nil
+}

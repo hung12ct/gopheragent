@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Multi-Agent Stream</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f1115;
+            --chat-bg: #1a1d24;
+            --user-msg: #2d3bb7;
+            --bot-msg: #232730;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --border: #334155;
+            --thought-bg: #1e293b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header {
+            width: 100%;
+            padding: 1.5rem;
+            text-align: center;
+            background-color: var(--chat-bg);
+            border-bottom: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        .chat-container {
+            flex: 1;
+            width: 100%;
+            max-width: 800px;
+            padding: 2rem 1rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 85%;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            align-items: flex-end;
+        }
+
+        .message.assistant {
+            align-self: flex-start;
+        }
+
+        .bubble {
+            padding: 1rem 1.25rem;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            word-wrap: break-word;
+        }
+
+        .user .bubble {
+            background-color: var(--user-msg);
+            border-bottom-right-radius: 4px;
+        }
+
+        .assistant .bubble {
+            background-color: var(--bot-msg);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 4px;
+        }
+
+        .thought-container {
+            background-color: var(--thought-bg);
+            border-left: 3px solid var(--text-muted);
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.75rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            display: none;
+            font-family: monospace;
+        }
+
+        .thought-container.active {
+            display: block;
+        }
+
+        .thought-line {
+            margin-bottom: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Loading spinner for thoughts */
+        .spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid var(--text-muted);
+            border-bottom-color: transparent;
+            border-radius: 50%;
+            display: inline-block;
+            animation: rotation 1s linear infinite;
+        }
+
+        .tool-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            background: rgba(59, 130, 246, 0.2);
+            color: var(--accent);
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .input-area {
+            width: 100%;
+            max-width: 800px;
+            padding: 1.5rem 1rem;
+            background-color: var(--bg-color);
+        }
+
+        .input-wrapper {
+            display: flex;
+            gap: 0.5rem;
+            background-color: var(--chat-bg);
+            padding: 0.5rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+
+        input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-main);
+            padding: 0.75rem;
+            font-size: 1rem;
+            outline: none;
+            font-family: inherit;
+        }
+
+        input::placeholder {
+            color: var(--text-muted);
+        }
+
+        button {
+            background-color: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0 1.5rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            font-family: inherit;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button:disabled {
+            background-color: var(--border);
+            cursor: not-allowed;
+            color: var(--text-muted);
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 15px;
+            background-color: var(--text-main);
+            vertical-align: middle;
+            margin-left: 2px;
+            animation: blink 1s step-end infinite;
+        }
+
+        .action-box {
+            background-color: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .action-title {
+            color: #ef4444;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 1rem;
+        }
+
+        .btn-approve {
+            background-color: #10b981;
+        }
+
+        .btn-reject {
+            background-color: #ef4444;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes rotation {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Internal Multi-Agent System 🚀</h1>
+    </div>
+
+    <div class="chat-container" id="chat">
+        <div class="message assistant">
+            <div class="bubble">Hello! I am an AI Assistant connected directly to our corporate MySQL. How can I help you?</div>
+        </div>
+    </div>
+
+    <div class="input-area">
+        <div class="input-wrapper">
+            <input type="text" id="userInput" placeholder="Example: Find top creatives on Facebook over the last 30 days..." autocomplete="off" value="Find top creatives on Facebook">
+            <button id="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const chat = document.getElementById('chat');
+        const input = document.getElementById('userInput');
+        const btn = document.getElementById('sendBtn');
+        let currentEventSource = null;
+
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        function appendUserMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message user';
+            div.innerHTML = `<div class="bubble">${text}</div>`;
+            chat.appendChild(div);
+            window.scrollTo(0, document.body.scrollHeight);
+        }
+
+        function createAssistantMessageBlock() {
+            const div = document.createElement('div');
+            div.className = 'message assistant';
+
+            // Thoughts box
+            const thoughtsDiv = document.createElement('div');
+            thoughtsDiv.className = 'thought-container';
+
+            // Final Content box
+            const bubbleDiv = document.createElement('div');
+            bubbleDiv.className = 'bubble';
+
+            div.appendChild(thoughtsDiv);
+            div.appendChild(bubbleDiv);
+            chat.appendChild(div);
+
+            return { wrapper: div, thoughts: thoughtsDiv, content: bubbleDiv };
+        }
+
+        async function sendMessage() {
+            const text = input.value.trim();
+            if (!text) return;
+
+            // UI Updates
+            input.value = '';
+            btn.disabled = true;
+            appendUserMessage(text);
+
+            // Create empty assistant block
+            const block = createAssistantMessageBlock();
+            const cursor = document.createElement('span');
+            cursor.className = 'cursor';
+            block.content.appendChild(cursor);
+
+            // Close existing connection if any
+            if (currentEventSource) {
+                currentEventSource.close();
+            }
+
+            // Start SSE Stream
+            try {
+                // We use standard EventSource for SSE. Since we need to pass query params, we append it.
+                // In production with POST bodies, you'd use fetch() and read the response.body stream manually.
+                const url = `/api/chat?message=${encodeURIComponent(text)}`;
+                currentEventSource = new EventSource(url);
+
+                let isThinking = false;
+
+                currentEventSource.onmessage = (event) => {
+                    if (event.data === "[DONE]") {
+                        currentEventSource.close();
+                        btn.disabled = false;
+                        cursor.remove();
+                        return;
+                    }
+
+                    try {
+                        const data = JSON.parse(event.data);
+
+                        // Parse StreamEvent struct from Go
+                        if (data.type === "thought") {
+                            block.thoughts.classList.add('active');
+                            const line = document.createElement('div');
+                            line.className = 'thought-line';
+                            line.innerHTML = `<span class="spinner"></span> <span>${data.content}</span>`;
+                            block.thoughts.appendChild(line);
+                        }
+                        else if (data.type === "tool_call") {
+                            block.thoughts.classList.add('active');
+                            const line = document.createElement('div');
+                            line.className = 'thought-line';
+                            line.innerHTML = `<span class="tool-badge">FUNC</span> <span>${data.content}</span>`;
+                            block.thoughts.appendChild(line);
+                        }
+                        else if (data.type === "content") {
+                            // First exact word, remove spinner from last thought
+                            const spinners = block.thoughts.querySelectorAll('.spinner');
+                            spinners.forEach(s => s.remove());
+
+                            // Insert text before the cursor
+                            const textNode = document.createTextNode(data.content);
+                            block.content.insertBefore(textNode, cursor);
+                        }
+                        else if (data.type === "action_required") {
+                            // Stop spinners
+                            const spinners = block.thoughts.querySelectorAll('.spinner');
+                            spinners.forEach(s => s.remove());
+
+                            const actionData = JSON.parse(data.content);
+
+                            const actionBox = document.createElement('div');
+                            actionBox.className = 'action-box';
+                            actionBox.innerHTML = `
+                                <div class="action-title">⚠️ Action Requires Confirmation</div>
+                                <div>The Agent wants to execute: <strong>${actionData.tool}</strong></div>
+                                <pre style="font-size: 0.8rem; margin-top: 0.5rem; color: var(--text-muted);">${JSON.stringify(actionData.args, null, 2)}</pre>
+                                <div class="action-buttons">
+                                    <button class="btn-approve" onclick="alert('In a real app, this sends an approval API call to resume the Agent.')">Approve</button>
+                                    <button class="btn-reject" onclick="alert('Action rejected')">Reject</button>
+                                </div>
+                            `;
+
+                            block.content.insertBefore(actionBox, cursor);
+
+                            currentEventSource.close();
+                            btn.disabled = false;
+                            cursor.remove();
+                        }
+                        else if (data.type === "done" || data.type === "error") {
+                            currentEventSource.close();
+                            btn.disabled = false;
+                            cursor.remove();
+                            if (data.type === "error") {
+                                const textNode = document.createTextNode(` ❌ Error: ${data.content}`);
+                                block.content.insertBefore(textNode, cursor);
+                            }
+                        }
+
+                        window.scrollTo(0, document.body.scrollHeight);
+
+                    } catch (err) {
+                        console.error("Parse error:", err, event.data);
+                    }
+                };
+
+                currentEventSource.onerror = (err) => {
+                    console.error("EventSource failed:", err);
+                    currentEventSource.close();
+                    btn.disabled = false;
+                    cursor.remove();
+                };
+
+            } catch (error) {
+                block.content.innerHTML = "❌ Connection Error";
+                cursor.remove();
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
