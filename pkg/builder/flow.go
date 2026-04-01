@@ -105,7 +105,51 @@ func validateConfig(path string, config *AgentConfig, catalog *GlobalCatalog) er
 //
 // llm: the LLM provider to use. If nil, falls back to MockProvider (useful for tests).
 // hook: optional before-hook middleware. Pass nil if not needed.
+//
+// Session manager defaults to InMemSessionManager.
+// For persistent sessions (survives restarts), use BuildFromYAMLWithSession and
+// pass a MySQLSessionManager or FileSessionManager.
 func BuildFromYAML(yamlPath string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook) (*agent.AgentLoop, *history.InMemSessionManager, AgentConfig, error) {
+	loop, sm, cfg, err := buildFromYAML(yamlPath, catalog, llm, hook, nil)
+	if err != nil {
+		return nil, nil, cfg, err
+	}
+	inMem, _ := sm.(*history.InMemSessionManager)
+	return loop, inMem, cfg, nil
+}
+
+// BuildFromYAMLWithSession is like BuildFromYAML but accepts any SessionManager —
+// use this for production deployments where sessions must survive server restarts:
+//
+//	// MySQL-backed (persistent):
+//	sm, _ := history.NewMySQLSessionManager(db, config.Agent.SystemPrompt)
+//	loop, _, cfg, err := builder.BuildFromYAMLWithSession("agent.yaml", catalog, provider, nil, sm)
+//
+//	// File-backed (persistent, no DB required):
+//	sm, _ := history.NewFileSessionManager("./sessions", config.Agent.SystemPrompt)
+//	loop, _, cfg, err := builder.BuildFromYAMLWithSession("agent.yaml", catalog, provider, nil, sm)
+//
+// Pass nil to fall back to the default InMemSessionManager.
+func BuildFromYAMLWithSession(yamlPath string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
+	return buildFromYAML(yamlPath, catalog, llm, hook, sm)
+}
+
+// ParseYAMLConfig reads and validates a YAML config file without building the agent.
+// Useful when you need the system prompt before constructing the session manager.
+func ParseYAMLConfig(yamlPath string) (AgentConfig, error) {
+	var config AgentConfig
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return config, fmt.Errorf("cannot read %q: %w", yamlPath, err)
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return config, fmt.Errorf("invalid YAML syntax in %q: %w", yamlPath, err)
+	}
+	return config, nil
+}
+
+// buildFromYAML is the shared implementation.
+func buildFromYAML(yamlPath string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
 	var config AgentConfig
 
 	data, err := os.ReadFile(yamlPath)
@@ -130,14 +174,15 @@ func BuildFromYAML(yamlPath string, catalog *GlobalCatalog, llm agent.LLMProvide
 	if llm == nil {
 		llm = agent.NewMockProvider()
 	}
-
-	sessionManager := history.NewInMemSessionManager(config.Agent.SystemPrompt)
+	if sm == nil {
+		sm = history.NewInMemSessionManager(config.Agent.SystemPrompt)
+	}
 
 	var loop *agent.AgentLoop
 	if hook != nil {
-		loop = agent.NewAgentLoop(sessionManager, registry, llm, hook)
+		loop = agent.NewAgentLoop(sm, registry, llm, hook)
 	} else {
-		loop = agent.NewAgentLoop(sessionManager, registry, llm)
+		loop = agent.NewAgentLoop(sm, registry, llm)
 	}
 
 	if config.Agent.MaxIterations > 0 {
@@ -147,5 +192,5 @@ func BuildFromYAML(yamlPath string, catalog *GlobalCatalog, llm agent.LLMProvide
 		loop.EmitThoughts = *config.Agent.EmitThoughts
 	}
 
-	return loop, sessionManager, config, nil
+	return loop, sm, config, nil
 }

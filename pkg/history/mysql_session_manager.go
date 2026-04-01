@@ -10,58 +10,95 @@ import (
 )
 
 // MySQLSessionManager implements SessionManager using MySQL for persistence.
+// History survives server restarts. Optionally supports background behavior summarization.
 type MySQLSessionManager struct {
-	db       *sql.DB
-	sessions map[string]*Session
-	mu       sync.RWMutex
+	db           *sql.DB
+	sessions     map[string]*Session
+	behaviors    map[string]string
+	lastSumLen   map[string]int
+	mu           sync.RWMutex
+	SystemPrompt string
+	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 }
 
-func NewMySQLSessionManager(db *sql.DB) (*MySQLSessionManager, error) {
-	query := `
+// NewMySQLSessionManager creates a MySQL-backed session manager.
+// An optional systemPrompt can be provided; defaults to a generic assistant prompt.
+func NewMySQLSessionManager(db *sql.DB, systemPrompt ...string) (*MySQLSessionManager, error) {
+	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS agent_sessions (
 			session_key VARCHAR(255) PRIMARY KEY,
-			messages JSON NOT NULL,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+			messages    JSON NOT NULL,
+			behavior    TEXT,
+			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 		)
-	`
-	if _, err := db.Exec(query); err != nil {
+	`); err != nil {
 		return nil, fmt.Errorf("failed to create session table: %w", err)
 	}
+
+	sp := "You are an AI assistant."
+	if len(systemPrompt) > 0 && systemPrompt[0] != "" {
+		sp = systemPrompt[0]
+	}
 	return &MySQLSessionManager{
-		db:       db,
-		sessions: make(map[string]*Session),
+		db:           db,
+		sessions:     make(map[string]*Session),
+		behaviors:    make(map[string]string),
+		lastSumLen:   make(map[string]int),
+		SystemPrompt: sp,
 	}, nil
 }
 
 func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string) []Message {
 	sm.mu.RLock()
 	session, ok := sm.sessions[sessionKey]
-	if ok {
-		// Copy under lock to prevent race with SetHistory
-		result := make([]Message, len(session.Messages))
-		copy(result, session.Messages)
-		sm.mu.RUnlock()
-		return result
-	}
+	behavior := sm.behaviors[sessionKey]
 	sm.mu.RUnlock()
 
+	systemPrompt := sm.SystemPrompt
+	if behavior != "" {
+		systemPrompt += "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + behavior
+	}
+
+	if ok {
+		result := make([]Message, len(session.Messages))
+		copy(result, session.Messages)
+		if len(result) > 0 && result[0].Role == "system" {
+			result[0].Content = systemPrompt
+		}
+		return result
+	}
+
+	// Load from MySQL
 	var messagesJSON string
-	err := sm.db.QueryRowContext(ctx, "SELECT messages FROM agent_sessions WHERE session_key = ?", sessionKey).Scan(&messagesJSON)
+	var behaviorSQL sql.NullString
+	err := sm.db.QueryRowContext(ctx,
+		"SELECT messages, behavior FROM agent_sessions WHERE session_key = ?", sessionKey,
+	).Scan(&messagesJSON, &behaviorSQL)
 
 	if err == sql.ErrNoRows {
-		return []Message{}
+		return []Message{{Role: "system", Content: systemPrompt}}
 	} else if err != nil {
-		log.Printf("[MySQLSessionManager] GetHistory query error for session %q: %v", sessionKey, err)
-		return []Message{}
+		log.Printf("[MySQLSessionManager] GetHistory error for %q: %v", sessionKey, err)
+		return []Message{{Role: "system", Content: systemPrompt}}
 	}
 
 	var msgs []Message
 	if err := json.Unmarshal([]byte(messagesJSON), &msgs); err != nil {
-		log.Printf("[MySQLSessionManager] GetHistory unmarshal error for session %q: %v", sessionKey, err)
-		return []Message{}
+		log.Printf("[MySQLSessionManager] unmarshal error for %q: %v", sessionKey, err)
+		return []Message{{Role: "system", Content: systemPrompt}}
 	}
 
-	// Return a copy — the cache owns its own slice
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		msgs[0].Content = systemPrompt
+	}
+
+	// Restore behavior summary from DB
+	if behaviorSQL.Valid && behaviorSQL.String != "" {
+		sm.mu.Lock()
+		sm.behaviors[sessionKey] = behaviorSQL.String
+		sm.mu.Unlock()
+	}
+
 	result := make([]Message, len(msgs))
 	copy(result, msgs)
 
@@ -72,43 +109,73 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 	return result
 }
 
-// SetHistory stores a copy of the messages for the given session key.
-func (sm *MySQLSessionManager) SetHistory(_ context.Context, sessionKey string, history []Message) {
+// SetHistory stores a copy of the messages for the given session key (in-memory cache only).
+func (sm *MySQLSessionManager) SetHistory(_ context.Context, sessionKey string, messages []Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
 	session, ok := sm.sessions[sessionKey]
 	if !ok {
 		session = &Session{Key: sessionKey}
 		sm.sessions[sessionKey] = session
 	}
-	messages := make([]Message, len(history))
-	copy(messages, history)
-	session.Messages = messages
+	cp := make([]Message, len(messages))
+	copy(cp, messages)
+	session.Messages = cp
+}
+
+// UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer.
+func (sm *MySQLSessionManager) UpdateBehaviorSummary(sessionKey string, newSummary string) error {
+	sm.mu.Lock()
+	sm.behaviors[sessionKey] = newSummary
+	sm.mu.Unlock()
+	// Will be persisted on next Save()
+	return nil
 }
 
 func (sm *MySQLSessionManager) Save(ctx context.Context, sessionKey string) error {
-	sm.mu.RLock()
+	sm.mu.Lock()
 	session, ok := sm.sessions[sessionKey]
 	if !ok {
-		sm.mu.RUnlock()
+		sm.mu.Unlock()
 		return nil
 	}
-	cp := make([]Message, len(session.Messages))
+	msgLen := len(session.Messages)
+	lastLen := sm.lastSumLen[sessionKey]
+	shouldSummarize := sm.SummaryProvider != nil &&
+		msgLen >= backgroundSumTriggerThreshold &&
+		msgLen >= lastLen+backgroundSumNewMsgThreshold
+
+	var newMessages []Message
+	var prevSummary string
+	if shouldSummarize {
+		sm.lastSumLen[sessionKey] = msgLen
+		start := lastLen
+		if start < 0 {
+			start = 0
+		}
+		newMessages = make([]Message, msgLen-start)
+		copy(newMessages, session.Messages[start:])
+		prevSummary = sm.behaviors[sessionKey]
+	}
+	cp := make([]Message, msgLen)
 	copy(cp, session.Messages)
-	sm.mu.RUnlock()
+	behavior := sm.behaviors[sessionKey]
+	sm.mu.Unlock()
+
+	if shouldSummarize {
+		BackgroundBehaviorSummarizer(sessionKey, newMessages, prevSummary, sm.SummaryProvider, sm.UpdateBehaviorSummary)
+	}
 
 	msgsBytes, err := json.Marshal(cp)
-
 	if err != nil {
 		return err
 	}
 
 	query := `
-		INSERT INTO agent_sessions (session_key, messages) 
-		VALUES (?, ?) 
-		ON DUPLICATE KEY UPDATE messages = ?
+		INSERT INTO agent_sessions (session_key, messages, behavior)
+		VALUES (?, ?, ?)
+		ON DUPLICATE KEY UPDATE messages = VALUES(messages), behavior = VALUES(behavior)
 	`
-	_, err = sm.db.ExecContext(ctx, query, sessionKey, string(msgsBytes), string(msgsBytes))
+	_, err = sm.db.ExecContext(ctx, query, sessionKey, string(msgsBytes), behavior)
 	return err
 }

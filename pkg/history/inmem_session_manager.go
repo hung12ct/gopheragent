@@ -144,28 +144,33 @@ func (m *InMemSessionManager) SetHistory(_ context.Context, sessionKey string, m
 	m.touch(sessionKey)
 }
 
-func (m *InMemSessionManager) Save(ctx context.Context, sessionKey string) error {
+func (m *InMemSessionManager) Save(_ context.Context, sessionKey string) error {
 	m.mu.Lock()
 	msgs := m.sessions[sessionKey]
 	msgLen := len(msgs)
 	lastLen := m.lastSumLen[sessionKey]
 
-	shouldSummarize := m.SummaryProvider != nil && msgLen >= backgroundSumTriggerThreshold && msgLen >= lastLen+backgroundSumNewMsgThreshold
-	var messages []Message
+	shouldSummarize := m.SummaryProvider != nil &&
+		msgLen >= backgroundSumTriggerThreshold &&
+		msgLen >= lastLen+backgroundSumNewMsgThreshold
+
+	var newMessages []Message
+	var prevSummary string
 	if shouldSummarize {
 		m.lastSumLen[sessionKey] = msgLen
-		messages = make([]Message, msgLen)
-		copy(messages, msgs)
+		// Only send messages since last summarization, not the full history
+		start := lastLen
+		if start < 0 {
+			start = 0
+		}
+		newMessages = make([]Message, msgLen-start)
+		copy(newMessages, msgs[start:])
+		prevSummary = m.behaviors[sessionKey]
 	}
 	m.mu.Unlock()
 
 	if shouldSummarize {
-		BackgroundBehaviorSummarizer(
-			sessionKey,
-			messages,
-			m.SummaryProvider,
-			m.UpdateBehaviorSummary,
-		)
+		BackgroundBehaviorSummarizer(sessionKey, newMessages, prevSummary, m.SummaryProvider, m.UpdateBehaviorSummary)
 	}
 
 	return nil

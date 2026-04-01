@@ -11,66 +11,108 @@ import (
 )
 
 // FileSessionManager provides file-backed session persistence.
-// Sessions are cached in-memory after first load and lazily hydrated from disk
-// when GetHistory is called for an unknown session key.
+// Sessions survive server restarts. Each session is stored as a JSON file under storagePath.
 type FileSessionManager struct {
-	sessions map[string]*Session
-	storage  string
-	mu       sync.RWMutex
+	sessions     map[string]*Session
+	behaviors    map[string]string
+	lastSumLen   map[string]int
+	storage      string
+	mu           sync.RWMutex
+	SystemPrompt    string
+	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 }
 
 // NewFileSessionManager creates a file-backed session manager.
 // storagePath is the directory where session JSON files are stored.
-func NewFileSessionManager(storagePath string) (*FileSessionManager, error) {
+// An optional systemPrompt can be provided; defaults to a generic assistant prompt.
+func NewFileSessionManager(storagePath string, systemPrompt ...string) (*FileSessionManager, error) {
 	if storagePath != "" {
 		if err := os.MkdirAll(storagePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create session storage directory: %w", err)
 		}
 	}
+	sp := "You are an AI assistant."
+	if len(systemPrompt) > 0 && systemPrompt[0] != "" {
+		sp = systemPrompt[0]
+	}
 	return &FileSessionManager{
-		sessions: make(map[string]*Session),
-		storage:  storagePath,
+		sessions:   make(map[string]*Session),
+		behaviors:  make(map[string]string),
+		lastSumLen: make(map[string]int),
+		storage:    storagePath,
+		SystemPrompt: sp,
 	}, nil
 }
 
-// GetHistory returns a copy of the session messages.
+// GetHistory returns the session history, injecting system prompt + behavior summary.
 // On cache miss, it attempts to load from disk (storagePath/<sessionKey>.json).
 func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) []Message {
 	sm.mu.RLock()
 	session, ok := sm.sessions[sessionKey]
+	behavior := sm.behaviors[sessionKey]
+	sm.mu.RUnlock()
+
+	systemPrompt := sm.SystemPrompt
+	if behavior != "" {
+		systemPrompt += "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + behavior
+	}
+
 	if ok {
 		result := make([]Message, len(session.Messages))
 		copy(result, session.Messages)
-		sm.mu.RUnlock()
+		if len(result) > 0 && result[0].Role == "system" {
+			result[0].Content = systemPrompt
+		}
 		return result
 	}
-	sm.mu.RUnlock()
 
 	if sm.storage == "" {
-		return []Message{}
+		return []Message{{Role: "system", Content: systemPrompt}}
 	}
 
 	data, err := os.ReadFile(filepath.Join(sm.storage, sessionKey+".json"))
 	if err != nil {
-		return []Message{}
-	}
-	var loaded Session
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		log.Printf("[FileSessionManager] failed to unmarshal %s.json: %v", sessionKey, err)
-		return []Message{}
+		return []Message{{Role: "system", Content: systemPrompt}}
 	}
 
-	result := make([]Message, len(loaded.Messages))
-	copy(result, loaded.Messages)
+	var stored struct {
+		Session  Session `json:"session"`
+		Behavior string  `json:"behavior"`
+	}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		// legacy format: try loading as plain Session
+		var legacy Session
+		if err2 := json.Unmarshal(data, &legacy); err2 != nil {
+			log.Printf("[FileSessionManager] failed to unmarshal %s.json: %v", sessionKey, err)
+			return []Message{{Role: "system", Content: systemPrompt}}
+		}
+		stored.Session = legacy
+	}
+
+	if stored.Behavior != "" {
+		sm.mu.Lock()
+		sm.behaviors[sessionKey] = stored.Behavior
+		sm.mu.Unlock()
+		if stored.Behavior != "" {
+			systemPrompt = sm.SystemPrompt + "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + stored.Behavior
+		}
+	}
+
+	if len(stored.Session.Messages) > 0 && stored.Session.Messages[0].Role == "system" {
+		stored.Session.Messages[0].Content = systemPrompt
+	}
+
+	result := make([]Message, len(stored.Session.Messages))
+	copy(result, stored.Session.Messages)
 
 	sm.mu.Lock()
-	sm.sessions[sessionKey] = &loaded
+	sm.sessions[sessionKey] = &stored.Session
 	sm.mu.Unlock()
 
 	return result
 }
 
-// SetHistory stores a copy of the messages for the given session key.
+// SetHistory stores a copy of the messages for the given session key (in-memory cache only).
 func (sm *FileSessionManager) SetHistory(_ context.Context, sessionKey string, history []Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -85,23 +127,59 @@ func (sm *FileSessionManager) SetHistory(_ context.Context, sessionKey string, h
 	session.Messages = messages
 }
 
-func (sm *FileSessionManager) Save(_ context.Context, sessionKey string) error {
+// UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer.
+func (sm *FileSessionManager) UpdateBehaviorSummary(sessionKey string, newSummary string) error {
+	sm.mu.Lock()
+	sm.behaviors[sessionKey] = newSummary
+	sm.mu.Unlock()
+	return nil
+}
+
+// Save persists the session to disk and triggers background summarization if conditions met.
+func (sm *FileSessionManager) Save(ctx context.Context, sessionKey string) error {
+	sm.mu.Lock()
+	session, ok := sm.sessions[sessionKey]
+	if !ok {
+		sm.mu.Unlock()
+		return nil
+	}
+	msgLen := len(session.Messages)
+	lastLen := sm.lastSumLen[sessionKey]
+	shouldSummarize := sm.SummaryProvider != nil &&
+		msgLen >= backgroundSumTriggerThreshold &&
+		msgLen >= lastLen+backgroundSumNewMsgThreshold
+
+	var newMessages []Message
+	var prevSummary string
+	if shouldSummarize {
+		sm.lastSumLen[sessionKey] = msgLen
+		start := lastLen
+		if start < 0 {
+			start = 0
+		}
+		newMessages = make([]Message, msgLen-start)
+		copy(newMessages, session.Messages[start:])
+		prevSummary = sm.behaviors[sessionKey]
+	}
+	snapshot := Session{Key: session.Key, Messages: make([]Message, msgLen)}
+	copy(snapshot.Messages, session.Messages)
+	behavior := sm.behaviors[sessionKey]
+	sm.mu.Unlock()
+
+	if shouldSummarize {
+		BackgroundBehaviorSummarizer(sessionKey, newMessages, prevSummary, sm.SummaryProvider, sm.UpdateBehaviorSummary)
+	}
+
 	if sm.storage == "" {
 		return nil
 	}
 
-	sm.mu.RLock()
-	stored, ok := sm.sessions[sessionKey]
-	if !ok {
-		sm.mu.RUnlock()
-		return nil
-	}
-	// Copy + marshal under lock to prevent race with SetHistory
-	snapshot := Session{Key: stored.Key, Messages: make([]Message, len(stored.Messages))}
-	copy(snapshot.Messages, stored.Messages)
-	sm.mu.RUnlock()
+	stored := struct {
+		Session  Session `json:"session"`
+		Behavior string  `json:"behavior,omitempty"`
+	}{Session: snapshot, Behavior: behavior}
 
-	data, err := json.MarshalIndent(snapshot, "", "  ")
+	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -127,6 +205,5 @@ func (sm *FileSessionManager) Save(_ context.Context, sessionKey string) error {
 		return err
 	}
 
-	sessionPath := filepath.Join(sm.storage, sessionKey+".json")
-	return os.Rename(tmpPath, sessionPath)
+	return os.Rename(tmpPath, filepath.Join(sm.storage, sessionKey+".json"))
 }

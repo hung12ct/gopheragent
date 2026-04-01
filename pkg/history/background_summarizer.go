@@ -7,52 +7,53 @@ import (
 
 // SummaryProvider represents a very cheap LLM model (e.g., gemini-1.5-flash / gpt-4o-mini)
 // exclusively tasked with finding long-term patterns in user requests.
+//
+// previousSummary is the existing behavioral profile (empty string on first call).
+// The implementation should merge new evidence from newMessages into previousSummary
+// rather than rebuilding from scratch, saving tokens and preserving accumulated knowledge.
 type SummaryProvider interface {
-	SummarizeBehaviors(ctx context.Context, messages []Message) (string, error)
+	SummarizeBehaviors(ctx context.Context, newMessages []Message, previousSummary string) (string, error)
 }
 
-// BackgroundBehaviorSummarizer handles the detached goroutine logic.
-// It fires async, so the user never has to wait for this summarization piece.
-func BackgroundBehaviorSummarizer(sessionKey string, history []Message, provider SummaryProvider, updateCallback func(sessionKey string, newSummary string) error) {
-	// The threshold: Only summarize if we start getting deep into the context length
-	const TriggerThreshold = 20
-
-	if len(history) < TriggerThreshold {
+// BackgroundBehaviorSummarizer fires async summarization for a session.
+// Only newMessages (since last summarization) are sent to the provider, together
+// with the existing previousSummary so the model can do an incremental merge.
+func BackgroundBehaviorSummarizer(
+	sessionKey string,
+	newMessages []Message,
+	previousSummary string,
+	provider SummaryProvider,
+	updateCallback func(sessionKey string, newSummary string) error,
+) {
+	if len(newMessages) == 0 {
 		return
 	}
 
-	// Wait! We shouldn't summarize if we recently did it. 
-	// For production, you'd add a LastSummarized turn counter. This is a simplified block.
-
-	// Fork new goroutine so the HTTP request can return immediately
 	go func() {
-		// We use context.Background() to prevent the cancellation of the original HTTP 
-		// request from killing this background task mid-flight.
 		bgCtx := context.Background()
+		log.Printf("[Background Summarizer] session=%q new_msgs=%d merging with existing profile",
+			sessionKey, len(newMessages))
 
-		log.Printf("[Background Summarizer] Forked extraction worker for session '%s'. Analyzing %d messages...\n", sessionKey, len(history))
-
-		summaryParagraph, err := provider.SummarizeBehaviors(bgCtx, history)
+		updated, err := provider.SummarizeBehaviors(bgCtx, newMessages, previousSummary)
 		if err != nil {
-			log.Printf("❌ [Background Summarizer] Analysis failed: %v", err)
+			log.Printf("[Background Summarizer] failed for session %q: %v", sessionKey, err)
 			return
 		}
 
-		// Inject back to the Long-Term Memory store
-		// (e.g. MySQL `UPDATE agent_sessions SET behavior_summary = ?`)
-		if err := updateCallback(sessionKey, summaryParagraph); err != nil {
-			log.Printf("❌ [Background Summarizer] Failed to persist memory: %v", err)
+		if err := updateCallback(sessionKey, updated); err != nil {
+			log.Printf("[Background Summarizer] persist failed for session %q: %v", sessionKey, err)
 		} else {
-			log.Printf("✅ [Background Summarizer] Memory persisted. New Identity/Behavior injected successfully.")
+			log.Printf("[Background Summarizer] profile updated for session %q", sessionKey)
 		}
 	}()
 }
 
-// MockSummaryProvider is a stub to test the functionality without an API key
+// MockSummaryProvider is a stub for tests — no API key required.
 type MockSummaryProvider struct{}
 
-func (m *MockSummaryProvider) SummarizeBehaviors(ctx context.Context, messages []Message) (string, error) {
-	// Simulate LLM (Claude/GPT) reading history and analyzing behaviors.
-	// In reality, this model would take about 2 seconds at a very low API cost.
-	return "User Preferences Extract: User prefers code to be strictly typed and wrapped in interfaces. Does not tolerate SQL injection vulnerabilities. Keep responses actionable and direct without filler text.", nil
+func (m *MockSummaryProvider) SummarizeBehaviors(_ context.Context, _ []Message, previous string) (string, error) {
+	if previous != "" {
+		return previous + " (updated)", nil
+	}
+	return "User prefers strictly typed Go code, direct responses, no filler text.", nil
 }

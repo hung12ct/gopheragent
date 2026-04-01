@@ -289,11 +289,7 @@ All providers auto-discover API keys from environment variables when key is `""`
 
 ## Examples
 
-```bash
-cd examples/multi_agent_data && go run .  # Hierarchical SQL agent
-cd examples/dynamic_builder && go run .   # YAML-driven agent
-cd examples/demo && go run .              # SSE streaming web chat
-```
+See `examples/` — each folder has its own `README.md` and `.env.example`.
 
 ## License
 

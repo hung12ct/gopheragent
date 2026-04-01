@@ -200,11 +200,9 @@ func estimateTokens(msgs []history.Message) int {
 }
 
 // saveSession persists history, using background context if the request context is already cancelled.
-func (al *AgentLoop) saveSession(ctx context.Context, sessionKey string, msgs []history.Message) {
-	saveCtx := ctx
-	if ctx.Err() != nil {
-		saveCtx = context.Background()
-	}
+func (al *AgentLoop) saveSession(_ context.Context, sessionKey string, msgs []history.Message) {
+	// Always use Background context — session persistence must outlive the HTTP request.
+	saveCtx := context.Background()
 	al.Sessions.SetHistory(saveCtx, sessionKey, msgs)
 	if err := al.Sessions.Save(saveCtx, sessionKey); err != nil {
 		log.Printf("[gopheragent] session save error for %q: %v", sessionKey, err)
