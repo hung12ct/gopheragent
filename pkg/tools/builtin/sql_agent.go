@@ -15,10 +15,12 @@ import (
 
 var dmlMatcher = regexp.MustCompile(`(?i)(update\s|delete\s|drop\s|insert\s|create\s|alter\s|truncate\s|merge\s|grant\s|revoke\s)`)
 
-// SQLQueryEvent carries metadata about a SQL query the sub-agent is about to execute.
+// SQLQueryEvent carries metadata about a SQL query executed by the sub-agent.
+// Error is non-empty when the query failed (DB error or DML rejection).
 type SQLQueryEvent struct {
 	SessionKey string
 	Query      string
+	Error      string // empty on success
 }
 
 // SQLAgentTool spins up an isolated Sub-Agent dedicated solely to converting Natural Language to SQL and querying the database safely.
@@ -186,21 +188,26 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 	}
 	sqlStr := args.SQLQuery
 
-	if t.onSQL != nil {
-		t.onSQL(ctx, SQLQueryEvent{SessionKey: t.sessionKey, Query: sqlStr})
+	notify := func(errMsg string) {
+		if t.onSQL != nil {
+			t.onSQL(ctx, SQLQueryEvent{SessionKey: t.sessionKey, Query: sqlStr, Error: errMsg})
+		}
 	}
 
 	// 1. Anti-DML/DDL Safety Validation via Regex
 	if dmlMatcher.MatchString(sqlStr) {
-		return "Invalid SQL: Contains disallowed DML/DDL operations. Database access is strictly read-only.", nil
+		msg := "Invalid SQL: Contains disallowed DML/DDL operations. Database access is strictly read-only."
+		notify(msg)
+		return msg, nil
 	}
 
 	// 2. Query execution
 	rows, err := t.db.QueryContext(ctx, sqlStr)
 	if err != nil {
-		// Crucial Error Feedback Loop! We return the raw error message to the LLM.
+		notify(err.Error())
 		return fmt.Sprintf("Query error: %v\nPlease analyze the error and try correcting the SQL statement.", err), nil
 	}
+	notify("") // success
 	defer rows.Close()
 
 	// 3. Dynamic columns parsing
