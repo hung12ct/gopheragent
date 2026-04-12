@@ -120,6 +120,18 @@
             color: #93c5fd;
             text-decoration: underline;
         }
+        .assistant .bubble img {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 6px 0;
+            display: block;
+        }
+        .assistant .bubble video {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 6px 0;
+            display: block;
+        }
 
         .thought-container {
             background-color: var(--thought-bg);
@@ -303,6 +315,15 @@
         let currentEventSource = null;
         const sessionId = `demo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+        // Configure marked to pass raw HTML blocks through (needed for <video> embeds)
+        marked.use({ gfm: true, breaks: true });
+
+        const DOMPURIFY_CONFIG = {
+            ADD_TAGS: ['video', 'source', 'audio'],
+            ADD_ATTR: ['controls', 'preload', 'autoplay', 'loop', 'muted', 'src', 'type', 'width', 'height'],
+            ALLOW_DATA_ATTR: false,
+        };
+
         function escapeHtml(s) {
             return String(s)
                 .replaceAll('&', '&amp;')
@@ -314,7 +335,7 @@
 
         function renderMarkdown(raw) {
             const html = marked.parse(raw || '');
-            return DOMPurify.sanitize(html);
+            return DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
         }
 
         input.addEventListener('keypress', (e) => {

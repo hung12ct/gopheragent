@@ -3,6 +3,7 @@ package tools
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"sync"
 )
@@ -29,10 +30,21 @@ type Tool interface {
 	Execute(ctx context.Context, argsJSON string) (string, error)
 }
 
+// InlineRenderer is optionally implemented by tools whose output should be
+// streamed directly to the frontend as content (e.g. images, videos, HTML widgets).
+// The result is emitted as a "content" StreamEvent in addition to being fed back
+// to the LLM as a normal tool result.
+type InlineRenderer interface {
+	InlineResult() bool
+}
+
 // Registry manages the available tools for an agent. Safe for concurrent use.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	mu      sync.RWMutex
+	tools   map[string]Tool
+	wrapped map[string]Tool // cached debug-wrapped tools
+	debug   bool
+	logger  *slog.Logger
 }
 
 // NewRegistry creates an empty tool registry.
@@ -40,22 +52,47 @@ func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Tool)}
 }
 
+// EnableDebug turns on per-call logging for every tool in this registry.
+// Pass nil to use slog.Default(). Calls are idempotent — calling again swaps the logger.
+//
+//	reg.EnableDebug(nil)                          // use default logger
+//	reg.EnableDebug(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+func (r *Registry) EnableDebug(logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.debug = true
+	r.logger = logger
+	r.wrapped = nil
+}
+
 // Register adds a tool to the registry. Overwrites any existing tool with the same name.
 func (r *Registry) Register(t Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[t.Name()] = t
+	delete(r.wrapped, t.Name())
 }
 
 // Get retrieves a tool by name. Returns false if not found.
+// When debug mode is enabled the tool is transparently wrapped with WithLogging.
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
-	return t, ok
+	if !ok {
+		return nil, false
+	}
+	if r.debug {
+		t = r.debugWrapped(name, t)
+	}
+	return t, true
 }
 
 // GetAll returns all registered tools in deterministic alphabetical order.
+// Debug wrapping is applied when enabled.
 func (r *Registry) GetAll() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -68,7 +105,24 @@ func (r *Registry) GetAll() []Tool {
 
 	result := make([]Tool, 0, len(names))
 	for _, name := range names {
-		result = append(result, r.tools[name])
+		t := r.tools[name]
+		if r.debug {
+			t = r.debugWrapped(name, t)
+		}
+		result = append(result, t)
 	}
 	return result
+}
+
+// debugWrapped returns a cached logging-wrapped tool. Must be called under r.mu.
+func (r *Registry) debugWrapped(name string, t Tool) Tool {
+	if w, ok := r.wrapped[name]; ok {
+		return w
+	}
+	w := Chain(t, WithLogging(r.logger))
+	if r.wrapped == nil {
+		r.wrapped = make(map[string]Tool)
+	}
+	r.wrapped[name] = w
+	return w
 }

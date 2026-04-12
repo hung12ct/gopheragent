@@ -261,6 +261,49 @@ reg.Register(tools.Chain(myTool,
 ))
 ```
 
+### Debug Mode — Log All Tool Calls
+
+One line to enable structured logging for every tool in a registry:
+
+```go
+registry := tools.NewRegistry()
+registry.Register(myTool)
+registry.Register(sqlTool)
+
+if debug {
+    registry.EnableDebug(nil) // nil = use slog.Default()
+}
+```
+
+Every tool call will log name, args, result size, and errors:
+
+```
+INFO tool call  tool=call_sql_agent args={"query":"top 5 customers"}
+INFO tool ok    tool=call_sql_agent result_bytes=312
+```
+
+Pass a custom `*slog.Logger` for JSON output or custom sinks:
+
+```go
+registry.EnableDebug(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+```
+
+### Audit SQL Queries (`SQLAgentTool`)
+
+Intercept every SQL query the sub-agent generates before it hits the database — useful for auditing, displaying to users, or structured logging:
+
+```go
+sqlTool := builtin.NewSQLAgentTool(db, schema, sm, provider).
+    OnSQL(func(ctx context.Context, ev builtin.SQLQueryEvent) {
+        slog.InfoContext(ctx, "sql_agent.query",
+            "session", ev.SessionKey,
+            "sql",     ev.Query,
+        )
+    })
+```
+
+`OnSQL` fires on every attempt, including retries — `ev.SessionKey` correlates all attempts from the same request.
+
 ### Structured Error Handling
 
 ```go

@@ -113,6 +113,7 @@ func initApp() {
 		catalog.Register(webSearch)
 	}
 	catalog.Register(builtin.NewReadURLTool())
+	catalog.Register(builtin.NewShowMediaTool())
 
 	yamlPath := strings.TrimSpace(os.Getenv("AGENT_YAML_PATH"))
 	if yamlPath == "" {
@@ -196,6 +197,6 @@ func main() {
 	initApp()
 	http.Handle("/", http.FileServer(http.Dir("./frontend")))
 	http.HandleFunc("/api/chat", ChatHandler)
-	fmt.Println("Server started at http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	fmt.Println("Server started at http://localhost:8888")
+	log.Fatal(http.ListenAndServe(":8888", nil))
 }

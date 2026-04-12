@@ -13,12 +13,21 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
+var dmlMatcher = regexp.MustCompile(`(?i)(update\s|delete\s|drop\s|insert\s|create\s|alter\s|truncate\s|merge\s|grant\s|revoke\s)`)
+
+// SQLQueryEvent carries metadata about a SQL query the sub-agent is about to execute.
+type SQLQueryEvent struct {
+	SessionKey string
+	Query      string
+}
+
 // SQLAgentTool spins up an isolated Sub-Agent dedicated solely to converting Natural Language to SQL and querying the database safely.
 type SQLAgentTool struct {
 	db             *sql.DB
 	schemaContext  string
 	sessionManager agent.SessionManager
 	provider       agent.LLMProvider
+	onSQL          func(context.Context, SQLQueryEvent)
 }
 
 // NewSQLAgentTool initializes a tool capable of querying databases.
@@ -29,6 +38,17 @@ func NewSQLAgentTool(db *sql.DB, schemaContext string, sm agent.SessionManager, 
 		sessionManager: sm,
 		provider:       provider,
 	}
+}
+
+// OnSQL registers a callback invoked every time the sub-agent executes a SQL query.
+// Use it for logging, auditing, or streaming SQL to the parent application.
+//
+//	tool.OnSQL(func(ctx context.Context, ev builtin.SQLQueryEvent) {
+//	    log.Printf("[sql-agent] session=%s sql=%s", ev.SessionKey, ev.Query)
+//	})
+func (t *SQLAgentTool) OnSQL(fn func(context.Context, SQLQueryEvent)) *SQLAgentTool {
+	t.onSQL = fn
+	return t
 }
 
 func (t *SQLAgentTool) Name() string {
@@ -65,12 +85,14 @@ func (t *SQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	subSessionKey := fmt.Sprintf("sub_agent_sql_%d", time.Now().UnixNano())
+
 	// 1. Create a sub-registry with exactly one tool: execute_sql
 	sqlTools := tools.NewRegistry()
-	sqlTools.Register(&executeSQLTool{db: t.db})
+	sqlTools.Register(&executeSQLTool{db: t.db, onSQL: t.onSQL, sessionKey: subSessionKey})
 
 	// 2. Instantiate the sub-agent
-	subAgent := agent.NewAgentLoop(t.sessionManager, sqlTools, t.provider, nil)
+	subAgent := agent.NewAgentLoop(t.sessionManager, sqlTools, t.provider)
 
 	// 3. Build a structured system prompt using Divide-and-Conquer + Query Plan techniques.
 	systemInstruction := fmt.Sprintf(`You are an elite SQL Database Agent. Your task is to translate natural language queries into read-only SQL using a "Divide-and-Conquer" approach, then execute them with the execute_sql tool.
@@ -100,8 +122,6 @@ Before calling execute_sql, reason through the query in this format:
 3. **Assemble**: Replace placeholders bottom-up to form the full SQL.
 4. **Simplify**: Optimize (remove redundant subqueries, convert to JOINs).
 5. **Execute**: Call execute_sql with the final query. Return the raw JSON result untouched.`, t.schemaContext)
-
-	subSessionKey := fmt.Sprintf("sub_agent_sql_%d", time.Now().UnixNano())
 	t.sessionManager.SetHistory(ctx, subSessionKey, []history.Message{
 		{Role: "system", Content: systemInstruction},
 	})
@@ -128,7 +148,9 @@ Before calling execute_sql, reason through the query in this format:
 // It includes strict anti-DDL/DML checks to prevent injection.
 // ---------------------------------------------------------
 type executeSQLTool struct {
-	db *sql.DB
+	db         *sql.DB
+	sessionKey string
+	onSQL      func(context.Context, SQLQueryEvent)
 }
 
 func (t *executeSQLTool) Name() string { return "execute_sql" }
@@ -161,8 +183,11 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 	}
 	sqlStr := args.SQLQuery
 
+	if t.onSQL != nil {
+		t.onSQL(ctx, SQLQueryEvent{SessionKey: t.sessionKey, Query: sqlStr})
+	}
+
 	// 1. Anti-DML/DDL Safety Validation via Regex
-	dmlMatcher := regexp.MustCompile(`(?i)(update\s|delete\s|drop\s|insert\s|create\s|alter\s|truncate\s|merge\s|grant\s|revoke\s)`)
 	if dmlMatcher.MatchString(sqlStr) {
 		return "Invalid SQL: Contains disallowed DML/DDL operations. Database access is strictly read-only.", nil
 	}

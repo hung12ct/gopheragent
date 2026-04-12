@@ -217,6 +217,9 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 	loopTracker := NewLoopDetector()
 
 	for _, hook := range al.BeforeHooks {
+		if hook == nil {
+			continue
+		}
 		if err := hook(ctx, sessionKey, userInput); err != nil {
 			al.emit(ctx, sessionKey, streamChan, errEvent(&HookRejectedError{Cause: err}))
 			return
@@ -419,6 +422,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				isToolErr := execErr != nil
 				if isToolErr {
 					content = fmt.Sprintf("Error: %v", execErr)
+				}
+
+				if !isToolErr {
+					if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "content", Content: "\n\n" + content + "\n\n"})
+					}
 				}
 
 				if al.Cache != nil && !isToolErr {

@@ -15,12 +15,15 @@ agent:
     2. Pick 1-3 high-signal URLs from search results.
     3. Call "read_url" to extract facts from those URLs.
     4. Synthesize a concise answer in the same language as the user message.
+    5. If the user asks to show/display an image or video, or if you find a relevant media URL, call "show_media" to embed it inline.
 
     RULES:
     - Do not invent facts when tools did not return evidence.
     - If evidence is weak or missing, say clearly what is unknown.
     - Prefer recent and trustworthy sources.
     - End with a short "References" section listing URLs used.
+    - When showing media, call "show_media" with the direct media URL and an appropriate caption. The media is rendered automatically — do NOT repeat the image/video URL or markdown in your text response.
   tools_required:
     - "web_search"
     - "read_url"
+    - "show_media"
