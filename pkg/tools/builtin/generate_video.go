@@ -31,12 +31,17 @@ const (
 // the video embed streams directly to the frontend chat.
 //
 // Set SaveDir and URLBase before use — same semantics as GenerateImageTool.
+type generateVideoArgs struct {
+	Prompt          string `json:"prompt"                     description:"Detailed scene description. Include action, camera motion, lighting, style, and mood. Example: 'Slow dolly-in on a glowing neon cityscape at night, rain-slicked streets reflecting pink and blue lights, cinematic film grain.'"`
+	AspectRatio     string `json:"aspect_ratio,omitempty"     description:"16:9 for landscape/cinematic, 9:16 for vertical/social media." enum:"16:9,9:16"`
+	DurationSeconds int    `json:"duration_seconds,omitempty" description:"Length of the clip in seconds. Between 5 and 8."`
+}
+
 type GenerateVideoTool struct {
 	client     *genai.Client
 	httpClient *http.Client
 	apiKey     string // kept for authenticated downloads from the Gemini Files API
 	model      string
-	schema     tools.ToolSchema
 	SaveDir    string // local directory to save generated video files
 	URLBase    string // URL prefix served by the host HTTP server, e.g. "/media"
 }
@@ -64,25 +69,6 @@ func NewGenerateVideoTool(apiKey, model string) (*GenerateVideoTool, error) {
 		httpClient: &http.Client{Timeout: videoDownloadTimeout},
 		apiKey:     apiKey,
 		model:      model,
-		schema: tools.ToolSchema{
-			Type: "object",
-			Properties: map[string]any{
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "Detailed scene description. Include action, camera motion, lighting, style, and mood. Example: 'Slow dolly-in on a glowing neon cityscape at night, rain-slicked streets reflecting pink and blue lights, cinematic film grain.'",
-				},
-				"aspect_ratio": map[string]any{
-					"type":        "string",
-					"enum":        []string{"16:9", "9:16"},
-					"description": "16:9 for landscape/cinematic, 9:16 for vertical/social media.",
-				},
-				"duration_seconds": map[string]any{
-					"type":        "integer",
-					"description": "Length of the clip in seconds. Between 5 and 8.",
-				},
-			},
-			Required: []string{"prompt"},
-		},
 	}, nil
 }
 
@@ -93,18 +79,16 @@ func (t *GenerateVideoTool) Description() string {
 		"Generation takes 1–3 minutes — tell the user to wait. " +
 		"After generating, the video will appear inline in the chat."
 }
-func (t *GenerateVideoTool) ParametersSchema() tools.ToolSchema { return t.schema }
+func (t *GenerateVideoTool) ParametersSchema() tools.ToolSchema {
+	return tools.SchemaFor[generateVideoArgs]()
+}
 func (t *GenerateVideoTool) RequiresConfirmation() bool         { return false }
 func (t *GenerateVideoTool) InlineResult() bool                 { return true }
 
 // Execute starts a Veo 2 generation job, polls until complete, saves the video,
 // and returns an HTML <video> embed pointing at URLBase/<filename>.
 func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		Prompt          string `json:"prompt"`
-		AspectRatio     string `json:"aspect_ratio"`
-		DurationSeconds int    `json:"duration_seconds"`
-	}
+	var args generateVideoArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: generate_video: invalid args: %w", err)
 	}

@@ -54,31 +54,20 @@ func (t *MediaAnalyzeTool) Description() string {
 	return "Analyze an image or video using a multimodal model. Accepts an http(s) URL, a Google Cloud Storage URI (gs://), or a data URI. Use for OCR, chart reading, screenshot understanding, video summarisation, or any visual question-answering. Note: video support depends on the underlying provider (Gemini supports video; OpenAI and Claude support images only)."
 }
 
+type mediaAnalyzeArgs struct {
+	Media  string `json:"media"  description:"The media to analyze — an http(s) URL, a gs:// Cloud Storage URI (for Gemini video), or a data: URI for inline images."`
+	Prompt string `json:"prompt" description:"What to extract or describe. Be specific (e.g. 'summarise the key events in this video', 'extract all text', 'describe the chart axes and trend')."`
+}
+
 func (t *MediaAnalyzeTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"media": map[string]any{
-				"type":        "string",
-				"description": "The media to analyze — an http(s) URL, a gs:// Cloud Storage URI (for Gemini video), or a data: URI for inline images.",
-			},
-			"prompt": map[string]any{
-				"type":        "string",
-				"description": "What to extract or describe. Be specific (e.g. 'summarise the key events in this video', 'extract all text', 'describe the chart axes and trend').",
-			},
-		},
-		Required: []string{"media", "prompt"},
-	}
+	return tools.SchemaFor[mediaAnalyzeArgs]()
 }
 
 // RequiresConfirmation is false — analysis is read-only.
 func (t *MediaAnalyzeTool) RequiresConfirmation() bool { return false }
 
 func (t *MediaAnalyzeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		Media  string `json:"media"`
-		Prompt string `json:"prompt"`
-	}
+	var args mediaAnalyzeArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
 	}

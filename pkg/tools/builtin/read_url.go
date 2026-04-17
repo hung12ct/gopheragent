@@ -48,17 +48,12 @@ func (t *ReadURLTool) Description() string {
 	return "Fetch raw text content from a public webpage URL. Use this when the user asks to summarize a specific link or read an article."
 }
 
+type readURLArgs struct {
+	URL string `json:"url" description:"The exact valid HTTP/HTTPS URL of the webpage to scrape."`
+}
+
 func (t *ReadURLTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"url": map[string]any{
-				"type":        "string",
-				"description": "The exact valid HTTP/HTTPS URL of the webpage to scrape.",
-			},
-		},
-		Required: []string{"url"},
-	}
+	return tools.SchemaFor[readURLArgs]()
 }
 
 func (t *ReadURLTool) RequiresConfirmation() bool {
@@ -66,9 +61,7 @@ func (t *ReadURLTool) RequiresConfirmation() bool {
 }
 
 func (t *ReadURLTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		URL string `json:"url"`
-	}
+	var args readURLArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: read_url: invalid arguments: %w", err)
 	}

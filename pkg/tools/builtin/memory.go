@@ -116,21 +116,13 @@ func (t *MemorySetTool) Name() string { return "memory_set" }
 func (t *MemorySetTool) Description() string {
 	return "Save a string value under a named key for the current session. Overwrites any previous value."
 }
+type memorySetArgs struct {
+	Key   string `json:"key"   description:"Memory key (stable identifier, e.g. 'user_preferences')."`
+	Value string `json:"value" description:"Value to store. Serialise structured data yourself (e.g. JSON)."`
+}
+
 func (t *MemorySetTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"key": map[string]any{
-				"type":        "string",
-				"description": "Memory key (stable identifier, e.g. 'user_preferences').",
-			},
-			"value": map[string]any{
-				"type":        "string",
-				"description": "Value to store. Serialise structured data yourself (e.g. JSON).",
-			},
-		},
-		Required: []string{"key", "value"},
-	}
+	return tools.SchemaFor[memorySetArgs]()
 }
 func (t *MemorySetTool) RequiresConfirmation() bool { return false }
 func (t *MemorySetTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -138,10 +130,7 @@ func (t *MemorySetTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err != nil {
 		return "", err
 	}
-	var args struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
-	}
+	var args memorySetArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
 	}
@@ -172,17 +161,12 @@ func (t *MemoryGetTool) Name() string { return "memory_get" }
 func (t *MemoryGetTool) Description() string {
 	return "Read a value previously saved with memory_set for the current session."
 }
+type memoryGetArgs struct {
+	Key string `json:"key" description:"Memory key to read."`
+}
+
 func (t *MemoryGetTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"key": map[string]any{
-				"type":        "string",
-				"description": "Memory key to read.",
-			},
-		},
-		Required: []string{"key"},
-	}
+	return tools.SchemaFor[memoryGetArgs]()
 }
 func (t *MemoryGetTool) RequiresConfirmation() bool { return false }
 func (t *MemoryGetTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -190,9 +174,7 @@ func (t *MemoryGetTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err != nil {
 		return "", err
 	}
-	var args struct {
-		Key string `json:"key"`
-	}
+	var args memoryGetArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
 	}
@@ -233,17 +215,12 @@ func (t *MemoryDeleteTool) Name() string { return "memory_delete" }
 func (t *MemoryDeleteTool) Description() string {
 	return "Delete a key from the current session's memory. No error when the key does not exist."
 }
+type memoryDeleteArgs struct {
+	Key string `json:"key" description:"Memory key to delete."`
+}
+
 func (t *MemoryDeleteTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"key": map[string]any{
-				"type":        "string",
-				"description": "Memory key to delete.",
-			},
-		},
-		Required: []string{"key"},
-	}
+	return tools.SchemaFor[memoryDeleteArgs]()
 }
 func (t *MemoryDeleteTool) RequiresConfirmation() bool { return false }
 func (t *MemoryDeleteTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -251,9 +228,7 @@ func (t *MemoryDeleteTool) Execute(ctx context.Context, argsJSON string) (string
 	if err != nil {
 		return "", err
 	}
-	var args struct {
-		Key string `json:"key"`
-	}
+	var args memoryDeleteArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
 	}
@@ -285,10 +260,7 @@ func (t *MemoryListTool) Description() string {
 	return "List all keys currently stored in the session's memory."
 }
 func (t *MemoryListTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type:       "object",
-		Properties: map[string]any{},
-	}
+	return tools.SchemaFor[struct{}]()
 }
 func (t *MemoryListTool) RequiresConfirmation() bool { return false }
 func (t *MemoryListTool) Execute(ctx context.Context, _ string) (string, error) {

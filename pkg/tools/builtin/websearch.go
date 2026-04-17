@@ -38,26 +38,14 @@ func (t *WebSearchTool) Description() string {
 	return "Perform a web search to find current information, news, or general knowledge using Tavily API."
 }
 
+type webSearchArgs struct {
+	Query string `json:"query"                    description:"The search query to look up on the internet (e.g. 'latest news about AI')."`
+	Topic string `json:"topic,omitempty"          description:"Search category. Use 'news' for recent events, headlines, or time-sensitive queries. Default: 'general'." enum:"general,news"`
+	Days  int    `json:"days,omitempty"           description:"Only return results from the last N days. Use 1 for 'today', 7 for 'this week'. Only applies when topic is 'news'. Default: 3."`
+}
+
 func (t *WebSearchTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"query": map[string]any{
-				"type":        "string",
-				"description": "The search query to look up on the internet (e.g. 'latest news about AI').",
-			},
-			"topic": map[string]any{
-				"type":        "string",
-				"enum":        []string{"general", "news"},
-				"description": "Search category. Use 'news' for recent events, headlines, or time-sensitive queries. Default: 'general'.",
-			},
-			"days": map[string]any{
-				"type":        "integer",
-				"description": "Only return results from the last N days. Use 1 for 'today', 7 for 'this week'. Only applies when topic is 'news'. Default: 3.",
-			},
-		},
-		Required: []string{"query"},
-	}
+	return tools.SchemaFor[webSearchArgs]()
 }
 
 func (t *WebSearchTool) RequiresConfirmation() bool {
@@ -65,11 +53,7 @@ func (t *WebSearchTool) RequiresConfirmation() bool {
 }
 
 func (t *WebSearchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		Query string `json:"query"`
-		Topic string `json:"topic"`
-		Days  int    `json:"days"`
-	}
+	var args webSearchArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}

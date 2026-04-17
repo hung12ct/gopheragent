@@ -21,37 +21,21 @@ func (t *ShowMediaTool) Description() string {
 	return "Display an image or video inline in the chat. Use this when the user asks to show, display, or view an image/video from a URL. Returns a renderable media embed for the frontend."
 }
 
+type showMediaArgs struct {
+	URL       string `json:"url"                description:"Direct HTTP/HTTPS URL to the image or video file."`
+	MediaType string `json:"media_type"         description:"Type of media: 'image' for pictures/GIFs, 'video' for MP4/WebM/etc." enum:"image,video"`
+	Caption   string `json:"caption,omitempty"  description:"Optional caption or alt-text to display with the media."`
+}
+
 func (t *ShowMediaTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"url": map[string]any{
-				"type":        "string",
-				"description": "Direct HTTP/HTTPS URL to the image or video file.",
-			},
-			"media_type": map[string]any{
-				"type":        "string",
-				"enum":        []string{"image", "video"},
-				"description": "Type of media: 'image' for pictures/GIFs, 'video' for MP4/WebM/etc.",
-			},
-			"caption": map[string]any{
-				"type":        "string",
-				"description": "Optional caption or alt-text to display with the media.",
-			},
-		},
-		Required: []string{"url", "media_type"},
-	}
+	return tools.SchemaFor[showMediaArgs]()
 }
 
 func (t *ShowMediaTool) RequiresConfirmation() bool { return false }
 func (t *ShowMediaTool) InlineResult() bool          { return true }
 
 func (t *ShowMediaTool) Execute(_ context.Context, argsJSON string) (string, error) {
-	var args struct {
-		URL       string `json:"url"`
-		MediaType string `json:"media_type"`
-		Caption   string `json:"caption"`
-	}
+	var args showMediaArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
