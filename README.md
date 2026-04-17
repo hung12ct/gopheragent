@@ -298,21 +298,59 @@ Pass a custom `*slog.Logger` for JSON output or custom sinks:
 registry.EnableDebug(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 ```
 
-### Audit SQL Queries (`SQLAgentTool`)
+### Text-to-SQL Agent (`SQLAgentTool`)
 
-Intercept every SQL query the sub-agent generates before it hits the database — useful for auditing, displaying to users, or structured logging:
+A sub-agent that converts natural-language questions into read-only SQL.
+Implements the techniques from Google's [*Techniques for improving
+text-to-SQL*](https://cloud.google.com/blog/products/databases/techniques-for-improving-text-to-sql):
+structured schema grounding, few-shot examples, business glossary,
+comment-aware validation, LIMIT injection, per-query timeouts, and optional
+self-consistency.
 
 ```go
-sqlTool := builtin.NewSQLAgentTool(db, schema, sm, provider).
+schema := builtin.Schema{
+    Tables: []builtin.TableSchema{{
+        Name: "customers", Description: "Paying customers.",
+        Columns: []builtin.ColumnSchema{
+            {Name: "id", Type: "INT"},
+            {Name: "status", Type: "VARCHAR(16)",
+                Examples: []string{"ACTIVE", "CHURNED"}},
+        },
+        PrimaryKey: []string{"id"},
+    }},
+}
+
+sqlTool := builtin.NewSQLAgentTool(db, "", sessions, provider).
+    WithSchema(schema).
+    WithBusinessRules(
+        "'active' customers have status='ACTIVE' — never 'active'.",
+        "Revenue excludes refunds; always JOIN refunds and subtract.",
+    ).
+    WithExamples(builtin.SQLExample{
+        Question: "How many active customers?",
+        SQL:      "SELECT COUNT(*) FROM customers WHERE status = 'ACTIVE'",
+    }).
+    WithMaxRows(1000).                   // auto-append LIMIT 1000 when absent
+    WithQueryTimeout(5 * time.Second).   // per-query context deadline
+    WithSelfConsistency(3).              // run 3 in parallel, vote on result
     OnSQL(func(ctx context.Context, ev builtin.SQLQueryEvent) {
         slog.InfoContext(ctx, "sql_agent.query",
-            "session", ev.SessionKey,
-            "sql",     ev.Query,
+            "session", ev.SessionKey, "sql", ev.Query, "err", ev.Error,
         )
     })
 ```
 
-`OnSQL` fires on every attempt, including retries — `ev.SessionKey` correlates all attempts from the same request.
+**Safety guarantees on every executed statement:**
+
+- Multi-statement input is rejected (`SELECT 1; DROP TABLE x` → error).
+- Comments are stripped before classification — `/* SELECT */ DROP` is
+  correctly flagged as DROP.
+- Only `SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE` may start a statement.
+- `WithMaxRows(n)` appends `LIMIT n` when missing, plus a `2×n` defensive
+  hard cap on scanned rows.
+- `execute_sql` returns a structured envelope (`{sql, columns, rows,
+  row_count, execution_ms, truncated, error}`) so the LLM can make informed
+  retry decisions.
 
 ### Per-Session Token Budget
 
