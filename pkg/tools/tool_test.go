@@ -56,3 +56,38 @@ func TestRegistry_OverwriteByName(t *testing.T) {
 		t.Fatalf("expected 1 tool after overwrite, got %d", len(all))
 	}
 }
+
+func TestReportProgress_NoOpWithoutInjection(t *testing.T) {
+	// Safe to call on a plain context — must not panic, must not block.
+	ReportProgress(context.Background(), "ignored")
+}
+
+func TestReportProgress_InvokesInjectedFunc(t *testing.T) {
+	var got []string
+	ctx := WithProgressFunc(context.Background(), func(msg string) {
+		got = append(got, msg)
+	})
+	ReportProgress(ctx, "one")
+	ReportProgress(ctx, "two")
+
+	if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Fatalf("expected [one two], got %v", got)
+	}
+}
+
+func TestReportProgress_NilFuncIsNoOp(t *testing.T) {
+	// Passing a nil func should not panic when ReportProgress is later called.
+	ctx := WithProgressFunc(context.Background(), nil)
+	ReportProgress(ctx, "still safe")
+}
+
+func TestWithProgressFunc_Chaining(t *testing.T) {
+	// Inner injection overrides outer — standard context.WithValue semantics.
+	var outer, inner int
+	ctx := WithProgressFunc(context.Background(), func(string) { outer++ })
+	ctx = WithProgressFunc(ctx, func(string) { inner++ })
+	ReportProgress(ctx, "m")
+	if inner != 1 || outer != 0 {
+		t.Fatalf("expected inner=1 outer=0, got inner=%d outer=%d", inner, outer)
+	}
+}

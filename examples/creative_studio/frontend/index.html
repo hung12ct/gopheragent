@@ -270,6 +270,17 @@
             padding: 1px 6px; background: rgba(124,58,237,.25); color: #c4b5fd;
             border-radius: 4px; font-size: .68rem; font-weight: 600; flex-shrink: 0; margin-top: 1px;
         }
+        /* Live progress row (updated in place as a long-running tool reports status) */
+        .t-line.progress {
+            color: #fbbf24;
+            padding-left: 2px;
+        }
+        .progress-dot {
+            width: 7px; height: 7px; flex-shrink: 0; margin-top: 5px;
+            background: #f59e0b; border-radius: 50%;
+            animation: pulse 1.3s ease-in-out infinite;
+        }
+        @keyframes pulse { 0%,100% { opacity:.3; transform: scale(.85); } 50% { opacity:1; transform: scale(1.1); } }
 
         /* Input */
         .input-zone {
@@ -588,7 +599,10 @@ function createAssistantBlock() {
     msg.appendChild(thoughts);
     msg.appendChild(bubble);
     chat.appendChild(msg);
-    return { thoughts, bubble, raw: '' };
+    // progressLine holds a single DOM node that every tool_progress event
+    // updates in place. Reset to null on each new tool_call so one tool's
+    // progress never overwrites the previous tool's final state.
+    return { thoughts, bubble, raw: '', progressLine: null };
 }
 
 function scroll() { chat.scrollTop = chat.scrollHeight; }
@@ -629,6 +643,20 @@ async function send() {
                 line.className = 't-line';
                 line.innerHTML = `<span class="tool-tag">TOOL</span><span>${esc(ev.content)}</span>`;
                 block.thoughts.appendChild(line);
+                // Reset the progress-line pointer so the next tool_progress
+                // creates a fresh row under this tool_call.
+                block.progressLine = null;
+            }
+            else if (ev.type === 'tool_progress') {
+                block.thoughts.classList.add('active');
+                if (!block.progressLine) {
+                    const line = document.createElement('div');
+                    line.className = 't-line progress';
+                    line.innerHTML = `<span class="progress-dot"></span><span class="progress-text"></span>`;
+                    block.thoughts.appendChild(line);
+                    block.progressLine = line.querySelector('.progress-text');
+                }
+                block.progressLine.textContent = ev.content;
             }
             else if (ev.type === 'content') {
                 block.thoughts.querySelectorAll('.spinner').forEach(s => s.remove());

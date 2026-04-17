@@ -38,6 +38,32 @@ type InlineRenderer interface {
 	InlineResult() bool
 }
 
+// progressKey is the unexported context key for the progress reporting function.
+type progressKey struct{}
+
+// WithProgressFunc injects a progress-reporting callback into ctx. The agent
+// loop calls this before invoking Execute so that long-running tools can emit
+// "tool_progress" stream events without knowing about the streaming layer.
+//
+// The returned context should be passed directly to tool.Execute.
+func WithProgressFunc(ctx context.Context, f func(msg string)) context.Context {
+	return context.WithValue(ctx, progressKey{}, f)
+}
+
+// ReportProgress emits a progress message if a reporting function was injected
+// into ctx by WithProgressFunc. It is a no-op when called outside an agent loop
+// (e.g. in tests that do not set up the reporting function).
+//
+// Call this inside Execute to emit status updates while a long-running operation
+// is in progress:
+//
+//	tools.ReportProgress(ctx, "Polling operation (30s elapsed)…")
+func ReportProgress(ctx context.Context, msg string) {
+	if f, ok := ctx.Value(progressKey{}).(func(string)); ok && f != nil {
+		f(msg)
+	}
+}
+
 // Registry manages the available tools for an agent. Safe for concurrent use.
 type Registry struct {
 	mu      sync.RWMutex
