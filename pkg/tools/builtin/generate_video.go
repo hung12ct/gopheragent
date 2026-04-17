@@ -34,7 +34,7 @@ const (
 type generateVideoArgs struct {
 	Prompt          string `json:"prompt"                     description:"Detailed scene description. Include action, camera motion, lighting, style, and mood. Example: 'Slow dolly-in on a glowing neon cityscape at night, rain-slicked streets reflecting pink and blue lights, cinematic film grain.'"`
 	AspectRatio     string `json:"aspect_ratio,omitempty"     description:"16:9 for landscape/cinematic, 9:16 for vertical/social media." enum:"16:9,9:16"`
-	DurationSeconds int    `json:"duration_seconds,omitempty" description:"Length of the clip in seconds. Between 5 and 8."`
+	DurationSeconds int    `json:"duration_seconds,omitempty" description:"Length of the clip in seconds. Supported range depends on the model (Veo 2: 5–8, Veo 3: typically 8). Defaults to 8 when omitted; the provider will reject out-of-range values."`
 }
 
 type GenerateVideoTool struct {
@@ -98,7 +98,18 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 	if args.AspectRatio == "" {
 		args.AspectRatio = "16:9"
 	}
-	dur := min(max(args.DurationSeconds, 5), 8)
+	// Supported durations vary by model — Veo 2 accepts 5–8s, Veo 3 is
+	// typically fixed at 8s. Rather than silently clamping (which can
+	// hide the user's real intent), default to 8s when unspecified and
+	// let the provider return a clear error for out-of-range values.
+	// Keep a sane upper bound to reject obvious typos like "600".
+	dur := args.DurationSeconds
+	if dur <= 0 {
+		dur = 8
+	}
+	if dur > 60 {
+		dur = 60
+	}
 	dur32 := int32(dur)
 
 	cfg := &genai.GenerateVideosConfig{
@@ -118,6 +129,12 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 	pollCtx, cancel := context.WithTimeout(ctx, defaultPollTimeout)
 	defer cancel()
 
+	// Emit an initial progress tick immediately so the UI shows motion
+	// before the first poll interval elapses. Include the model name so
+	// operators running a non-default model see the right identifier.
+	tools.ReportProgress(ctx, fmt.Sprintf("Starting video generation with %s…", t.model))
+
+	pollStart := time.Now()
 	for !op.Done {
 		select {
 		case <-pollCtx.Done():
@@ -127,6 +144,8 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 			return "", pollCtx.Err()
 		case <-time.After(defaultPollInterval):
 		}
+		elapsed := time.Since(pollStart).Round(time.Second)
+		tools.ReportProgress(ctx, fmt.Sprintf("Generating video… (%s elapsed, checking again in %s)", elapsed, defaultPollInterval))
 		op, err = t.client.Operations.GetVideosOperation(pollCtx, op, nil)
 		if err != nil {
 			return "", fmt.Errorf("tools: generate_video: poll: %w", err)
@@ -146,6 +165,7 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 		return "", fmt.Errorf("tools: generate_video: video object is nil")
 	}
 
+	tools.ReportProgress(ctx, "Generation complete, downloading video…")
 	localURL, err := t.saveVideo(ctx, vid)
 	if err != nil {
 		return "", fmt.Errorf("tools: generate_video: save: %w", err)

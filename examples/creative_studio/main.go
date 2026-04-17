@@ -3,8 +3,14 @@
 //
 // Required env vars:
 //   OPENAI_API_KEY  — image generation (DALL-E 3)
-//   GEMINI_API_KEY  — video generation (Veo 2) + optional LLM
+//   GEMINI_API_KEY  — video generation (Veo) + optional LLM
 //   LLM_PROVIDER    — "openai" (default), "anthropic", or "gemini"
+//
+// Optional env vars:
+//   VEO_MODEL       — video model ID. Defaults to "veo-2.0-generate-001"
+//                     (silent video). Set to a Veo 3 model ID to get native
+//                     audio; availability and pricing differ per tier.
+//   MEDIA_DIR       — where generated images/videos are saved (default "generated").
 //
 // Run:
 //   cd examples/creative_studio && go run .
@@ -48,7 +54,7 @@ const systemPrompt = `You are ARIA — an AI Creative Director with a distinct a
 
 **Your toolkit:**
 - ` + "`generate_image(prompt, size, style, quality)`" + ` — create stunning images with DALL-E 3
-- ` + "`generate_video(prompt, aspect_ratio, duration_seconds)`" + ` — generate cinematic video clips with Veo 2
+- ` + "`generate_video(prompt, aspect_ratio, duration_seconds)`" + ` — generate cinematic video clips with Veo (model configurable; audio is only available on Veo 3+, so default output is silent)
 
 **Your creative philosophy:**
 - Always craft *cinematic*, *evocative* prompts — not descriptions, but experiences.
@@ -110,12 +116,18 @@ func initAgent() {
 		log.Printf("generate_image unavailable: %v", err)
 	}
 
-	// Video generation — Veo 2
-	if vidTool, err := builtin.NewGenerateVideoTool("", ""); err == nil {
+	// Video generation — Veo (model configurable via VEO_MODEL; defaults
+	// to veo-2.0-generate-001 inside NewGenerateVideoTool when empty).
+	veoModel := strings.TrimSpace(os.Getenv("VEO_MODEL"))
+	if vidTool, err := builtin.NewGenerateVideoTool("", veoModel); err == nil {
 		vidTool.SaveDir = mediaDir
 		vidTool.URLBase = "/media"
 		reg.Register(vidTool)
-		log.Printf("Tool: generate_video (Veo 2)")
+		resolved := veoModel
+		if resolved == "" {
+			resolved = "veo-2.0-generate-001 (default)"
+		}
+		log.Printf("Tool: generate_video (%s)", resolved)
 	} else {
 		log.Printf("generate_video unavailable: %v", err)
 	}

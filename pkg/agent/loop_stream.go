@@ -160,7 +160,7 @@ func (al *AgentLoop) emit(ctx context.Context, sessionKey string, streamChan cha
 // StreamEvent represents a chunk of data sent via SSE.
 // When Type is "error", Err holds the structured error so callers can use errors.Is/As.
 type StreamEvent struct {
-	Type    string `json:"type"` // "content", "thought", "tool_call", "action_required", "usage", "error", "done"
+	Type    string `json:"type"` // "content", "thought", "tool_call", "tool_progress", "action_required", "usage", "error", "done"
 	Content string `json:"content"`
 	Err     error  `json:"-"`
 }
@@ -486,7 +486,26 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 
 				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "tool_call", Content: fmt.Sprintf("Executing: %s", tCall.Name)})
 
-				toolResult, execErr := tool.Execute(ctx, tCall.ArgsJSON)
+				// Inject a progress reporter so the tool can emit status updates
+				// during long-running operations (polling, downloads, etc.) without
+				// taking a dependency on the streaming layer.
+				//
+				// Sends are non-blocking: progress is inherently lossy, and a
+				// high-frequency emitter (byte counters, SQL row counts) must
+				// not be able to stall the tool goroutine if the SSE consumer
+				// backs up.
+				toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
+					ev := StreamEvent{Type: "tool_progress", Content: msg}
+					select {
+					case streamChan <- ev:
+						for _, h := range al.EventHandlers {
+							h(ctx, sessionKey, ev)
+						}
+					default:
+						// Consumer is backed up; drop this progress tick.
+					}
+				})
+				toolResult, execErr := tool.Execute(toolCtx, tCall.ArgsJSON)
 				content := toolResult
 				isToolErr := execErr != nil
 				if isToolErr {
