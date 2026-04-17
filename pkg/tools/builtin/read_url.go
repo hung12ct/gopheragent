@@ -29,10 +29,13 @@ type ReadURLTool struct {
 }
 
 // NewReadURLTool creates a new built-in tool that can scrape simple static webpages.
+// SSRF protection is always enabled: private, loopback, and link-local addresses
+// (including 169.254.169.254 cloud metadata endpoints) are blocked.
 func NewReadURLTool() *ReadURLTool {
 	return &ReadURLTool{
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: newSSRFSafeTransport(nil),
 		},
 	}
 }
@@ -67,7 +70,7 @@ func (t *ReadURLTool) Execute(ctx context.Context, argsJSON string) (string, err
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
+		return "", fmt.Errorf("tools: read_url: invalid arguments: %w", err)
 	}
 
 	url := strings.TrimSpace(args.URL)
@@ -77,7 +80,7 @@ func (t *ReadURLTool) Execute(ctx context.Context, argsJSON string) (string, err
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("tools: read_url: build request: %w", err)
 	}
 
 	// Masquerade to avoid basic bot blockers
@@ -86,19 +89,19 @@ func (t *ReadURLTool) Execute(ctx context.Context, argsJSON string) (string, err
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch url: %v", err)
+		return "", fmt.Errorf("tools: read_url: fetch: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("server returned status code: %d", resp.StatusCode)
+		return "", fmt.Errorf("tools: read_url: server returned status %d", resp.StatusCode)
 	}
 
 	// Limit to reading max 2MB of text to prevent agent context window explosion
 	const maxReadBytes = 2 * 1024 * 1024
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxReadBytes))
 	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %v", err)
+		return "", fmt.Errorf("tools: read_url: read body: %w", err)
 	}
 
 	htmlContent := string(bodyBytes)

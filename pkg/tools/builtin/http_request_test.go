@@ -18,7 +18,9 @@ func TestHTTPRequestTool_GETReturnsBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := NewHTTPRequestTool()
+	// allowedHosts includes 127.0.0.1 so the SSRF guard lets the local test
+	// server through — this is intentional for tests only.
+	tool := NewHTTPRequestTool().WithAllowedHosts("127.0.0.1")
 	out, err := tool.Execute(context.Background(), `{"url":"`+srv.URL+`"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -53,7 +55,7 @@ func TestHTTPRequestTool_PostForwardsBodyAndHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := NewHTTPRequestTool()
+	tool := NewHTTPRequestTool().WithAllowedHosts("127.0.0.1")
 	args := `{"url":"` + srv.URL + `","method":"POST","body":"hi","headers":{"X-Test":"v"}}`
 	out, err := tool.Execute(context.Background(), args)
 	if err != nil {
@@ -110,7 +112,7 @@ func TestHTTPRequestTool_TruncatesLargeBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := NewHTTPRequestTool().WithMaxBytes(100)
+	tool := NewHTTPRequestTool().WithAllowedHosts("127.0.0.1").WithMaxBytes(100)
 	out, err := tool.Execute(context.Background(), `{"url":"`+srv.URL+`"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -132,5 +134,41 @@ func TestHTTPRequestTool_RequiresConfirmation(t *testing.T) {
 	tool := NewHTTPRequestTool()
 	if !tool.RequiresConfirmation() {
 		t.Fatal("http_request should require confirmation")
+	}
+}
+
+func TestHTTPRequestTool_SSRFBlocksPrivateIP(t *testing.T) {
+	tool := NewHTTPRequestTool()
+	cases := []string{
+		`{"url":"http://169.254.169.254/latest/meta-data/"}`, // AWS/Azure/GCP metadata
+		`{"url":"http://127.0.0.1/admin"}`,                   // loopback
+		`{"url":"http://192.168.1.1/"}`,                      // RFC-1918
+		`{"url":"http://10.0.0.1/"}`,                         // RFC-1918
+	}
+	for _, tc := range cases {
+		_, err := tool.Execute(context.Background(), tc)
+		if err == nil || !strings.Contains(err.Error(), "SSRF blocked") {
+			t.Errorf("expected SSRF block for %s, got err=%v", tc, err)
+		}
+	}
+}
+
+func TestHTTPRequestTool_AllowedHostBypassesSSRF(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	// With 127.0.0.1 explicitly allowlisted, the SSRF guard is bypassed for
+	// that host — the request should succeed.
+	tool := NewHTTPRequestTool().WithAllowedHosts("127.0.0.1")
+	out, err := tool.Execute(context.Background(), `{"url":"`+srv.URL+`"}`)
+	if err != nil {
+		t.Fatalf("expected success for allowlisted host, got: %v", err)
+	}
+	var env struct{ Status int `json:"status"` }
+	_ = json.Unmarshal([]byte(out), &env)
+	if env.Status != 200 {
+		t.Fatalf("status: %d", env.Status)
 	}
 }
