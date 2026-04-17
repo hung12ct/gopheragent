@@ -169,10 +169,23 @@ func (al *AgentLoop) emit(ctx context.Context, sessionKey string, streamChan cha
 
 // StreamEvent represents a chunk of data sent via SSE.
 // When Type is "error", Err holds the structured error so callers can use errors.Is/As.
+//
+// Source and ParentID are populated when the event originated inside a
+// sub-agent (or async worker) that forwarded it to a parent stream, giving
+// consumers enough context to group, filter, or render a multi-agent timeline.
+//   - Source  — tag describing the emitter, e.g. "subagent:researcher". When a
+//     chain forwards through multiple sub-agents, tags are prepended with ">"
+//     so the outermost hop appears first ("subagent:A>subagent:B").
+//   - ParentID — the parent session key at the top of the forwarding chain,
+//     useful for correlating every event back to the user-facing session.
+//
+// An event whose Source is empty originates from the receiving agent itself.
 type StreamEvent struct {
-	Type    string `json:"type"` // "content", "thought", "tool_call", "tool_progress", "action_required", "usage", "error", "done"
-	Content string `json:"content"`
-	Err     error  `json:"-"`
+	Type     string `json:"type"` // "content", "thought", "tool_call", "tool_progress", "action_required", "usage", "error", "done"
+	Content  string `json:"content"`
+	Source   string `json:"source,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
+	Err      error  `json:"-"`
 }
 
 // errEvent is a convenience constructor for error StreamEvents with a typed error.
@@ -190,6 +203,11 @@ func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userIn
 	var buf strings.Builder
 	var lastErr error
 	for ev := range streamChan {
+		// Events forwarded from sub-agents (Source != "") are observational only;
+		// they must not be treated as the parent's own final answer or error.
+		if ev.Source != "" {
+			continue
+		}
 		switch ev.Type {
 		case "content":
 			buf.WriteString(ev.Content)
@@ -513,6 +531,21 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						}
 					default:
 						// Consumer is backed up; drop this progress tick.
+					}
+				})
+
+				// Inject a sub-agent emitter so tools running nested agent loops
+				// (call_sub_agent, async workers) can stream their events back to
+				// this parent loop's consumer. Like progress, sends are
+				// non-blocking: a slow consumer must never stall a sub-agent.
+				toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
+					select {
+					case streamChan <- ev:
+						for _, h := range al.EventHandlers {
+							h(ctx, sessionKey, ev)
+						}
+					default:
+						// Consumer is backed up; drop this forwarded event.
 					}
 				})
 				toolResult, execErr := tool.Execute(toolCtx, tCall.ArgsJSON)

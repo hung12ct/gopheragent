@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
@@ -58,6 +59,15 @@ func (t *CallSubAgentTool) RequiresConfirmation() bool { return false }
 // Execute runs the sub-agent in an isolated session and returns its final report.
 // The worker session is always deleted before returning, regardless of outcome,
 // so no orphan history remains in the backing SessionManager.
+//
+// When the invoking agent loop has installed a sub-agent emitter on ctx (it
+// does so for every tool invocation), the worker is run in streaming mode and
+// its events — thoughts, tool calls, tool progress, content chunks, errors —
+// are forwarded to the parent stream tagged with Source="subagent:<name>" and
+// ParentID=<parent session key>. This makes the parent no longer look frozen
+// while the sub-agent works, and gives UIs enough metadata to render a nested
+// activity timeline. When no emitter is present (e.g. tests calling Execute
+// directly), Execute falls back to the original non-streaming path.
 func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (string, error) {
 	var input SubAgentInput
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
@@ -73,14 +83,50 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 
 	workerLoop := agent.NewAgentLoop(t.Sessions, t.Tools, t.LLM)
 	workerLoop.MaxIters = 15
-	workerLoop.EmitThoughts = false
+	workerLoop.EmitThoughts = true // forward thoughts upstream when streaming; parent filters as needed
 
 	instruction := fmt.Sprintf("[%s Sub-Agent Task]\n%s", input.AgentName, input.TaskDescription)
 
-	result, err := workerLoop.RunIteration(ctx, workerSessionKey, instruction)
-	if err != nil {
-		return "", fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, err)
+	emitter := agent.SubAgentEmitterFromContext(ctx)
+	if emitter == nil {
+		// No parent stream to forward into — keep the legacy non-streaming path.
+		workerLoop.EmitThoughts = false
+		result, err := workerLoop.RunIteration(ctx, workerSessionKey, instruction)
+		if err != nil {
+			return "", fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, err)
+		}
+		return fmt.Sprintf("Report from %s:\n%s", input.AgentName, result), nil
 	}
 
-	return fmt.Sprintf("Report from %s:\n%s", input.AgentName, result), nil
+	parentSessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	source := "subagent:" + input.AgentName
+
+	workerChan := make(chan agent.StreamEvent, 50)
+	go workerLoop.RunIterationStream(ctx, workerSessionKey, instruction, workerChan)
+
+	var buf strings.Builder
+	var workerErr error
+	for ev := range workerChan {
+		// Accumulate the worker's own content as its final report; content that
+		// comes from deeper nested sub-agents (Source already set) is only
+		// observational and must not pollute this worker's answer.
+		if ev.Source == "" && ev.Type == "content" {
+			buf.WriteString(ev.Content)
+		}
+		if ev.Source == "" && ev.Type == "error" && workerErr == nil {
+			if ev.Err != nil {
+				workerErr = ev.Err
+			} else {
+				workerErr = fmt.Errorf("agent: %s", ev.Content)
+			}
+		}
+
+		emitter(agent.DecorateForwardedEvent(ev, source, parentSessionKey))
+	}
+
+	if workerErr != nil {
+		return "", fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, workerErr)
+	}
+
+	return fmt.Sprintf("Report from %s:\n%s", input.AgentName, buf.String()), nil
 }
