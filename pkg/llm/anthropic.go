@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,7 +48,11 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		case "system":
 			systemBlocks = append(systemBlocks, anthropic.TextBlockParam{Text: m.Content})
 		case "user":
-			messages = append(messages, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
+			if len(m.Parts) > 0 {
+				messages = append(messages, anthropic.NewUserMessage(anthropicBlocksFromMediaParts(m.Content, m.Parts)...))
+			} else {
+				messages = append(messages, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
+			}
 		case "assistant":
 			if len(m.ToolCalls) > 0 {
 				var blocks []anthropic.ContentBlockParamUnion
@@ -163,4 +168,40 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}, nil
+}
+
+// anthropicBlocksFromMediaParts converts MediaParts into the Anthropic
+// ContentBlockParamUnion sequence. A non-empty caption is prepended as a
+// text block so plain prompts like "What's in this image?" ride along with
+// the image.
+//
+// Raw bytes are base64-encoded; URLs pass through as URLImageSourceParam.
+// Parts with no usable payload are silently skipped (the alternative —
+// surfacing an error — would force every caller to pre-validate, which is
+// more trouble than it's worth for a format issue).
+func anthropicBlocksFromMediaParts(caption string, parts []history.MediaPart) []anthropic.ContentBlockParamUnion {
+	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(parts)+1)
+	if caption != "" {
+		blocks = append(blocks, anthropic.NewTextBlock(caption))
+	}
+	for _, p := range parts {
+		switch p.Type {
+		case history.PartText:
+			if p.Text == "" {
+				continue
+			}
+			blocks = append(blocks, anthropic.NewTextBlock(p.Text))
+		case history.PartImage:
+			if len(p.Data) > 0 {
+				mime := p.MIME
+				if mime == "" {
+					mime = "image/png"
+				}
+				blocks = append(blocks, anthropic.NewImageBlockBase64(mime, base64.StdEncoding.EncodeToString(p.Data)))
+			} else if p.URL != "" {
+				blocks = append(blocks, anthropic.NewImageBlock(anthropic.URLImageSourceParam{URL: p.URL}))
+			}
+		}
+	}
+	return blocks
 }

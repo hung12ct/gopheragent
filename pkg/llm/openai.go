@@ -3,6 +3,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -47,6 +48,13 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 		msg := openai.ChatCompletionMessage{
 			Role:    m.Role,
 			Content: m.Content,
+		}
+		// Multimodal: when Parts is set we must populate MultiContent
+		// instead of Content (OpenAI rejects both being set on the same
+		// message — see ErrContentFieldsMisused in the SDK).
+		if len(m.Parts) > 0 && m.Role == "user" {
+			msg.Content = ""
+			msg.MultiContent = openAIPartsFromMediaParts(m.Content, m.Parts)
 		}
 		// tool result: needs ToolCallID
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -187,4 +195,49 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 		ToolCalls: pendingCalls,
 		Usage:     usage,
 	}, nil
+}
+
+// openAIPartsFromMediaParts converts GopherAgent's provider-neutral MediaPart
+// slice into OpenAI's MultiContent representation. A leading text fragment
+// derived from Content (when non-empty) keeps captions attached to images.
+//
+// For image parts, raw Data is folded into a data: URI — OpenAI accepts both
+// https URLs and data: URIs interchangeably for image_url.
+func openAIPartsFromMediaParts(caption string, parts []history.MediaPart) []openai.ChatMessagePart {
+	out := make([]openai.ChatMessagePart, 0, len(parts)+1)
+	if caption != "" {
+		out = append(out, openai.ChatMessagePart{
+			Type: openai.ChatMessagePartTypeText,
+			Text: caption,
+		})
+	}
+	for _, p := range parts {
+		switch p.Type {
+		case history.PartText:
+			if p.Text == "" {
+				continue
+			}
+			out = append(out, openai.ChatMessagePart{
+				Type: openai.ChatMessagePartTypeText,
+				Text: p.Text,
+			})
+		case history.PartImage:
+			url := p.URL
+			if url == "" && len(p.Data) > 0 {
+				mime := p.MIME
+				if mime == "" {
+					mime = "image/png"
+				}
+				url = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
+			}
+			if url == "" {
+				continue
+			}
+			out = append(out, openai.ChatMessagePart{
+				Type:     openai.ChatMessagePartTypeImageURL,
+				ImageURL: &openai.ChatMessageImageURL{URL: url},
+			})
+		}
+	}
+	return out
 }

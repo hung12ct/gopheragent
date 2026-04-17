@@ -64,7 +64,11 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 		switch m.Role {
 		case "user":
 			role = "user"
-			parts = append(parts, &genai.Part{Text: m.Content})
+			if len(m.Parts) > 0 {
+				parts = append(parts, geminiPartsFromMediaParts(m.Content, m.Parts)...)
+			} else {
+				parts = append(parts, &genai.Part{Text: m.Content})
+			}
 		case "assistant":
 			role = "model"
 			if m.Content != "" {
@@ -175,6 +179,44 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 		ToolCalls: pendingCalls,
 		Usage:     usage,
 	}, nil
+}
+
+// geminiPartsFromMediaParts converts MediaParts into Gemini's native Part
+// slice. Inline raw bytes become InlineData blobs; URLs become FileData
+// entries (Gemini Files API / Cloud Storage URIs, or plain https for
+// gemini-2.5-flash and newer).
+//
+// A non-empty caption is prepended as a text part so prompts travel
+// alongside the media. MIME defaults to image/png when unspecified.
+func geminiPartsFromMediaParts(caption string, parts []history.MediaPart) []*genai.Part {
+	out := make([]*genai.Part, 0, len(parts)+1)
+	if caption != "" {
+		out = append(out, &genai.Part{Text: caption})
+	}
+	for _, p := range parts {
+		switch p.Type {
+		case history.PartText:
+			if p.Text == "" {
+				continue
+			}
+			out = append(out, &genai.Part{Text: p.Text})
+		case history.PartImage:
+			mime := p.MIME
+			if mime == "" {
+				mime = "image/png"
+			}
+			if len(p.Data) > 0 {
+				out = append(out, &genai.Part{
+					InlineData: &genai.Blob{MIMEType: mime, Data: p.Data},
+				})
+			} else if p.URL != "" {
+				out = append(out, &genai.Part{
+					FileData: &genai.FileData{FileURI: p.URL, MIMEType: mime},
+				})
+			}
+		}
+	}
+	return out
 }
 
 func mapRegistrySchemaToGeminiSchema(s tools.ToolSchema) *genai.Schema {
