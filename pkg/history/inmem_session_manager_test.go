@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,6 +89,106 @@ func TestInMemSessionManager_TTL_Zero_NeverExpires(t *testing.T) {
 	msgs := sm.GetHistory(context.Background(), "s1")
 	if len(msgs) < 2 {
 		t.Fatal("session with TTL=0 should never expire")
+	}
+}
+
+func TestInMemSessionManager_Fork_CopiesPrefixAndIsolates(t *testing.T) {
+	sm := NewInMemSessionManager("sys")
+	ctx := context.Background()
+
+	// Build a session: [system, user "a", assistant "A", user "b", assistant "B"]
+	msgs := sm.GetHistory(ctx, "parent")
+	msgs = append(msgs,
+		Message{Role: "user", Content: "a"},
+		Message{Role: "assistant", Content: "A"},
+		Message{Role: "user", Content: "b"},
+		Message{Role: "assistant", Content: "B"},
+	)
+	sm.SetHistory(ctx, "parent", msgs)
+
+	// Fork after the first user/assistant exchange: keep 3 messages (system, user "a", assistant "A").
+	newKey, err := sm.Fork(ctx, "parent", 3)
+	if err != nil {
+		t.Fatalf("Fork failed: %v", err)
+	}
+	if !strings.HasPrefix(newKey, "parent-fork-") {
+		t.Fatalf("unexpected fork key format: %q", newKey)
+	}
+
+	forked := sm.GetHistory(ctx, newKey)
+	if len(forked) != 3 {
+		t.Fatalf("forked session: expected 3 messages, got %d", len(forked))
+	}
+	if forked[1].Content != "a" || forked[2].Content != "A" {
+		t.Fatalf("forked prefix corrupted: %+v", forked)
+	}
+
+	// Mutating the forked branch must not leak into the parent.
+	forked = append(forked, Message{Role: "user", Content: "different"})
+	sm.SetHistory(ctx, newKey, forked)
+
+	parent := sm.GetHistory(ctx, "parent")
+	if len(parent) != 5 {
+		t.Fatalf("parent session tampered: expected 5 messages, got %d", len(parent))
+	}
+	if parent[4].Content != "B" {
+		t.Fatalf("parent tail mutated: got %q", parent[4].Content)
+	}
+}
+
+func TestInMemSessionManager_Fork_ClampsAndValidates(t *testing.T) {
+	sm := NewInMemSessionManager("sys")
+	ctx := context.Background()
+	seedSession(sm, "parent", "hello")
+
+	// atIndex beyond length clamps to len(messages).
+	newKey, err := sm.Fork(ctx, "parent", 999)
+	if err != nil {
+		t.Fatalf("Fork with oversized atIndex: %v", err)
+	}
+	forked := sm.GetHistory(ctx, newKey)
+	if len(forked) != 2 {
+		t.Fatalf("expected full copy (2 msgs), got %d", len(forked))
+	}
+
+	// atIndex == 1 keeps only the system message — the common "clean slate, same persona" fork.
+	systemKey, err := sm.Fork(ctx, "parent", 1)
+	if err != nil {
+		t.Fatalf("Fork with atIndex=1: %v", err)
+	}
+	systemOnly := sm.GetHistory(ctx, systemKey)
+	if len(systemOnly) != 1 || systemOnly[0].Role != "system" {
+		t.Fatalf("expected system-only, got %+v", systemOnly)
+	}
+
+	// Negative atIndex is an error.
+	if _, err := sm.Fork(ctx, "parent", -1); err == nil {
+		t.Fatal("expected error for negative atIndex")
+	}
+
+	// Unknown source session is an error.
+	if _, err := sm.Fork(ctx, "nope", 1); err == nil {
+		t.Fatal("expected error for missing source session")
+	}
+}
+
+func TestInMemSessionManager_Fork_CopiesBehaviorSummary(t *testing.T) {
+	sm := NewInMemSessionManager("sys")
+	ctx := context.Background()
+
+	seedSession(sm, "parent", "hi")
+	if err := sm.UpdateBehaviorSummary("parent", "user prefers terse answers"); err != nil {
+		t.Fatalf("UpdateBehaviorSummary: %v", err)
+	}
+
+	newKey, err := sm.Fork(ctx, "parent", 2)
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+
+	forked := sm.GetHistory(ctx, newKey)
+	if !strings.Contains(forked[0].Content, "terse answers") {
+		t.Fatalf("behavior summary not carried into fork; system content=%q", forked[0].Content)
 	}
 }
 

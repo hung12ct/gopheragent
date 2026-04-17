@@ -32,9 +32,9 @@ type EventHandler func(ctx context.Context, sessionKey string, ev StreamEvent)
 
 // SessionManager interface abstracts history storage.
 //
-// Breaking-change note: DeleteSession was added to support ephemeral worker
-// sessions (sub-agent and async-task workers). Any external implementation of
-// this interface must provide it.
+// Breaking-change note: DeleteSession and Fork were added for ephemeral worker
+// sessions and conversation branching respectively. Any external implementation
+// of this interface must provide them.
 type SessionManager interface {
 	GetHistory(ctx context.Context, sessionKey string) []history.Message
 	SetHistory(ctx context.Context, sessionKey string, messages []history.Message)
@@ -46,6 +46,16 @@ type SessionManager interface {
 	// complete so they do not accumulate in storage. Deleting a non-existent
 	// session is a no-op (returns nil).
 	DeleteSession(ctx context.Context, sessionKey string) error
+	// Fork creates a new session whose message history is a copy of the first
+	// atIndex messages from sessionKey. atIndex is clamped to the source length
+	// and snapped backward to a "safe" boundary — the resulting prefix never
+	// ends mid tool-call / tool-result group, so the forked session is always
+	// valid input to the agent loop. The behavior summary is copied; async
+	// tasks are not (they belong to the original session runtime).
+	//
+	// Returns the generated new session key. Fails if sessionKey does not exist
+	// or atIndex is negative.
+	Fork(ctx context.Context, sessionKey string, atIndex int) (string, error)
 }
 
 // PendingToolCall represents a single tool invocation requested by the LLM.

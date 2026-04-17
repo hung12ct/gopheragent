@@ -174,6 +174,47 @@ func (sm *FileSessionManager) UpdateBehaviorSummary(sessionKey string, newSummar
 	return nil
 }
 
+// Fork creates a new session whose message history is a copy of the first
+// atIndex messages from sessionKey. The copy is persisted to disk (when a
+// storage path is configured). See SessionManager.Fork for full semantics.
+func (sm *FileSessionManager) Fork(ctx context.Context, sessionKey string, atIndex int) (string, error) {
+	if atIndex < 0 {
+		return "", fmt.Errorf("history: fork atIndex must be >= 0, got %d", atIndex)
+	}
+
+	// Ensure the source is loaded into the cache.
+	sm.GetHistory(ctx, sessionKey)
+
+	sm.mu.Lock()
+	src, ok := sm.sessions[sessionKey]
+	if !ok {
+		sm.mu.Unlock()
+		return "", fmt.Errorf("history: fork source session %q not found", sessionKey)
+	}
+
+	end := snapToSafeBoundary(src.Messages, atIndex)
+
+	newKey, err := newForkKey(sessionKey)
+	if err != nil {
+		sm.mu.Unlock()
+		return "", err
+	}
+
+	cp := make([]Message, end)
+	copy(cp, src.Messages[:end])
+	sm.sessions[newKey] = &Session{Key: newKey, Messages: cp}
+
+	if behavior, ok := sm.behaviors[sessionKey]; ok && behavior != "" {
+		sm.behaviors[newKey] = behavior
+	}
+	sm.mu.Unlock()
+
+	if err := sm.Save(ctx, newKey); err != nil {
+		return "", fmt.Errorf("history: fork persist %q: %w", newKey, err)
+	}
+	return newKey, nil
+}
+
 // DeleteSession removes the session from the in-memory cache and deletes the
 // backing JSON file (if configured). Deleting a non-existent session is a no-op.
 func (sm *FileSessionManager) DeleteSession(_ context.Context, sessionKey string) error {

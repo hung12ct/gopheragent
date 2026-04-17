@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -171,6 +172,41 @@ func (m *InMemSessionManager) SetAsyncTasks(ctx context.Context, sessionKey stri
 	}
 	m.asyncTasks[sessionKey] = cp
 	m.touch(sessionKey)
+}
+
+// Fork creates a new session that is a deep copy of the first atIndex messages
+// from sessionKey. The behavior summary is copied; async tasks are not.
+// See SessionManager.Fork for full semantics.
+func (m *InMemSessionManager) Fork(_ context.Context, sessionKey string, atIndex int) (string, error) {
+	if atIndex < 0 {
+		return "", fmt.Errorf("history: fork atIndex must be >= 0, got %d", atIndex)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	src, ok := m.sessions[sessionKey]
+	if !ok {
+		return "", fmt.Errorf("history: fork source session %q not found", sessionKey)
+	}
+
+	end := snapToSafeBoundary(src, atIndex)
+
+	newKey, err := newForkKey(sessionKey)
+	if err != nil {
+		return "", err
+	}
+
+	cp := make([]Message, end)
+	copy(cp, src[:end])
+	m.sessions[newKey] = cp
+
+	if behavior, ok := m.behaviors[sessionKey]; ok && behavior != "" {
+		m.behaviors[newKey] = behavior
+	}
+
+	m.touch(newKey)
+	return newKey, nil
 }
 
 // DeleteSession removes all in-memory state for sessionKey.

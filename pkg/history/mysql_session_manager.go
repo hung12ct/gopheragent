@@ -186,6 +186,47 @@ func (sm *MySQLSessionManager) UpdateBehaviorSummary(sessionKey string, newSumma
 	return nil
 }
 
+// Fork creates a new session whose message history is a copy of the first
+// atIndex messages from sessionKey. The copy is persisted by inserting a new
+// row in agent_sessions. See SessionManager.Fork for full semantics.
+func (sm *MySQLSessionManager) Fork(ctx context.Context, sessionKey string, atIndex int) (string, error) {
+	if atIndex < 0 {
+		return "", fmt.Errorf("history: fork atIndex must be >= 0, got %d", atIndex)
+	}
+
+	// Ensure the source is loaded into the cache.
+	sm.GetHistory(ctx, sessionKey)
+
+	sm.mu.Lock()
+	src, ok := sm.sessions[sessionKey]
+	if !ok {
+		sm.mu.Unlock()
+		return "", fmt.Errorf("history: fork source session %q not found", sessionKey)
+	}
+
+	end := snapToSafeBoundary(src.Messages, atIndex)
+
+	newKey, err := newForkKey(sessionKey)
+	if err != nil {
+		sm.mu.Unlock()
+		return "", err
+	}
+
+	cp := make([]Message, end)
+	copy(cp, src.Messages[:end])
+	sm.sessions[newKey] = &Session{Key: newKey, Messages: cp}
+
+	if behavior, ok := sm.behaviors[sessionKey]; ok && behavior != "" {
+		sm.behaviors[newKey] = behavior
+	}
+	sm.mu.Unlock()
+
+	if err := sm.Save(ctx, newKey); err != nil {
+		return "", fmt.Errorf("history: fork persist %q: %w", newKey, err)
+	}
+	return newKey, nil
+}
+
 // DeleteSession removes the session from the in-memory cache and deletes the
 // corresponding row from the agent_sessions table. Deleting a non-existent
 // session is a no-op.
