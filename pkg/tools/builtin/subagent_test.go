@@ -130,6 +130,75 @@ func TestCallSubAgentTool_CleansUpOnError(t *testing.T) {
 	}
 }
 
+func TestCallSubAgentTool_ForwardsEventsWhenEmitterPresent(t *testing.T) {
+	sm := newSpySessionManager("sys")
+	prov := &capturingProvider{reply: "worker report"}
+	tool := NewCallSubAgentTool(sm, tools.NewRegistry(), prov)
+
+	var forwarded []agent.StreamEvent
+	var mu sync.Mutex
+	ctx := agent.WithSubAgentEmitter(context.Background(), func(ev agent.StreamEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		forwarded = append(forwarded, ev)
+	})
+	ctx = context.WithValue(ctx, agent.SessionKeyCtx("sessionKey"), "parent-session")
+
+	result, err := tool.Execute(ctx, `{"task_description":"go","agent_name":"researcher"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(result, "worker report") {
+		t.Fatalf("expected worker content in report, got %q", result)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(forwarded) == 0 {
+		t.Fatal("expected at least one forwarded event, got none")
+	}
+
+	var sawContent, sawDone bool
+	for _, ev := range forwarded {
+		if ev.Source != "subagent:researcher" {
+			t.Fatalf("forwarded event must carry Source=subagent:researcher, got %q in %+v", ev.Source, ev)
+		}
+		if ev.ParentID != "parent-session" {
+			t.Fatalf("forwarded event must carry ParentID=parent-session, got %q", ev.ParentID)
+		}
+		switch ev.Type {
+		case "content":
+			if ev.Content == "worker report" {
+				sawContent = true
+			}
+		case "done":
+			sawDone = true
+		}
+	}
+	if !sawContent {
+		t.Fatalf("expected a forwarded content event with the worker's reply, got %+v", forwarded)
+	}
+	if !sawDone {
+		t.Fatalf("expected a forwarded 'done' event signalling worker finished, got %+v", forwarded)
+	}
+}
+
+func TestCallSubAgentTool_NonStreamingFallbackWhenNoEmitter(t *testing.T) {
+	// Without an emitter in ctx the tool must keep its original blocking
+	// behavior: return the full report and do not crash trying to forward.
+	sm := newSpySessionManager("sys")
+	prov := &capturingProvider{reply: "legacy path"}
+	tool := NewCallSubAgentTool(sm, tools.NewRegistry(), prov)
+
+	res, err := tool.Execute(context.Background(), `{"task_description":"x","agent_name":"w"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(res, "legacy path") {
+		t.Fatalf("expected legacy path reply, got %q", res)
+	}
+}
+
 func TestCallSubAgentTool_InvalidJSON(t *testing.T) {
 	sm := newSpySessionManager("sys")
 	tool := NewCallSubAgentTool(sm, tools.NewRegistry(), &capturingProvider{reply: "x"})
