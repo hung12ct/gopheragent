@@ -178,11 +178,17 @@ agent:
 
 Import `github.com/hung12ct/gopheragent/pkg/tools/builtin`:
 
-| Tool | Description |
-|---|---|
-| `NewWebSearchTool(apiKey)` | Internet search via Tavily API |
-| `NewSQLAgentTool(db, schema, sm, provider)` | Natural language to SQL with Anti-DML protection |
-| `NewReadURLTool()` | Read & summarize any URL (built-in HTML parser) |
+| Tool | Constructor | Description |
+|---|---|---|
+| Web search | `NewWebSearchTool(apiKey)` | Internet search via Tavily API |
+| Read URL | `NewReadURLTool()` | Fetch and parse any web page to plain text |
+| Show media | `NewShowMediaTool()` | Embed images or videos inline in streaming UIs |
+| HTTP request | `NewHTTPRequestTool()` | Call JSON APIs and webhooks; SSRF-protected host allowlist |
+| File read | `NewFileReadTool(root)` | Read local files; path-traversal-safe root sandbox |
+| Media analyze | `NewMediaAnalyzeTool(analyzer)` | Describe images or videos via any multimodal model |
+| Memory set/get/delete/list | `NewMemorySetTool(store)` etc. | Agent-curated key/value facts; survives context pruning; shared across sub-agents |
+| Code interpreter | `NewCodeInterpreterTool()` | Execute Python or Node snippets; output-capped, timeout-bounded |
+| SQL agent | `NewSQLAgentTool(db, schema, sm, provider)` | Natural language → read-only SQL; DML-proof + self-consistency |
 
 ## Writing Custom Tools
 
@@ -427,11 +433,22 @@ See `examples/` — each folder has its own `README.md` and `.env.example`.
 
 | Example | What it shows |
 |---|---|
-| [`examples/sse_server`](./examples/sse_server) | 5-minute streaming HTTP server using Server-Sent Events |
+| [`examples/demo`](./examples/demo) | **Full chat UI** — web research, memory sidebar, Python execution, live HITL approval, SSE streaming |
+| [`examples/media_chat`](./examples/media_chat) | **Media Q&A** — upload an image or document, ask questions; GPT-4o vision answers in real time |
+| [`examples/sse_server`](./examples/sse_server) | Minimal streaming HTTP server using Server-Sent Events |
 | [`examples/hitl_server`](./examples/hitl_server) | Human-in-the-loop approvals over HTTP (async bridge) |
 | [`examples/dynamic_builder`](./examples/dynamic_builder) | Load an agent from YAML at runtime |
 | [`examples/multi_agent_data`](./examples/multi_agent_data) | SQL analytics hub with dynamic schema injection |
 | [`examples/yaml_agents`](./examples/yaml_agents) | Multiple YAML-defined agents sharing a catalog |
+
+The demo is the fastest way to see everything at once:
+
+```bash
+cd examples/demo
+echo "LLM_PROVIDER=openai\nOPENAI_API_KEY=sk-..." > .env
+go run .
+# open http://localhost:8888
+```
 
 ## License
 

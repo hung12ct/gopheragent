@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
@@ -22,8 +23,10 @@ import (
 
 var myAgentApp *agent.AgentLoop
 
+// memoryStore is shared across all sessions and keyed internally by sessionKey.
+var memoryStore = builtin.NewInMemoryStore()
+
 func loadEnvFiles() {
-	// Load local .env (if exists), then repo-root .env.
 	for _, p := range []string{".env", "../../.env"} {
 		if _, err := os.Stat(p); err == nil {
 			if err := godotenv.Overload(p); err != nil {
@@ -71,10 +74,7 @@ func SecurityHook(ctx context.Context, sessionKey string, userInput string) erro
 	return nil
 }
 
-// buildSessionManager picks the best session backend:
-//   - MYSQL_DSN set + reachable → MySQLSessionManager (survives restarts)
-//   - SESSION_DIR set           → FileSessionManager (survives restarts, no DB)
-//   - fallback                  → InMemSessionManager (fast, ephemeral)
+// buildSessionManager picks the best session backend.
 func buildSessionManager(systemPrompt string) agent.SessionManager {
 	if dsn := strings.TrimSpace(os.Getenv("MYSQL_DSN")); dsn != "" {
 		db, err := sql.Open("mysql", dsn)
@@ -104,8 +104,94 @@ func buildSessionManager(systemPrompt string) agent.SessionManager {
 	return history.NewInMemSessionManager(systemPrompt)
 }
 
+// pendingApprovals holds HITL confirmations that are waiting on the user.
+// Maps approvalID → channel that receives true (approved) or false (denied).
+var (
+	pendingMu       sync.Mutex
+	pendingApprovals = make(map[string]chan bool)
+)
+
+// buildHITL returns a ConfirmFunc that emits an action_required event over
+// the session's active SSE stream and blocks until the user approves or
+// denies via POST /api/approve.
+func buildHITL() agent.ConfirmFunc {
+	return func(ctx context.Context, toolName, argsJSON string) bool {
+		approvalID := fmt.Sprintf("%d", uniqueID())
+		ch := make(chan bool, 1)
+
+		pendingMu.Lock()
+		pendingApprovals[approvalID] = ch
+		pendingMu.Unlock()
+
+		defer func() {
+			pendingMu.Lock()
+			delete(pendingApprovals, approvalID)
+			pendingMu.Unlock()
+		}()
+
+		// Extract session key injected by AgentLoop so we can route to the
+		// right SSE connection.
+		sessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+
+		var rawArgs any
+		_ = json.Unmarshal([]byte(argsJSON), &rawArgs)
+		payload, _ := json.Marshal(map[string]any{
+			"approval_id": approvalID,
+			"tool":        toolName,
+			"args":        rawArgs,
+		})
+		if sseStream := getStream(sessionKey); sseStream != nil {
+			sseStream <- agent.StreamEvent{Type: "action_required", Content: string(payload)}
+		}
+
+		select {
+		case approved := <-ch:
+			log.Printf("[HITL] tool=%s approval_id=%s approved=%v", toolName, approvalID, approved)
+			return approved
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+var idCounter uint64
+var idMu sync.Mutex
+
+func uniqueID() uint64 {
+	idMu.Lock()
+	defer idMu.Unlock()
+	idCounter++
+	return idCounter
+}
+
+// activeStreams maps sessionKey → the current SSE write channel (or nil).
+var (
+	streamsMu     sync.RWMutex
+	activeStreams  = make(map[string]chan<- agent.StreamEvent)
+)
+
+func registerStream(sessionKey string, ch chan<- agent.StreamEvent) {
+	streamsMu.Lock()
+	activeStreams[sessionKey] = ch
+	streamsMu.Unlock()
+}
+
+func unregisterStream(sessionKey string) {
+	streamsMu.Lock()
+	delete(activeStreams, sessionKey)
+	streamsMu.Unlock()
+}
+
+func getStream(sessionKey string) chan<- agent.StreamEvent {
+	streamsMu.RLock()
+	defer streamsMu.RUnlock()
+	return activeStreams[sessionKey]
+}
+
 func initApp() {
 	catalog := builder.NewGlobalCatalog()
+
+	// Web tools
 	webSearch, err := builtin.NewWebSearchTool("")
 	if err != nil {
 		log.Printf("Warning: web_search disabled: %v", err)
@@ -115,12 +201,20 @@ func initApp() {
 	catalog.Register(builtin.NewReadURLTool())
 	catalog.Register(builtin.NewShowMediaTool())
 
+	// Memory tools — one shared store, per-session namespacing done internally
+	catalog.Register(builtin.NewMemorySetTool(memoryStore))
+	catalog.Register(builtin.NewMemoryGetTool(memoryStore))
+	catalog.Register(builtin.NewMemoryDeleteTool(memoryStore))
+	catalog.Register(builtin.NewMemoryListTool(memoryStore))
+
+	// Code interpreter
+	catalog.Register(builtin.NewCodeInterpreterTool())
+
 	yamlPath := strings.TrimSpace(os.Getenv("AGENT_YAML_PATH"))
 	if yamlPath == "" {
-		yamlPath = "../yaml_agents/web_research_chat.yaml"
+		yamlPath = "../yaml_agents/research_assistant.yaml"
 	}
 
-	// Parse YAML first to get system prompt for session manager
 	cfg, err := builder.ParseYAMLConfig(yamlPath)
 	if err != nil {
 		log.Fatalf("Failed to parse YAML (%s): %v", yamlPath, err)
@@ -128,7 +222,6 @@ func initApp() {
 
 	sm := buildSessionManager(cfg.Agent.SystemPrompt)
 
-	// Wire background behavioral summarizer if OpenAI key available
 	if sp, err := llm.NewSummaryProvider("", ""); err == nil {
 		switch v := sm.(type) {
 		case *history.InMemSessionManager:
@@ -146,8 +239,55 @@ func initApp() {
 		log.Fatalf("Failed to build demo agent from YAML (%s): %v", yamlPath, err)
 	}
 
+	// Wire HITL: emits action_required over SSE and waits for /api/approve.
+	loop.ConfirmHITL = buildHITL()
+
 	myAgentApp = loop
-	log.Printf("Demo YAML loaded: %s", yamlPath)
+	log.Printf("Demo loaded: %s", yamlPath)
+}
+
+// ApproveHandler handles POST /api/approve?id=<approval_id>&approved=true|false
+func ApproveHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	approved := r.URL.Query().Get("approved") == "true"
+
+	pendingMu.Lock()
+	ch, ok := pendingApprovals[id]
+	pendingMu.Unlock()
+
+	if !ok {
+		http.Error(w, "unknown approval_id", http.StatusNotFound)
+		return
+	}
+	ch <- approved
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// MemoryHandler handles GET /api/memory?session_id=<key>
+func MemoryHandler(w http.ResponseWriter, r *http.Request) {
+	sessionKey := r.URL.Query().Get("session_id")
+	if sessionKey == "" {
+		http.Error(w, "session_id required", http.StatusBadRequest)
+		return
+	}
+	keys, err := memoryStore.List(r.Context(), sessionKey)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Fetch values for each key.
+	entries := make([]map[string]string, 0, len(keys))
+	for _, k := range keys {
+		v, _, _ := memoryStore.Get(r.Context(), sessionKey, k)
+		entries = append(entries, map[string]string{"key": k, "value": v})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(entries)
 }
 
 func ChatHandler(w http.ResponseWriter, r *http.Request) {
@@ -164,14 +304,17 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 
 	userInput := r.URL.Query().Get("message")
 	if userInput == "" {
-		userInput = "What is the latest AI news today?"
+		userInput = "What can you help me with?"
 	}
 	sessionKey := r.URL.Query().Get("session_id")
 	if sessionKey == "" {
 		sessionKey = r.RemoteAddr
 	}
 
-	streamChan := make(chan agent.StreamEvent)
+	streamChan := make(chan agent.StreamEvent, 32)
+	registerStream(sessionKey, streamChan)
+	defer unregisterStream(sessionKey)
+
 	go myAgentApp.RunIterationStream(r.Context(), sessionKey, userInput, streamChan)
 
 	for {
@@ -197,6 +340,8 @@ func main() {
 	initApp()
 	http.Handle("/", http.FileServer(http.Dir("./frontend")))
 	http.HandleFunc("/api/chat", ChatHandler)
+	http.HandleFunc("/api/approve", ApproveHandler)
+	http.HandleFunc("/api/memory", MemoryHandler)
 	fmt.Println("Server started at http://localhost:8888")
 	log.Fatal(http.ListenAndServe(":8888", nil))
 }
