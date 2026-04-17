@@ -19,32 +19,44 @@ import (
 // making it suitable for JSON APIs and webhook calls.
 //
 // Guardrails layered on every request:
-//   - an optional host allowlist rejects any URL outside it (SSRF defence)
+//   - SSRF protection (always on): connections to private, loopback, and
+//     link-local addresses (incl. 169.254.169.254 cloud metadata) are blocked
+//     after DNS resolution to defeat rebinding attacks.
+//   - an optional host allowlist further restricts which hostnames may be
+//     called; hosts in the allowlist also bypass the SSRF IP check.
 //   - method whitelist: GET / HEAD / POST / PUT / PATCH / DELETE
 //   - configurable client timeout, body size cap, max redirects
 //
 // Non-GET/HEAD methods trigger RequiresConfirmation() so the HITL layer
 // can gate mutating calls.
 type HTTPRequestTool struct {
-	client       *http.Client
+	transport    *http.Transport // rebuilt when allowedHosts changes
+	timeout      time.Duration
 	allowedHosts map[string]bool
 	maxBytes     int64
-	defaultGET   bool
 }
 
 // NewHTTPRequestTool returns a tool configured with sensible defaults:
-// 15s request timeout, 1 MiB response cap, no host allowlist, default
-// redirect behaviour.
+// 15s request timeout, 1 MiB response cap, SSRF protection enabled,
+// no host allowlist.
 func NewHTTPRequestTool() *HTTPRequestTool {
 	return &HTTPRequestTool{
-		client:   &http.Client{Timeout: 15 * time.Second},
-		maxBytes: 1 << 20,
+		transport: newSSRFSafeTransport(nil),
+		timeout:   15 * time.Second,
+		maxBytes:  1 << 20,
 	}
+}
+
+// httpClient builds an http.Client from the current timeout and transport.
+// Called per-Execute so WithTimeout / WithAllowedHosts changes are always
+// reflected without races.
+func (t *HTTPRequestTool) httpClient() *http.Client {
+	return &http.Client{Timeout: t.timeout, Transport: t.transport}
 }
 
 // WithTimeout overrides the HTTP client timeout.
 func (t *HTTPRequestTool) WithTimeout(d time.Duration) *HTTPRequestTool {
-	t.client = &http.Client{Timeout: d}
+	t.timeout = d
 	return t
 }
 
@@ -60,15 +72,18 @@ func (t *HTTPRequestTool) WithMaxBytes(n int64) *HTTPRequestTool {
 }
 
 // WithAllowedHosts restricts the tool to only call the given hostnames
-// (exact match, case-insensitive). Leaving this unset allows any host —
-// strongly recommend setting it for any agent exposed to untrusted input
-// to block SSRF to internal services (169.254.169.254, localhost, ...).
+// (exact match, case-insensitive). Hosts in the list also bypass the SSRF
+// IP-range check, so you can safely allowlist internal endpoints that would
+// otherwise be blocked (e.g. "127.0.0.1" in tests, or a known internal API).
+// Leaving this unset allows any public host while still blocking private IPs.
 func (t *HTTPRequestTool) WithAllowedHosts(hosts ...string) *HTTPRequestTool {
 	m := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
 		m[strings.ToLower(h)] = true
 	}
 	t.allowedHosts = m
+	// Rebuild transport so the new skip-list is wired into the SSRF dialer.
+	t.transport = newSSRFSafeTransport(m)
 	return t
 }
 
@@ -159,7 +174,7 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string,
 	}
 
 	start := time.Now()
-	resp, err := t.client.Do(req)
+	resp, err := t.httpClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("tools: request failed: %w", err)
 	}
