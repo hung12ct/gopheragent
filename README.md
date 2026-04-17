@@ -189,6 +189,8 @@ Import `github.com/hung12ct/gopheragent/pkg/tools/builtin`:
 | Memory set/get/delete/list | `NewMemorySetTool(store)` etc. | Agent-curated key/value facts; survives context pruning; shared across sub-agents |
 | Code interpreter | `NewCodeInterpreterTool()` | Execute Python or Node snippets; output-capped, timeout-bounded |
 | SQL agent | `NewSQLAgentTool(db, schema, sm, provider)` | Natural language → read-only SQL; DML-proof + self-consistency |
+| Generate image | `NewGenerateImageTool(apiKey, model)` | DALL-E 3 image generation; saves locally, returns inline markdown embed |
+| Generate video | `NewGenerateVideoTool(apiKey, model)` | Veo 2 video generation (5–8 s); polls async op, downloads via Gemini Files API, returns inline `<video>` |
 
 ## Writing Custom Tools
 
@@ -434,7 +436,8 @@ See `examples/` — each folder has its own `README.md` and `.env.example`.
 | Example | What it shows |
 |---|---|
 | [`examples/demo`](./examples/demo) | **Full chat UI** — web research, memory sidebar, Python execution, live HITL approval, SSE streaming |
-| [`examples/media_chat`](./examples/media_chat) | **Media Q&A** — upload an image or document, ask questions; GPT-4o vision answers in real time |
+| [`examples/creative_studio`](./examples/creative_studio) | **AI Creative Director** — DALL-E 3 images + Veo 2 video clips generated inline; gallery sidebar; ARIA persona rewrites prompts cinematically |
+| [`examples/media_chat`](./examples/media_chat) | **Media Q&A** — upload an image, video, or document, ask questions; Gemini multimodal (images + video) or GPT-4o vision (images) answers in real time |
 | [`examples/sse_server`](./examples/sse_server) | Minimal streaming HTTP server using Server-Sent Events |
 | [`examples/hitl_server`](./examples/hitl_server) | Human-in-the-loop approvals over HTTP (async bridge) |
 | [`examples/dynamic_builder`](./examples/dynamic_builder) | Load an agent from YAML at runtime |
