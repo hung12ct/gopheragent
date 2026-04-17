@@ -448,12 +448,16 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 
 						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "CRITICAL: Tool requires human confirmation."})
 
-						payload, _ := json.Marshal(map[string]string{"tool": tCall.Name, "args": tCall.ArgsJSON})
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
-
+						// When no custom handler is registered, emit action_required here
+						// so the frontend still knows a confirmation was needed.
+						// When ConfirmHITL is set, the handler is responsible for emitting
+						// action_required (with any metadata such as approval_id).
 						appr := false
 						if al.ConfirmHITL != nil {
 							appr = al.ConfirmHITL(ctx, tCall.Name, tCall.ArgsJSON)
+						} else {
+							payload, _ := json.Marshal(map[string]string{"tool": tCall.Name, "args": tCall.ArgsJSON})
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
 						}
 						return appr
 					}()

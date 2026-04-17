@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GopherAgent — Media Chat</title>
+    <meta name="referrer" content="no-referrer">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f1115;
+            --panel: #13161c;
+            --chat-bg: #1a1d24;
+            --user-msg: #2d3bb7;
+            --bot-msg: #232730;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+            --accent: #3b82f6;
+            --green: #10b981;
+            --border: #334155;
+            --thought-bg: #1e293b;
+            --drop-active: rgba(59,130,246,.15);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── Header ── */
+        header {
+            padding: .85rem 1.5rem;
+            background: var(--chat-bg);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            flex-shrink: 0;
+        }
+        header h1 { font-size: 1.05rem; font-weight: 600; }
+        .tag {
+            font-size: .7rem;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--muted);
+        }
+        .tag.img { border-color: #8b5cf6; color: #a78bfa; }
+        .tag.vid { border-color: #f59e0b; color: #fbbf24; }
+        .tag.doc { border-color: #0ea5e9; color: #38bdf8; }
+
+        /* ── Layout ── */
+        .layout {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* ── Left panel: upload ── */
+        .left-panel {
+            width: 280px;
+            min-width: 280px;
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 1.25rem 1rem;
+            gap: 1rem;
+            overflow-y: auto;
+        }
+        .left-panel h2 {
+            font-size: .72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            color: var(--muted);
+        }
+
+        /* Drop zone */
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 2rem 1rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: .5rem;
+            cursor: pointer;
+            transition: border-color .2s, background .2s;
+            text-align: center;
+        }
+        .drop-zone:hover,
+        .drop-zone.drag-over { border-color: var(--accent); background: var(--drop-active); }
+        .drop-zone .icon { font-size: 2rem; }
+        .drop-zone .label { font-size: .8rem; color: var(--muted); }
+        .drop-zone .sub { font-size: .7rem; color: var(--border); margin-top: .15rem; }
+        #fileInput { display: none; }
+
+        /* File preview */
+        .preview-area { display: none; flex-direction: column; gap: .75rem; }
+        .preview-area.visible { display: flex; }
+        .preview-img {
+            width: 100%;
+            border-radius: 8px;
+            object-fit: contain;
+            max-height: 200px;
+            background: #0b1220;
+            border: 1px solid var(--border);
+        }
+        .file-doc-icon {
+            width: 100%;
+            padding: 1.5rem;
+            background: #0b1220;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: .5rem;
+            font-size: 2.5rem;
+        }
+        .file-meta { font-size: .78rem; color: var(--muted); }
+        .file-meta strong { color: var(--text); display: block; word-break: break-all; }
+        .btn-change {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            border-radius: 8px;
+            padding: .4rem .9rem;
+            font-size: .78rem;
+            cursor: pointer;
+            width: 100%;
+            font-family: inherit;
+            transition: border-color .15s, color .15s;
+        }
+        .btn-change:hover { border-color: var(--accent); color: var(--text); }
+
+        /* Suggestions */
+        .suggestions-box { display: flex; flex-direction: column; gap: .4rem; }
+        .suggestions-box h2 { margin-bottom: .2rem; }
+        .sug {
+            background: var(--chat-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: .5rem .75rem;
+            font-size: .78rem;
+            color: var(--muted);
+            cursor: pointer;
+            transition: border-color .15s, color .15s;
+            text-align: left;
+        }
+        .sug:hover { border-color: var(--accent); color: var(--text); }
+
+        /* ── Right panel: chat ── */
+        .right-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-container {
+            flex: 1;
+            padding: 1.5rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+        .message { display: flex; flex-direction: column; max-width: 82%; animation: fadeIn .25s ease-out; }
+        .message.user { align-self: flex-end; align-items: flex-end; }
+        .message.assistant { align-self: flex-start; }
+        .bubble {
+            padding: .9rem 1.1rem;
+            border-radius: 12px;
+            font-size: .9rem;
+            line-height: 1.55;
+            word-wrap: break-word;
+        }
+        .user .bubble { background: var(--user-msg); border-bottom-right-radius: 4px; }
+        .assistant .bubble {
+            background: var(--bot-msg);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 4px;
+        }
+        .assistant .bubble h1,.assistant .bubble h2,.assistant .bubble h3 { margin: .4rem 0; }
+        .assistant .bubble p { margin: .3rem 0; }
+        .assistant .bubble ul,.assistant .bubble ol { margin: .3rem 0 .3rem 1.2rem; }
+        .assistant .bubble code { background: rgba(148,163,184,.2); padding: .1rem .3rem; border-radius: 4px; }
+        .assistant .bubble pre { background: #0b1220; border: 1px solid var(--border); border-radius: 8px; padding: .75rem; overflow-x: auto; margin: .4rem 0; }
+        .assistant .bubble a { color: #93c5fd; text-decoration: underline; }
+        .assistant .bubble img { max-width: 100%; border-radius: 8px; margin: 6px 0; display: block; }
+        .assistant .bubble table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+        .assistant .bubble th,.assistant .bubble td { border: 1px solid var(--border); padding: .4rem .6rem; font-size: .85rem; }
+        .assistant .bubble th { background: var(--thought-bg); }
+
+        /* Thoughts */
+        .thought-container {
+            background: var(--thought-bg);
+            border-left: 3px solid var(--muted);
+            padding: .6rem .9rem;
+            margin-bottom: .5rem;
+            border-radius: 6px;
+            font-size: .78rem;
+            color: var(--muted);
+            display: none;
+            font-family: monospace;
+        }
+        .thought-container.active { display: block; }
+        .thought-line { margin-bottom: .2rem; display: flex; align-items: flex-start; gap: 8px; }
+        .spinner {
+            width: 10px; height: 10px; flex-shrink: 0; margin-top: 3px;
+            border: 2px solid var(--muted); border-bottom-color: transparent;
+            border-radius: 50%; animation: rotation 1s linear infinite;
+        }
+        .tool-badge {
+            padding: 1px 5px; background: rgba(59,130,246,.2); color: var(--accent);
+            border-radius: 4px; font-size: .7rem; font-weight: 600; flex-shrink: 0; margin-top: 1px;
+        }
+
+        /* Input area */
+        .input-area {
+            padding: .9rem 1.5rem 1.1rem;
+            background: var(--bg);
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .upload-hint {
+            font-size: .75rem;
+            color: var(--muted);
+            margin-bottom: .5rem;
+            display: none;
+        }
+        .upload-hint.visible { display: block; }
+        .input-wrapper {
+            display: flex;
+            gap: .5rem;
+            background: var(--chat-bg);
+            padding: .4rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+        input[type=text] {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text);
+            padding: .6rem .75rem;
+            font-size: .95rem;
+            outline: none;
+            font-family: inherit;
+        }
+        input[type=text]::placeholder { color: var(--muted); }
+        button.send-btn {
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0 1.2rem;
+            font-weight: 500;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: .9rem;
+            transition: opacity .15s;
+        }
+        button.send-btn:hover { opacity: .88; }
+        button.send-btn:disabled { background: var(--border); cursor: not-allowed; color: var(--muted); }
+
+        .cursor {
+            display: inline-block; width: 7px; height: 14px;
+            background: var(--text); vertical-align: middle;
+            margin-left: 2px; animation: blink 1s step-end infinite;
+        }
+
+        /* Upload progress overlay */
+        .uploading {
+            font-size: .78rem;
+            color: var(--accent);
+            text-align: center;
+            padding: .4rem;
+        }
+
+        @keyframes fadeIn   { from { opacity:0; transform:translateY(8px); } to { opacity:1; } }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes blink    { 0%,100% { opacity:1; } 50% { opacity:0; } }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>GopherAgent — Media Chat</h1>
+    <span class="tag img">images</span>
+    <span class="tag vid">video</span>
+    <span class="tag doc">documents</span>
+</header>
+
+<div class="layout">
+
+    <!-- Left: upload + suggestions -->
+    <aside class="left-panel">
+        <h2>Upload File</h2>
+
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <div class="icon">📎</div>
+            <div class="label">Drop a file or click to browse</div>
+            <div class="sub">Images: jpg, png, gif, webp · Video: mp4, webm, mov<br>Docs: txt, md, csv, json · max 20 MB</div>
+        </div>
+        <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp,.svg,.mp4,.webm,.mov,.ogv,.txt,.md,.csv,.json">
+
+        <div class="preview-area" id="previewArea">
+            <img id="previewImg" class="preview-img" style="display:none">
+            <video id="previewVideo" class="preview-img" controls muted preload="metadata" style="display:none"></video>
+            <div id="previewDoc" class="file-doc-icon" style="display:none">
+                <span id="docIcon">📄</span>
+                <span id="docLabel" style="font-size:.8rem;color:var(--muted)"></span>
+            </div>
+            <div class="file-meta">
+                <strong id="fileName"></strong>
+                <span id="fileType"></span>
+            </div>
+            <button class="btn-change" onclick="resetUpload()">↩ Change file</button>
+        </div>
+
+        <div id="uploadStatus"></div>
+
+        <div class="suggestions-box" id="suggestionsBox" style="display:none">
+            <h2>Try asking…</h2>
+        </div>
+    </aside>
+
+    <!-- Right: chat -->
+    <div class="right-panel">
+        <div class="chat-container" id="chat">
+            <div class="message assistant">
+                <div class="bubble">
+                    Hi! I can analyze images, videos, and text documents.<br><br>
+                    Upload a file on the left, then ask me anything about it — what it shows, key scenes, summaries, or specific details.
+                </div>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <div class="upload-hint" id="uploadHint">
+                📎 Upload a file on the left to get started.
+            </div>
+            <div class="input-wrapper">
+                <input type="text" id="userInput" placeholder="Ask about the uploaded file…" autocomplete="off">
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+<script>
+const chat      = document.getElementById('chat');
+const input     = document.getElementById('userInput');
+const sendBtn   = document.getElementById('sendBtn');
+const dropZone  = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+const sessionId = `media_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+let hasFile = false;
+let currentEventSource = null;
+
+// ── Marked setup ──────────────────────────────────────────────────────────
+marked.use({ gfm: true, breaks: true });
+const renderer = new marked.Renderer();
+renderer.image = ({href, title, text}) => {
+    const alt = text || title || 'image';
+    return `<img src="${href}" alt="${alt}" referrerpolicy="no-referrer" loading="lazy">`;
+};
+marked.use({ renderer });
+
+const PURIFY = {
+    ADD_TAGS: ['video','source'],
+    ADD_ATTR: ['controls','preload','src','type','referrerpolicy','loading'],
+    ALLOW_DATA_ATTR: false,
+};
+
+function renderMd(s) { return DOMPurify.sanitize(marked.parse(s || ''), PURIFY); }
+function esc(s) {
+    return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;')
+        .replaceAll('>','&gt;').replaceAll('"','&quot;');
+}
+
+// ── Drag-and-drop ─────────────────────────────────────────────────────────
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+});
+fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) handleFile(fileInput.files[0]);
+});
+input.addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
+
+// ── File handling ─────────────────────────────────────────────────────────
+function resetUpload() {
+    hasFile = false;
+    fileInput.value = '';
+    document.getElementById('previewArea').classList.remove('visible');
+    document.getElementById('previewImg').style.display = 'none';
+    const vid = document.getElementById('previewVideo');
+    vid.pause(); vid.src = ''; vid.style.display = 'none';
+    document.getElementById('previewDoc').style.display = 'none';
+    document.getElementById('uploadStatus').innerHTML = '';
+    document.getElementById('suggestionsBox').style.display = 'none';
+    document.getElementById('uploadHint').classList.add('visible');
+    dropZone.style.display = '';
+    input.placeholder = 'Ask about the uploaded file…';
+}
+
+function docIconFor(mimeType) {
+    if (mimeType === 'text/csv') return '📊';
+    if (mimeType === 'application/json') return '🔧';
+    if (mimeType === 'text/markdown') return '📝';
+    return '📄';
+}
+
+function suggestionsFor(category, name) {
+    if (category === 'video') return [
+        'What is this video about?',
+        'Describe the key scenes and actions',
+        'Who or what appears in this video?',
+        'Summarize what happens from start to finish',
+    ];
+    if (category === 'image') return [
+        'What does this image show?',
+        'Describe the layout and key elements',
+        'Is there any text or data visible? Extract it.',
+        'What insights can you draw from this?',
+    ];
+    const ext = name.split('.').pop().toLowerCase();
+    if (ext === 'csv') return [
+        'Summarize the data in this CSV',
+        'What are the column names and data types?',
+        'Find any interesting patterns or outliers',
+        'How many rows and columns does it have?',
+    ];
+    if (ext === 'json') return [
+        'Describe the structure of this JSON',
+        'What are the top-level keys?',
+        'Summarize what this data represents',
+    ];
+    return [
+        'Summarize this document',
+        'What are the key points?',
+        'Extract the most important facts',
+        'Are there any action items or deadlines?',
+    ];
+}
+
+async function handleFile(file) {
+    document.getElementById('uploadStatus').innerHTML = '<div class="uploading">⏳ Uploading…</div>';
+
+    const form = new FormData();
+    form.append('file', file);
+    form.append('session_id', sessionId);
+
+    try {
+        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        const body = await res.json();
+
+        if (!res.ok || !body.ok) {
+            document.getElementById('uploadStatus').innerHTML =
+                `<div style="color:#ef4444;font-size:.78rem;">❌ ${esc(body || 'Upload failed')}</div>`;
+            return;
+        }
+
+        hasFile = true;
+        document.getElementById('uploadStatus').innerHTML = '';
+        dropZone.style.display = 'none';
+
+        // Preview
+        document.getElementById('fileName').textContent = body.name;
+        document.getElementById('fileType').textContent = body.mime_type;
+        const previewArea = document.getElementById('previewArea');
+        previewArea.classList.add('visible');
+
+        document.getElementById('previewImg').style.display = 'none';
+        document.getElementById('previewVideo').style.display = 'none';
+        document.getElementById('previewDoc').style.display = 'none';
+
+        if (body.category === 'image') {
+            const img = document.getElementById('previewImg');
+            img.src = URL.createObjectURL(file);
+            img.style.display = 'block';
+        } else if (body.category === 'video') {
+            const vid = document.getElementById('previewVideo');
+            vid.src = URL.createObjectURL(file);
+            vid.style.display = 'block';
+        } else {
+            const doc = document.getElementById('previewDoc');
+            doc.style.display = 'flex';
+            document.getElementById('docIcon').textContent = docIconFor(body.mime_type);
+            document.getElementById('docLabel').textContent = body.name;
+        }
+
+        // Suggestions
+        const sugs = suggestionsFor(body.category, body.name);
+        const box = document.getElementById('suggestionsBox');
+        box.innerHTML = '<h2>Try asking…</h2>';
+        sugs.forEach(s => {
+            const el = document.createElement('button');
+            el.className = 'sug';
+            el.textContent = s;
+            el.onclick = () => { input.value = s; input.focus(); };
+            box.appendChild(el);
+        });
+        box.style.display = 'flex';
+        box.style.flexDirection = 'column';
+        box.style.gap = '.4rem';
+
+        document.getElementById('uploadHint').classList.remove('visible');
+        input.placeholder = 'Ask about the uploaded file…';
+        input.focus();
+
+        // Auto-greet
+        appendAssistantInfo(`✅ **${esc(body.name)}** uploaded successfully. What would you like to know about it?`);
+
+    } catch(e) {
+        document.getElementById('uploadStatus').innerHTML =
+            `<div style="color:#ef4444;font-size:.78rem;">❌ Upload error: ${esc(e.message)}</div>`;
+    }
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+function appendUserMsg(text) {
+    const div = document.createElement('div');
+    div.className = 'message user';
+    div.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+function appendAssistantInfo(md) {
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.innerHTML = `<div class="bubble">${renderMd(md)}</div>`;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+function createAssistantBlock() {
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    const thoughts = document.createElement('div');
+    thoughts.className = 'thought-container';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    div.appendChild(thoughts);
+    div.appendChild(bubble);
+    chat.appendChild(div);
+    return { thoughts, content: bubble, rawContent: '' };
+}
+
+function attachImgHandlers(el) {
+    el.querySelectorAll('img:not([data-handled])').forEach(img => {
+        img.setAttribute('data-handled', '1');
+        img.addEventListener('error', () => {
+            img.style.cssText = 'border:1px dashed #334155;padding:.5rem;border-radius:8px;';
+            img.alt = '⚠ Image failed to load';
+        });
+    });
+}
+
+async function sendMessage() {
+    const text = input.value.trim();
+    if (!text || sendBtn.disabled) return;
+
+    if (!hasFile) {
+        appendAssistantInfo('Please upload a file on the left first — I need something to analyze!');
+        return;
+    }
+
+    input.value = '';
+    sendBtn.disabled = true;
+    appendUserMsg(text);
+
+    const block = createAssistantBlock();
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    block.content.appendChild(cursor);
+
+    if (currentEventSource) currentEventSource.close();
+
+    const url = `/api/chat?session_id=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}`;
+    currentEventSource = new EventSource(url);
+
+    currentEventSource.onmessage = e => {
+        try {
+            const data = JSON.parse(e.data);
+
+            if (data.type === 'thought') {
+                block.thoughts.classList.add('active');
+                const line = document.createElement('div');
+                line.className = 'thought-line';
+                line.innerHTML = `<span class="spinner"></span><span>${esc(data.content)}</span>`;
+                block.thoughts.appendChild(line);
+            }
+            else if (data.type === 'tool_call') {
+                block.thoughts.classList.add('active');
+                const line = document.createElement('div');
+                line.className = 'thought-line';
+                line.innerHTML = `<span class="tool-badge">TOOL</span><span>${esc(data.content)}</span>`;
+                block.thoughts.appendChild(line);
+            }
+            else if (data.type === 'content') {
+                block.thoughts.querySelectorAll('.spinner').forEach(s => s.remove());
+                block.rawContent += data.content;
+                block.content.innerHTML = `${renderMd(block.rawContent)}<span class="cursor"></span>`;
+                attachImgHandlers(block.content);
+            }
+            else if (data.type === 'done' || data.type === 'error') {
+                currentEventSource.close();
+                sendBtn.disabled = false;
+                cursor.remove();
+                if (data.type === 'error') block.rawContent += `\n\n❌ ${esc(data.content)}`;
+                block.content.innerHTML = renderMd(block.rawContent);
+                attachImgHandlers(block.content);
+            }
+
+            chat.scrollTop = chat.scrollHeight;
+        } catch(err) { console.error(err, e.data); }
+    };
+
+    currentEventSource.onerror = () => {
+        currentEventSource.close();
+        sendBtn.disabled = false;
+        cursor.remove();
+    };
+}
+
+// Show upload hint on load
+document.getElementById('uploadHint').classList.add('visible');
+</script>
+</body>
+</html>

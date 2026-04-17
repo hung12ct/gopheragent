@@ -3,492 +3,531 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GopherAgent Chat Demo</title>
+    <title>GopherAgent — Research Assistant</title>
+    <!-- Send no Referer header on cross-origin image requests to bypass hotlink protection -->
+    <meta name="referrer" content="no-referrer">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #0f1115;
+            --bg: #0f1115;
+            --sidebar-bg: #13161c;
             --chat-bg: #1a1d24;
             --user-msg: #2d3bb7;
             --bot-msg: #232730;
-            --text-main: #e2e8f0;
-            --text-muted: #94a3b8;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
             --accent: #3b82f6;
+            --green: #10b981;
+            --red: #ef4444;
             --border: #334155;
             --thought-bg: #1e293b;
         }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
             font-family: 'Inter', sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-main);
+            background: var(--bg);
+            color: var(--text);
             height: 100vh;
             display: flex;
             flex-direction: column;
-            align-items: center;
         }
 
+        /* ── Header ── */
         .header {
-            width: 100%;
-            padding: 1.5rem;
-            text-align: center;
-            background-color: var(--chat-bg);
+            padding: 1rem 1.5rem;
+            background: var(--chat-bg);
             border-bottom: 1px solid var(--border);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .header h1 { font-size: 1.1rem; font-weight: 600; }
+        .header .subtitle { font-size: 0.8rem; color: var(--muted); margin-left: auto; }
+        .capability-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+        .chip {
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--muted);
+        }
+        .chip.web   { border-color: #6366f1; color: #818cf8; }
+        .chip.mem   { border-color: #0ea5e9; color: #38bdf8; }
+        .chip.code  { border-color: #f59e0b; color: #fbbf24; }
+
+        /* ── Main layout ── */
+        .layout {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
         }
 
-        .header h1 {
-            font-size: 1.25rem;
+        /* ── Sidebar: Memory ── */
+        .sidebar {
+            width: 240px;
+            min-width: 240px;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+        .sidebar h2 {
+            font-size: 0.75rem;
             font-weight: 600;
-            letter-spacing: -0.025em;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            margin-bottom: 0.75rem;
+        }
+        #memory-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+        #memory-list li {
+            background: var(--chat-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.8rem;
+        }
+        #memory-list .mem-key { color: var(--accent); font-weight: 600; word-break: break-all; }
+        #memory-list .mem-val { color: var(--muted); margin-top: 2px; word-break: break-all; }
+        .mem-empty { font-size: 0.8rem; color: var(--muted); font-style: italic; }
+
+        /* ── Chat area ── */
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
         .chat-container {
             flex: 1;
-            width: 100%;
-            max-width: 800px;
-            padding: 2rem 1rem;
+            padding: 1.5rem 1.5rem;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 1.5rem;
+            gap: 1.25rem;
         }
 
         .message {
             display: flex;
             flex-direction: column;
-            max-width: 85%;
-            animation: fadeIn 0.3s ease-out;
+            max-width: 82%;
+            animation: fadeIn 0.25s ease-out;
         }
-
-        .message.user {
-            align-self: flex-end;
-            align-items: flex-end;
-        }
-
-        .message.assistant {
-            align-self: flex-start;
-        }
+        .message.user   { align-self: flex-end; align-items: flex-end; }
+        .message.assistant { align-self: flex-start; }
 
         .bubble {
-            padding: 1rem 1.25rem;
+            padding: 0.9rem 1.1rem;
             border-radius: 12px;
-            font-size: 0.95rem;
-            line-height: 1.5;
+            font-size: 0.9rem;
+            line-height: 1.55;
             word-wrap: break-word;
         }
-
-        .user .bubble {
-            background-color: var(--user-msg);
-            border-bottom-right-radius: 4px;
-        }
-
+        .user .bubble { background: var(--user-msg); border-bottom-right-radius: 4px; }
         .assistant .bubble {
-            background-color: var(--bot-msg);
+            background: var(--bot-msg);
             border: 1px solid var(--border);
             border-bottom-left-radius: 4px;
         }
+        .assistant .bubble h1,.assistant .bubble h2,.assistant .bubble h3 { margin: 0.4rem 0; }
+        .assistant .bubble p  { margin: 0.3rem 0; }
+        .assistant .bubble ul,.assistant .bubble ol { margin: 0.3rem 0 0.3rem 1.2rem; }
+        .assistant .bubble code { background: rgba(148,163,184,.2); padding: 0.1rem 0.3rem; border-radius: 4px; }
+        .assistant .bubble pre { background: #0b1220; border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; overflow-x: auto; margin: 0.4rem 0; }
+        .assistant .bubble a { color: #93c5fd; text-decoration: underline; }
+        .assistant .bubble img,.assistant .bubble video { max-width: 100%; border-radius: 8px; margin: 6px 0; display: block; }
 
-        .assistant .bubble h1, .assistant .bubble h2, .assistant .bubble h3 {
-            margin: 0.4rem 0;
-            line-height: 1.3;
-        }
-        .assistant .bubble p { margin: 0.35rem 0; }
-        .assistant .bubble ul, .assistant .bubble ol {
-            margin: 0.35rem 0 0.35rem 1.2rem;
-        }
-        .assistant .bubble code {
-            background: rgba(148, 163, 184, 0.2);
-            padding: 0.1rem 0.3rem;
-            border-radius: 4px;
-        }
-        .assistant .bubble pre {
-            background: #0b1220;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 0.75rem;
-            overflow-x: auto;
-            margin: 0.5rem 0;
-        }
-        .assistant .bubble a {
-            color: #93c5fd;
-            text-decoration: underline;
-        }
-        .assistant .bubble img {
-            max-width: 100%;
-            border-radius: 8px;
-            margin: 6px 0;
-            display: block;
-        }
-        .assistant .bubble video {
-            max-width: 100%;
-            border-radius: 8px;
-            margin: 6px 0;
-            display: block;
-        }
 
+        /* ── Thoughts ── */
         .thought-container {
-            background-color: var(--thought-bg);
-            border-left: 3px solid var(--text-muted);
-            padding: 0.75rem 1rem;
-            margin-bottom: 0.75rem;
+            background: var(--thought-bg);
+            border-left: 3px solid var(--muted);
+            padding: 0.6rem 0.9rem;
+            margin-bottom: 0.6rem;
             border-radius: 6px;
-            font-size: 0.85rem;
-            color: var(--text-muted);
+            font-size: 0.8rem;
+            color: var(--muted);
             display: none;
             font-family: monospace;
         }
-
-        .thought-container.active {
-            display: block;
-        }
-
-        .thought-line {
-            margin-bottom: 0.25rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        /* Loading spinner for thoughts */
+        .thought-container.active { display: block; }
+        .thought-line { margin-bottom: 0.2rem; display: flex; align-items: center; gap: 8px; }
         .spinner {
-            width: 12px;
-            height: 12px;
-            border: 2px solid var(--text-muted);
+            width: 11px; height: 11px;
+            border: 2px solid var(--muted);
             border-bottom-color: transparent;
             border-radius: 50%;
             display: inline-block;
             animation: rotation 1s linear infinite;
+            flex-shrink: 0;
         }
-
         .tool-badge {
             display: inline-block;
-            padding: 2px 6px;
-            background: rgba(59, 130, 246, 0.2);
+            padding: 1px 5px;
+            background: rgba(59,130,246,.2);
             color: var(--accent);
             border-radius: 4px;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             font-weight: 600;
         }
 
-        .input-area {
-            width: 100%;
-            max-width: 800px;
-            padding: 1.5rem 1rem;
-            background-color: var(--bg-color);
-        }
-
-        .input-wrapper {
-            display: flex;
-            gap: 0.5rem;
-            background-color: var(--chat-bg);
-            padding: 0.5rem;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-        }
-
-        input {
-            flex: 1;
-            background: transparent;
-            border: none;
-            color: var(--text-main);
-            padding: 0.75rem;
-            font-size: 1rem;
-            outline: none;
-            font-family: inherit;
-        }
-
-        input::placeholder {
-            color: var(--text-muted);
-        }
-
-        button {
-            background-color: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 0 1.5rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: opacity 0.2s;
-            font-family: inherit;
-        }
-
-        button:hover {
-            opacity: 0.9;
-        }
-
-        button:disabled {
-            background-color: var(--border);
-            cursor: not-allowed;
-            color: var(--text-muted);
-        }
-
-        .cursor {
-            display: inline-block;
-            width: 8px;
-            height: 15px;
-            background-color: var(--text-main);
-            vertical-align: middle;
-            margin-left: 2px;
-            animation: blink 1s step-end infinite;
-        }
-
+        /* ── HITL action box ── */
         .action-box {
-            background-color: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
+            background: rgba(239,68,68,.08);
+            border: 1px solid rgba(239,68,68,.3);
             border-radius: 8px;
             padding: 1rem;
             margin-top: 0.5rem;
         }
+        .action-title { color: var(--red); font-weight: 600; margin-bottom: 0.5rem; }
+        .action-buttons { display: flex; gap: 10px; margin-top: 0.75rem; }
+        .btn-approve { background: var(--green); }
+        .btn-reject  { background: var(--red); }
 
-        .action-title {
-            color: #ef4444;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
+        /* ── Input area ── */
+        .input-area {
+            padding: 1rem 1.5rem 1.25rem;
+            background: var(--bg);
+            border-top: 1px solid var(--border);
+        }
+
+        /* Suggested prompts */
+        .suggestions {
             display: flex;
-            align-items: center;
             gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 0.75rem;
         }
+        .suggestion {
+            background: var(--chat-bg);
+            border: 1px solid var(--border);
+            color: var(--muted);
+            border-radius: 999px;
+            padding: 4px 12px;
+            font-size: 0.78rem;
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+        }
+        .suggestion:hover { border-color: var(--accent); color: var(--text); }
 
-        .action-buttons {
+        .input-wrapper {
             display: flex;
-            gap: 10px;
-            margin-top: 1rem;
+            gap: 0.5rem;
+            background: var(--chat-bg);
+            padding: 0.4rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+        input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text);
+            padding: 0.6rem 0.75rem;
+            font-size: 0.95rem;
+            outline: none;
+            font-family: inherit;
+        }
+        input::placeholder { color: var(--muted); }
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0 1.25rem;
+            font-weight: 500;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: opacity 0.15s;
+        }
+        button:hover { opacity: 0.88; }
+        button:disabled { background: var(--border); cursor: not-allowed; color: var(--muted); }
+
+        .cursor {
+            display: inline-block; width: 7px; height: 14px;
+            background: var(--text); vertical-align: middle;
+            margin-left: 2px; animation: blink 1s step-end infinite;
         }
 
-        .btn-approve {
-            background-color: #10b981;
-        }
-
-        .btn-reject {
-            background-color: #ef4444;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        @keyframes rotation {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0; }
-        }
+        @keyframes fadeIn   { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes rotation { 0%   { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes blink    { 0%,100% { opacity:1; } 50% { opacity:0; } }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>GopherAgent Chat</h1>
-    </div>
 
-    <div class="chat-container" id="chat">
-        <div class="message assistant">
-            <div class="bubble">Hello! I'm a web research assistant powered by GopherAgent. Ask me anything — I can search the web and read articles for you.</div>
+<div class="header">
+    <h1>GopherAgent</h1>
+    <div class="capability-chips">
+        <span class="chip web">web search</span>
+        <span class="chip mem">memory</span>
+        <span class="chip code">python</span>
+    </div>
+    <span class="subtitle">Research Assistant</span>
+</div>
+
+<div class="layout">
+
+    <!-- Sidebar: live memory -->
+    <aside class="sidebar">
+        <h2>Session Memory</h2>
+        <ul id="memory-list">
+            <li class="mem-empty">Nothing stored yet.</li>
+        </ul>
+    </aside>
+
+    <div class="chat-area">
+        <div class="chat-container" id="chat">
+            <div class="message assistant">
+                <div class="bubble">
+                    Hi! I'm your research assistant powered by GopherAgent. I can:
+                    <ul style="margin-top:0.5rem;">
+                        <li>🔍 Search the web and read articles</li>
+                        <li>🧠 Remember facts across our conversation</li>
+                        <li>🐍 Run Python code for calculations</li>
+                        <li>🖼️ Display images and media</li>
+                    </ul>
+                    Try one of the suggested prompts below, or ask me anything!
+                </div>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <div class="suggestions">
+                <span class="suggestion" onclick="useSuggestion(this)">What's the latest news in AI?</span>
+                <span class="suggestion" onclick="useSuggestion(this)">My name is Alex and I love Go programming — please remember that</span>
+                <span class="suggestion" onclick="useSuggestion(this)">Compare three investment portfolios (conservative 5%, balanced 8%, aggressive 12%) over 20 years — show a year-by-year table, a Unicode bar chart of final values, and key financial insights</span>
+                <span class="suggestion" onclick="useSuggestion(this)">What do you remember about me?</span>
+                <span class="suggestion" onclick="useSuggestion(this)">Find a chart or image about climate change and show it</span>
+                <span class="suggestion" onclick="useSuggestion(this)">Calculate the first 15 Fibonacci numbers using Python</span>
+            </div>
+            <div class="input-wrapper">
+                <input type="text" id="userInput" placeholder="Ask anything…" autocomplete="off">
+                <button id="sendBtn" onclick="sendMessage()">Send</button>
+            </div>
         </div>
     </div>
 
-    <div class="input-area">
-        <div class="input-wrapper">
-            <input type="text" id="userInput" placeholder="Ask anything... e.g. 'What is the latest AI news today?'" autocomplete="off">
-            <button id="sendBtn" onclick="sendMessage()">Send</button>
-        </div>
-    </div>
+</div>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
-    <script>
-        const chat = document.getElementById('chat');
-        const input = document.getElementById('userInput');
-        const btn = document.getElementById('sendBtn');
-        let currentEventSource = null;
-        const sessionId = `demo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+<script>
+    const chat   = document.getElementById('chat');
+    const input  = document.getElementById('userInput');
+    const btn    = document.getElementById('sendBtn');
+    const memList = document.getElementById('memory-list');
 
-        // Configure marked to pass raw HTML blocks through (needed for <video> embeds)
-        marked.use({ gfm: true, breaks: true });
+    let currentEventSource = null;
+    const sessionId = `demo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-        const DOMPURIFY_CONFIG = {
-            ADD_TAGS: ['video', 'source', 'audio'],
-            ADD_ATTR: ['controls', 'preload', 'autoplay', 'loop', 'muted', 'src', 'type', 'width', 'height'],
-            ALLOW_DATA_ATTR: false,
-        };
+    marked.use({ gfm: true, breaks: true });
 
-        function escapeHtml(s) {
-            return String(s)
-                .replaceAll('&', '&amp;')
-                .replaceAll('<', '&lt;')
-                .replaceAll('>', '&gt;')
-                .replaceAll('"', '&quot;')
-                .replaceAll("'", '&#39;');
-        }
+    // Custom renderer: add referrerpolicy + loading to every image.
+    // onerror must NOT be inlined — DOMPurify strips all on* attributes.
+    // Error handling is attached via attachImageHandlers() after each render.
+    const renderer = new marked.Renderer();
+    renderer.image = ({ href, title, text }) => {
+        const alt     = text  || title || 'image';
+        const titleAt = title ? ` title="${escapeHtml(title)}"` : '';
+        return `<img src="${href}" alt="${escapeHtml(alt)}"${titleAt} referrerpolicy="no-referrer" loading="lazy">`;
+    };
+    marked.use({ renderer });
 
-        function renderMarkdown(raw) {
-            const html = marked.parse(raw || '');
-            return DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
-        }
+    const PURIFY_CFG = {
+        ADD_TAGS: ['video','source','audio'],
+        ADD_ATTR: ['controls','preload','autoplay','loop','muted','src','type','width','height',
+                   'referrerpolicy','loading'],
+        ALLOW_DATA_ATTR: false,
+    };
 
-        input.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
+    // Attach error listeners to every <img> inside el that doesn't have one yet.
+    function attachImageHandlers(el) {
+        el.querySelectorAll('img:not([data-handled])').forEach(img => {
+            img.setAttribute('data-handled', '1');
+            img.addEventListener('error', () => {
+                img.style.cssText = 'border:1px dashed var(--border);padding:0.5rem;border-radius:8px;min-height:2rem;';
+                img.alt = '⚠ Image failed to load (hotlink protection or invalid URL)';
+            });
         });
+    }
 
-        function appendUserMessage(text) {
-            const div = document.createElement('div');
-            div.className = 'message user';
-            div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
-            chat.appendChild(div);
-            window.scrollTo(0, document.body.scrollHeight);
-        }
+    function escapeHtml(s) {
+        return String(s)
+            .replaceAll('&','&amp;').replaceAll('<','&lt;')
+            .replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+    }
+    function renderMarkdown(raw) {
+        return DOMPurify.sanitize(marked.parse(raw || ''), PURIFY_CFG);
+    }
 
-        function createAssistantMessageBlock() {
-            const div = document.createElement('div');
-            div.className = 'message assistant';
+    input.addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
 
-            // Thoughts box
-            const thoughtsDiv = document.createElement('div');
-            thoughtsDiv.className = 'thought-container';
+    function useSuggestion(el) {
+        input.value = el.textContent;
+        input.focus();
+    }
 
-            // Final Content box
-            const bubbleDiv = document.createElement('div');
-            bubbleDiv.className = 'bubble';
-
-            div.appendChild(thoughtsDiv);
-            div.appendChild(bubbleDiv);
-            chat.appendChild(div);
-
-            return { wrapper: div, thoughts: thoughtsDiv, content: bubbleDiv, rawContent: '' };
-        }
-
-        async function sendMessage() {
-            const text = input.value.trim();
-            if (!text) return;
-
-            // UI Updates
-            input.value = '';
-            btn.disabled = true;
-            appendUserMessage(text);
-
-            // Create empty assistant block
-            const block = createAssistantMessageBlock();
-            const cursor = document.createElement('span');
-            cursor.className = 'cursor';
-            block.content.appendChild(cursor);
-
-            // Close existing connection if any
-            if (currentEventSource) {
-                currentEventSource.close();
+    // ── Memory sidebar ──────────────────────────────────────────────────────
+    async function refreshMemory() {
+        try {
+            const r = await fetch(`/api/memory?session_id=${encodeURIComponent(sessionId)}`);
+            if (!r.ok) return;
+            const entries = await r.json();
+            memList.innerHTML = '';
+            if (!entries || entries.length === 0) {
+                memList.innerHTML = '<li class="mem-empty">Nothing stored yet.</li>';
+                return;
             }
+            entries.forEach(e => {
+                const li = document.createElement('li');
+                li.innerHTML = `<div class="mem-key">${escapeHtml(e.key)}</div><div class="mem-val">${escapeHtml(e.value)}</div>`;
+                memList.appendChild(li);
+            });
+        } catch (_) {}
+    }
 
-            // Start SSE Stream
+    // ── HITL approval ───────────────────────────────────────────────────────
+    async function sendApproval(approvalId, approved) {
+        await fetch(`/api/approve?id=${encodeURIComponent(approvalId)}&approved=${approved}`, { method: 'POST' });
+    }
+
+    // ── Message rendering ───────────────────────────────────────────────────
+    function appendUserMessage(text) {
+        const div = document.createElement('div');
+        div.className = 'message user';
+        div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+        chat.appendChild(div);
+        chat.scrollTop = chat.scrollHeight;
+    }
+
+    function createAssistantBlock() {
+        const div = document.createElement('div');
+        div.className = 'message assistant';
+        const thoughts = document.createElement('div');
+        thoughts.className = 'thought-container';
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        div.appendChild(thoughts);
+        div.appendChild(bubble);
+        chat.appendChild(div);
+        return { wrapper: div, thoughts, content: bubble, rawContent: '' };
+    }
+
+    function renderActionBox(block, cursor, data) {
+        block.thoughts.querySelectorAll('.spinner').forEach(s => s.remove());
+
+        let rawArgs;
+        try { rawArgs = JSON.parse(data.content); } catch { rawArgs = { raw: data.content }; }
+
+        const approvalId = rawArgs.approval_id || '';
+        const toolName   = rawArgs.tool || 'unknown';
+        const argsObj    = rawArgs.args || {};
+
+        // Count existing action boxes so we can label them #1, #2 if batched.
+        const existingBoxes = block.content.querySelectorAll('.action-box').length;
+        const label = existingBoxes > 0 ? ` (#${existingBoxes + 1})` : '';
+
+        const box = document.createElement('div');
+        box.className = 'action-box';
+        box.innerHTML = `
+            <div class="action-title">⚠️ Confirmation Required${escapeHtml(label)}</div>
+            <div>The agent wants to run: <strong>${escapeHtml(toolName)}</strong></div>
+            <pre style="font-size:0.78rem;margin-top:0.4rem;color:var(--muted);">${escapeHtml(JSON.stringify(argsObj, null, 2))}</pre>
+            <div class="action-buttons">
+                <button class="btn-approve" onclick="approveAction('${escapeHtml(approvalId)}', true, this.closest('.action-box'))">Approve</button>
+                <button class="btn-reject"  onclick="approveAction('${escapeHtml(approvalId)}', false, this.closest('.action-box'))">Reject</button>
+            </div>`;
+        block.content.insertBefore(box, cursor);
+    }
+
+    async function approveAction(approvalId, approved, box) {
+        box.querySelectorAll('button').forEach(b => b.disabled = true);
+        box.style.opacity = '0.5';
+        await sendApproval(approvalId, approved);
+        const label = approved ? '✅ Approved' : '❌ Rejected';
+        box.querySelector('.action-buttons').innerHTML = `<span style="color:var(--muted);font-size:0.85rem;">${label}</span>`;
+    }
+
+    // ── Send ─────────────────────────────────────────────────────────────────
+    async function sendMessage() {
+        const text = input.value.trim();
+        if (!text || btn.disabled) return;
+
+        input.value = '';
+        btn.disabled = true;
+        appendUserMessage(text);
+
+        const block = createAssistantBlock();
+        const cursor = document.createElement('span');
+        cursor.className = 'cursor';
+        block.content.appendChild(cursor);
+
+        if (currentEventSource) currentEventSource.close();
+
+        const url = `/api/chat?session_id=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}`;
+        currentEventSource = new EventSource(url);
+
+        currentEventSource.onmessage = async (event) => {
             try {
-                // We use standard EventSource for SSE. Since we need to pass query params, we append it.
-                // In production with POST bodies, you'd use fetch() and read the response.body stream manually.
-                const url = `/api/chat?session_id=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}`;
-                currentEventSource = new EventSource(url);
+                const data = JSON.parse(event.data);
 
-                let isThinking = false;
-
-                currentEventSource.onmessage = (event) => {
-                    if (event.data === "[DONE]") {
-                        currentEventSource.close();
-                        btn.disabled = false;
-                        cursor.remove();
-                        return;
-                    }
-
-                    try {
-                        const data = JSON.parse(event.data);
-
-                        // Parse StreamEvent struct from Go
-                        if (data.type === "thought") {
-                            block.thoughts.classList.add('active');
-                            const line = document.createElement('div');
-                            line.className = 'thought-line';
-                            line.innerHTML = `<span class="spinner"></span> <span>${data.content}</span>`;
-                            block.thoughts.appendChild(line);
-                        }
-                        else if (data.type === "tool_call") {
-                            block.thoughts.classList.add('active');
-                            const line = document.createElement('div');
-                            line.className = 'thought-line';
-                            line.innerHTML = `<span class="tool-badge">FUNC</span> <span>${data.content}</span>`;
-                            block.thoughts.appendChild(line);
-                        }
-                        else if (data.type === "content") {
-                            // First exact word, remove spinner from last thought
-                            const spinners = block.thoughts.querySelectorAll('.spinner');
-                            spinners.forEach(s => s.remove());
-
-                            block.rawContent += data.content;
-                            block.content.innerHTML = `${renderMarkdown(block.rawContent)}<span class="cursor"></span>`;
-                        }
-                        else if (data.type === "action_required") {
-                            // Stop spinners
-                            const spinners = block.thoughts.querySelectorAll('.spinner');
-                            spinners.forEach(s => s.remove());
-
-                            const actionData = JSON.parse(data.content);
-
-                            const actionBox = document.createElement('div');
-                            actionBox.className = 'action-box';
-                            actionBox.innerHTML = `
-                                <div class="action-title">⚠️ Action Requires Confirmation</div>
-                                <div>The Agent wants to execute: <strong>${actionData.tool}</strong></div>
-                                <pre style="font-size: 0.8rem; margin-top: 0.5rem; color: var(--text-muted);">${JSON.stringify(actionData.args, null, 2)}</pre>
-                                <div class="action-buttons">
-                                    <button class="btn-approve" onclick="alert('In a real app, this sends an approval API call to resume the Agent.')">Approve</button>
-                                    <button class="btn-reject" onclick="alert('Action rejected')">Reject</button>
-                                </div>
-                            `;
-
-                            block.content.insertBefore(actionBox, cursor);
-
-                            currentEventSource.close();
-                            btn.disabled = false;
-                            cursor.remove();
-                        }
-                        else if (data.type === "done" || data.type === "error") {
-                            currentEventSource.close();
-                            btn.disabled = false;
-                            cursor.remove();
-                            if (data.type === "error") {
-                                block.rawContent += `\n\n❌ Error: ${data.content}`;
-                                block.content.innerHTML = renderMarkdown(block.rawContent);
-                            } else {
-                                block.content.innerHTML = renderMarkdown(block.rawContent);
-                            }
-                        }
-
-                        window.scrollTo(0, document.body.scrollHeight);
-
-                    } catch (err) {
-                        console.error("Parse error:", err, event.data);
-                    }
-                };
-
-                currentEventSource.onerror = (err) => {
-                    console.error("EventSource failed:", err);
+                if (data.type === 'thought') {
+                    block.thoughts.classList.add('active');
+                    const line = document.createElement('div');
+                    line.className = 'thought-line';
+                    line.innerHTML = `<span class="spinner"></span><span>${escapeHtml(data.content)}</span>`;
+                    block.thoughts.appendChild(line);
+                }
+                else if (data.type === 'tool_call') {
+                    block.thoughts.classList.add('active');
+                    const line = document.createElement('div');
+                    line.className = 'thought-line';
+                    line.innerHTML = `<span class="tool-badge">TOOL</span><span>${escapeHtml(data.content)}</span>`;
+                    block.thoughts.appendChild(line);
+                }
+                else if (data.type === 'content') {
+                    block.thoughts.querySelectorAll('.spinner').forEach(s => s.remove());
+                    block.rawContent += data.content;
+                    block.content.innerHTML = `${renderMarkdown(block.rawContent)}<span class="cursor"></span>`;
+                    attachImageHandlers(block.content);
+                }
+                else if (data.type === 'action_required') {
+                    renderActionBox(block, cursor, data);
+                    // Don't close the stream — the agent resumes after approval.
+                }
+                else if (data.type === 'done' || data.type === 'error') {
                     currentEventSource.close();
                     btn.disabled = false;
                     cursor.remove();
-                };
+                    if (data.type === 'error') {
+                        block.rawContent += `\n\n❌ ${escapeHtml(data.content)}`;
+                    }
+                    block.content.innerHTML = renderMarkdown(block.rawContent);
+                    attachImageHandlers(block.content);
+                    await refreshMemory();
+                }
 
-            } catch (error) {
-                block.content.innerHTML = "❌ Connection Error";
-                cursor.remove();
-                btn.disabled = false;
+                chat.scrollTop = chat.scrollHeight;
+            } catch (err) {
+                console.error('Parse error:', err, event.data);
             }
-        }
-    </script>
+        };
+
+        currentEventSource.onerror = () => {
+            currentEventSource.close();
+            btn.disabled = false;
+            cursor.remove();
+        };
+    }
+
+    // Refresh memory every time the page loads and whenever done.
+    refreshMemory();
+</script>
 </body>
 </html>
