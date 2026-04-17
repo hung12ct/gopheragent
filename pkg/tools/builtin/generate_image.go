@@ -31,11 +31,17 @@ const (
 //
 // Generated files are saved to SaveDir and served at URLBase/<filename>.
 // Both fields must be set before the first Execute call.
+type generateImageArgs struct {
+	Prompt  string `json:"prompt"            description:"Detailed visual description. Include style (photorealistic, oil painting, anime…), lighting, mood, camera angle, color palette."`
+	Size    string `json:"size,omitempty"    description:"Image dimensions. Use 1792x1024 for landscapes/wide scenes, 1024x1792 for portraits/tall compositions, 1024x1024 for balanced square shots." enum:"1024x1024,1792x1024,1024x1792"`
+	Style   string `json:"style,omitempty"   description:"vivid: hyper-real, dramatic, saturated. natural: softer, more realistic." enum:"vivid,natural"`
+	Quality string `json:"quality,omitempty" description:"hd enables finer detail and sharper texture — recommended for showcase images." enum:"standard,hd"`
+}
+
 type GenerateImageTool struct {
 	client     *openai.Client
 	httpClient *http.Client
 	model      string
-	schema     tools.ToolSchema
 	SaveDir    string // local directory to save generated images
 	URLBase    string // URL prefix served by the host HTTP server, e.g. "/media"
 }
@@ -56,31 +62,6 @@ func NewGenerateImageTool(apiKey, model string) (*GenerateImageTool, error) {
 		client:     openai.NewClient(apiKey),
 		httpClient: &http.Client{Timeout: imageDownloadTimeout},
 		model:      model,
-		schema: tools.ToolSchema{
-			Type: "object",
-			Properties: map[string]any{
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "Detailed visual description. Include style (photorealistic, oil painting, anime…), lighting, mood, camera angle, color palette.",
-				},
-				"size": map[string]any{
-					"type":        "string",
-					"enum":        []string{"1024x1024", "1792x1024", "1024x1792"},
-					"description": "Image dimensions. Use 1792x1024 for landscapes/wide scenes, 1024x1792 for portraits/tall compositions, 1024x1024 for balanced square shots.",
-				},
-				"style": map[string]any{
-					"type":        "string",
-					"enum":        []string{"vivid", "natural"},
-					"description": "vivid: hyper-real, dramatic, saturated. natural: softer, more realistic.",
-				},
-				"quality": map[string]any{
-					"type":        "string",
-					"enum":        []string{"standard", "hd"},
-					"description": "hd enables finer detail and sharper texture — recommended for showcase images.",
-				},
-			},
-			Required: []string{"prompt"},
-		},
 	}, nil
 }
 
@@ -90,19 +71,16 @@ func (t *GenerateImageTool) Description() string {
 		"Always craft a vivid, detailed prompt — style, lighting, mood, composition, camera angle. " +
 		"After generating, display the image directly in the chat."
 }
-func (t *GenerateImageTool) ParametersSchema() tools.ToolSchema { return t.schema }
+func (t *GenerateImageTool) ParametersSchema() tools.ToolSchema {
+	return tools.SchemaFor[generateImageArgs]()
+}
 func (t *GenerateImageTool) RequiresConfirmation() bool         { return false }
 func (t *GenerateImageTool) InlineResult() bool                 { return true }
 
 // Execute generates the image, downloads it, saves it to SaveDir, and returns
 // a markdown image tag pointing at URLBase/<filename>.
 func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		Prompt  string `json:"prompt"`
-		Size    string `json:"size"`
-		Style   string `json:"style"`
-		Quality string `json:"quality"`
-	}
+	var args generateImageArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: generate_image: invalid args: %w", err)
 	}

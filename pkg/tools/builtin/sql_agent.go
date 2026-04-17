@@ -162,18 +162,13 @@ func (t *SQLAgentTool) Description() string {
 	return "Translate natural language business questions into SQL and query the Database directly. It automatically determines tables, runs queries, and returns structured data."
 }
 
+type sqlAgentArgs struct {
+	Query string `json:"query" description:"The natural language query or task for the SQL database Sub-Agent to perform."`
+}
+
 // ParametersSchema implements tools.Tool.
 func (t *SQLAgentTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"query": map[string]any{
-				"type":        "string",
-				"description": "The natural language query or task for the SQL database Sub-Agent to perform.",
-			},
-		},
-		Required: []string{"query"},
-	}
+	return tools.SchemaFor[sqlAgentArgs]()
 }
 
 // RequiresConfirmation returns true so that every SQL-agent invocation goes
@@ -191,9 +186,7 @@ func (t *SQLAgentTool) RequiresConfirmation() bool {
 // agents run in parallel and their execution results are clustered by hash;
 // the answer from the winning cluster is returned.
 func (t *SQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		Query string `json:"query"`
-	}
+	var args sqlAgentArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
 	}
@@ -367,25 +360,18 @@ func (t *executeSQLTool) Description() string {
 	return "Execute a single read-only SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Multi-statement input and DDL/DML are rejected."
 }
 
+type executeSQLArgs struct {
+	SQLQuery string `json:"sql_query" description:"The exact SQL query string to run. Single statement only, read-only."`
+}
+
 func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"sql_query": map[string]any{
-				"type":        "string",
-				"description": "The exact SQL query string to run. Single statement only, read-only.",
-			},
-		},
-		Required: []string{"sql_query"},
-	}
+	return tools.SchemaFor[executeSQLArgs]()
 }
 
 func (t *executeSQLTool) RequiresConfirmation() bool { return false }
 
 func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		SQLQuery string `json:"sql_query"`
-	}
+	var args executeSQLArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
 	}

@@ -53,36 +53,21 @@ func (t *FileReadTool) Description() string {
 	return "Read the contents of a file from the local workspace. Paths are resolved relative to a fixed root directory; attempts to traverse outside root are rejected."
 }
 
+type fileReadArgs struct {
+	Path   string `json:"path"             description:"File path to read, relative to the configured root directory."`
+	Offset int64  `json:"offset,omitempty" description:"Optional byte offset to start reading from. Defaults to 0."`
+	Length int64  `json:"length,omitempty" description:"Optional number of bytes to read. Capped by MaxBytes. Defaults to MaxBytes."`
+}
+
 func (t *FileReadTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"path": map[string]any{
-				"type":        "string",
-				"description": "File path to read, relative to the configured root directory.",
-			},
-			"offset": map[string]any{
-				"type":        "integer",
-				"description": "Optional byte offset to start reading from. Defaults to 0.",
-			},
-			"length": map[string]any{
-				"type":        "integer",
-				"description": "Optional number of bytes to read. Capped by MaxBytes. Defaults to MaxBytes.",
-			},
-		},
-		Required: []string{"path"},
-	}
+	return tools.SchemaFor[fileReadArgs]()
 }
 
 // RequiresConfirmation is false — reads are non-destructive.
 func (t *FileReadTool) RequiresConfirmation() bool { return false }
 
 func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var args struct {
-		Path   string `json:"path"`
-		Offset int64  `json:"offset"`
-		Length int64  `json:"length"`
-	}
+	var args fileReadArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
 	}
