@@ -21,7 +21,8 @@ go.work.sum
 .vscode/
 *.swp
 *.swo
-
+.claude/
+CLAUDE.md
 # OS
 .DS_Store
 Thumbs.db

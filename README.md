@@ -3,6 +3,8 @@
   <p><b>Build AI Agents with YAML. Ship them in Go.</b></p>
   <p>
     <a href="https://pkg.go.dev/github.com/hung12ct/gopheragent"><img src="https://pkg.go.dev/badge/github.com/hung12ct/gopheragent.svg" alt="Go Reference"></a>
+    <a href="https://github.com/hung12ct/gopheragent/actions/workflows/ci.yml"><img src="https://github.com/hung12ct/gopheragent/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   </p>
 </div>
 
@@ -184,28 +186,36 @@ Import `github.com/hung12ct/gopheragent/pkg/tools/builtin`:
 
 ## Writing Custom Tools
 
-Implement the `tools.Tool` interface — one struct, five methods:
+Implement the `tools.Tool` interface — one struct, five methods. Use
+`tools.SchemaFor[T]()` to derive the JSON schema from a Go struct instead
+of hand-writing `map[string]any` literals:
 
 ```go
+type CheckInventoryArgs struct {
+    ProductName string `json:"product_name" description:"Product to check"`
+}
+
 type CheckInventoryTool struct{ db *sql.DB }
 
-func (t *CheckInventoryTool) Name() string        { return "check_inventory" }
-func (t *CheckInventoryTool) Description() string  { return "Check product stock in warehouse" }
+func (t *CheckInventoryTool) Name() string               { return "check_inventory" }
+func (t *CheckInventoryTool) Description() string        { return "Check product stock in warehouse" }
 func (t *CheckInventoryTool) ParametersSchema() tools.ToolSchema {
-    return tools.ToolSchema{
-        Type: "object",
-        Properties: map[string]interface{}{
-            "product_name": map[string]interface{}{"type": "string", "description": "Product to check"},
-        },
-        Required: []string{"product_name"},
-    }
+    return tools.SchemaFor[CheckInventoryArgs]()
 }
 func (t *CheckInventoryTool) RequiresConfirmation() bool { return false }
 func (t *CheckInventoryTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+    var args CheckInventoryArgs
+    if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+        return "", err
+    }
     // your logic here
     return `{"in_stock": 250, "warehouse": "HCM-01"}`, nil
 }
 ```
+
+Supported tags: `json:"name,omitempty"`, `description:"..."`, `enum:"a,b,c"`,
+`required:"true"`/`"false"`. Pointers and `omitempty` fields default to
+optional. See `pkg/tools/schema.go` for the full list of supported types.
 
 Register it once → every YAML agent can use it:
 ```go
@@ -304,6 +314,48 @@ sqlTool := builtin.NewSQLAgentTool(db, schema, sm, provider).
 
 `OnSQL` fires on every attempt, including retries — `ev.SessionKey` correlates all attempts from the same request.
 
+### Per-Session Token Budget
+
+Cap spend per conversation. `BudgetTracker` plugs into the loop as an event
+handler (to accumulate usage) and a before-LLM hook (to deny new calls once
+the cap is hit):
+
+```go
+bt := agent.NewBudgetTracker(100_000) // 100k tokens per session
+
+loop.OnEvent(bt.Handler())
+loop.BeforeLLMHooks = append(loop.BeforeLLMHooks, bt.Guard())
+
+// Inspect or reset at any time:
+used := bt.Usage("session-123")
+bt.Reset("session-123")
+```
+
+Every provider emits a `usage` StreamEvent after each LLM call carrying
+prompt / completion / total tokens — use the same handler for cost tracking,
+dashboards, or per-tenant billing.
+
+### Bounded Async Workers
+
+`AsyncTaskManager` spawns a goroutine per background task. Cap concurrency so
+a burst of `start_async_task` calls cannot exhaust the process:
+
+```go
+mgr := agent.NewAsyncTaskManager(sessions, registry, provider).
+    WithMaxConcurrent(8)
+```
+
+`StartTask` returns `agent: async task cap reached (8 in flight)` when the
+cap is saturated — the caller decides whether to retry, queue externally, or
+surface to the user. Cancelling or completing any in-flight task frees a slot.
+
+### Human-In-The-Loop
+
+Tools that declare `RequiresConfirmation() == true` trigger `ConfirmHITL`
+before execution. See [`examples/hitl_server`](./examples/hitl_server) for a
+reference bridge between the synchronous callback and an async HTTP approval
+endpoint.
+
 ### Structured Error Handling
 
 ```go
@@ -326,6 +378,7 @@ if errors.As(err, &lfe) {
 | OpenAI | `llm.NewOpenAIProvider(key, model)` | gpt-4o, gpt-4o-mini, o1, ... |
 | Anthropic | `llm.NewAnthropicProvider(key, model)` | claude-sonnet, claude-opus, ... |
 | Google Gemini | `llm.NewGeminiProvider(key, model)` | gemini-2.5-flash, gemini-2.5-pro, ... |
+| Vertex AI (Gemini) | `llm.NewVertexGeminiProvider(project, location, model)` | Vertex-hosted Gemini via ADC |
 | OpenAI-compatible | `llm.NewOpenAICompatProvider(key, model, baseURL)` | Ollama, Groq, vLLM, Together, ... |
 
 All providers auto-discover API keys from environment variables when key is `""`.
@@ -333,6 +386,14 @@ All providers auto-discover API keys from environment variables when key is `""`
 ## Examples
 
 See `examples/` — each folder has its own `README.md` and `.env.example`.
+
+| Example | What it shows |
+|---|---|
+| [`examples/sse_server`](./examples/sse_server) | 5-minute streaming HTTP server using Server-Sent Events |
+| [`examples/hitl_server`](./examples/hitl_server) | Human-in-the-loop approvals over HTTP (async bridge) |
+| [`examples/dynamic_builder`](./examples/dynamic_builder) | Load an agent from YAML at runtime |
+| [`examples/multi_agent_data`](./examples/multi_agent_data) | SQL analytics hub with dynamic schema injection |
+| [`examples/yaml_agents`](./examples/yaml_agents) | Multiple YAML-defined agents sharing a catalog |
 
 ## License
 

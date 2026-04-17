@@ -24,17 +24,17 @@ func (t *ShowMediaTool) Description() string {
 func (t *ShowMediaTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
 		Type: "object",
-		Properties: map[string]interface{}{
-			"url": map[string]interface{}{
+		Properties: map[string]any{
+			"url": map[string]any{
 				"type":        "string",
 				"description": "Direct HTTP/HTTPS URL to the image or video file.",
 			},
-			"media_type": map[string]interface{}{
+			"media_type": map[string]any{
 				"type":        "string",
 				"enum":        []string{"image", "video"},
 				"description": "Type of media: 'image' for pictures/GIFs, 'video' for MP4/WebM/etc.",
 			},
-			"caption": map[string]interface{}{
+			"caption": map[string]any{
 				"type":        "string",
 				"description": "Optional caption or alt-text to display with the media.",
 			},

@@ -29,11 +29,15 @@ func NewMySQLSessionManager(db *sql.DB, systemPrompt ...string) (*MySQLSessionMa
 			session_key VARCHAR(255) PRIMARY KEY,
 			messages    JSON NOT NULL,
 			behavior    TEXT,
+			async_tasks JSON,
 			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 		)
 	`); err != nil {
 		return nil, fmt.Errorf("failed to create session table: %w", err)
 	}
+
+	// Add async_tasks column if it doesn't exist (backward compatibility filter)
+	db.Exec("ALTER TABLE agent_sessions ADD COLUMN async_tasks JSON")
 
 	sp := "You are an AI assistant."
 	if len(systemPrompt) > 0 && systemPrompt[0] != "" {
@@ -123,12 +127,78 @@ func (sm *MySQLSessionManager) SetHistory(_ context.Context, sessionKey string, 
 	session.Messages = cp
 }
 
+func (sm *MySQLSessionManager) GetAsyncTasks(ctx context.Context, sessionKey string) map[string]AsyncTask {
+	sm.mu.RLock()
+	session, ok := sm.sessions[sessionKey]
+	sm.mu.RUnlock()
+
+	if ok && session.AsyncTasks != nil {
+		cp := make(map[string]AsyncTask, len(session.AsyncTasks))
+		for k, v := range session.AsyncTasks {
+			cp[k] = v
+		}
+		return cp
+	}
+
+	var asyncTasksJSON sql.NullString
+	err := sm.db.QueryRowContext(ctx, "SELECT async_tasks FROM agent_sessions WHERE session_key = ?", sessionKey).Scan(&asyncTasksJSON)
+	if err == nil && asyncTasksJSON.Valid && asyncTasksJSON.String != "" {
+		var tasks map[string]AsyncTask
+		if json.Unmarshal([]byte(asyncTasksJSON.String), &tasks) == nil {
+			sm.mu.Lock()
+			if _, ok := sm.sessions[sessionKey]; !ok {
+				sm.sessions[sessionKey] = &Session{Key: sessionKey}
+			}
+			sm.sessions[sessionKey].AsyncTasks = tasks
+			sm.mu.Unlock()
+
+			cp := make(map[string]AsyncTask, len(tasks))
+			for k, v := range tasks {
+				cp[k] = v
+			}
+			return cp
+		}
+	}
+	return map[string]AsyncTask{}
+}
+
+func (sm *MySQLSessionManager) SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	session, ok := sm.sessions[sessionKey]
+	if !ok {
+		session = &Session{Key: sessionKey}
+		sm.sessions[sessionKey] = session
+	}
+	cp := make(map[string]AsyncTask, len(tasks))
+	for k, v := range tasks {
+		cp[k] = v
+	}
+	session.AsyncTasks = cp
+}
+
 // UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer.
 func (sm *MySQLSessionManager) UpdateBehaviorSummary(sessionKey string, newSummary string) error {
 	sm.mu.Lock()
 	sm.behaviors[sessionKey] = newSummary
 	sm.mu.Unlock()
 	// Will be persisted on next Save()
+	return nil
+}
+
+// DeleteSession removes the session from the in-memory cache and deletes the
+// corresponding row from the agent_sessions table. Deleting a non-existent
+// session is a no-op.
+func (sm *MySQLSessionManager) DeleteSession(ctx context.Context, sessionKey string) error {
+	sm.mu.Lock()
+	delete(sm.sessions, sessionKey)
+	delete(sm.behaviors, sessionKey)
+	delete(sm.lastSumLen, sessionKey)
+	sm.mu.Unlock()
+
+	if _, err := sm.db.ExecContext(ctx, "DELETE FROM agent_sessions WHERE session_key = ?", sessionKey); err != nil {
+		return fmt.Errorf("history: delete session %q: %w", sessionKey, err)
+	}
 	return nil
 }
 
@@ -171,11 +241,13 @@ func (sm *MySQLSessionManager) Save(ctx context.Context, sessionKey string) erro
 		return err
 	}
 
+	asyncTasksBytes, _ := json.Marshal(session.AsyncTasks)
+
 	query := `
-		INSERT INTO agent_sessions (session_key, messages, behavior)
-		VALUES (?, ?, ?)
-		ON DUPLICATE KEY UPDATE messages = VALUES(messages), behavior = VALUES(behavior)
+		INSERT INTO agent_sessions (session_key, messages, behavior, async_tasks)
+		VALUES (?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE messages = VALUES(messages), behavior = VALUES(behavior), async_tasks = VALUES(async_tasks)
 	`
-	_, err = sm.db.ExecContext(ctx, query, sessionKey, string(msgsBytes), behavior)
+	_, err = sm.db.ExecContext(ctx, query, sessionKey, string(msgsBytes), behavior, string(asyncTasksBytes))
 	return err
 }

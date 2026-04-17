@@ -127,11 +127,69 @@ func (sm *FileSessionManager) SetHistory(_ context.Context, sessionKey string, h
 	session.Messages = messages
 }
 
+func (sm *FileSessionManager) GetAsyncTasks(ctx context.Context, sessionKey string) map[string]AsyncTask {
+	sm.mu.RLock()
+	session, ok := sm.sessions[sessionKey]
+	sm.mu.RUnlock()
+
+	if !ok {
+		// Just call GetHistory to load the full session into memory cache
+		sm.GetHistory(ctx, sessionKey)
+		sm.mu.RLock()
+		session, ok = sm.sessions[sessionKey]
+		sm.mu.RUnlock()
+	}
+
+	if ok && session != nil && session.AsyncTasks != nil {
+		cp := make(map[string]AsyncTask, len(session.AsyncTasks))
+		for k, v := range session.AsyncTasks {
+			cp[k] = v
+		}
+		return cp
+	}
+
+	return map[string]AsyncTask{}
+}
+
+func (sm *FileSessionManager) SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	session, ok := sm.sessions[sessionKey]
+	if !ok {
+		session = &Session{Key: sessionKey}
+		sm.sessions[sessionKey] = session
+	}
+	cp := make(map[string]AsyncTask, len(tasks))
+	for k, v := range tasks {
+		cp[k] = v
+	}
+	session.AsyncTasks = cp
+}
+
 // UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer.
 func (sm *FileSessionManager) UpdateBehaviorSummary(sessionKey string, newSummary string) error {
 	sm.mu.Lock()
 	sm.behaviors[sessionKey] = newSummary
 	sm.mu.Unlock()
+	return nil
+}
+
+// DeleteSession removes the session from the in-memory cache and deletes the
+// backing JSON file (if configured). Deleting a non-existent session is a no-op.
+func (sm *FileSessionManager) DeleteSession(_ context.Context, sessionKey string) error {
+	sm.mu.Lock()
+	delete(sm.sessions, sessionKey)
+	delete(sm.behaviors, sessionKey)
+	delete(sm.lastSumLen, sessionKey)
+	sm.mu.Unlock()
+
+	if sm.storage == "" {
+		return nil
+	}
+	err := os.Remove(filepath.Join(sm.storage, sessionKey+".json"))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("history: delete session %q: %w", sessionKey, err)
+	}
 	return nil
 }
 

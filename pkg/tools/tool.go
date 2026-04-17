@@ -12,7 +12,7 @@ import (
 // It maps directly to the OpenAI/Anthropic function calling schema format.
 type ToolSchema struct {
 	Type       string                 `json:"type"`                 // typically "object"
-	Properties map[string]interface{} `json:"properties,omitempty"` // parameter definitions
+	Properties map[string]any `json:"properties,omitempty"` // parameter definitions
 	Required   []string               `json:"required,omitempty"`   // required parameter names
 }
 

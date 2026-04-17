@@ -64,8 +64,8 @@ func (t *SQLAgentTool) Description() string {
 func (t *SQLAgentTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
 		Type: "object",
-		Properties: map[string]interface{}{
-			"query": map[string]interface{}{
+		Properties: map[string]any{
+			"query": map[string]any{
 				"type":        "string",
 				"description": "The natural language query or task for the SQL database Sub-Agent to perform.",
 			},
@@ -167,8 +167,8 @@ func (t *executeSQLTool) Description() string {
 func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
 		Type: "object",
-		Properties: map[string]interface{}{
-			"sql_query": map[string]interface{}{
+		Properties: map[string]any{
+			"sql_query": map[string]any{
 				"type":        "string",
 				"description": "The exact SQL query string to run.",
 			},
@@ -216,10 +216,10 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 		return fmt.Sprintf("Query error (failed to retrieve columns): %v", err), nil
 	}
 
-	var results []map[string]interface{}
+	var results []map[string]any
 	for rows.Next() {
-		columns := make([]interface{}, len(cols))
-		columnPointers := make([]interface{}, len(cols))
+		columns := make([]any, len(cols))
+		columnPointers := make([]any, len(cols))
 		for i := range columns {
 			columnPointers[i] = &columns[i]
 		}
@@ -227,7 +227,7 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 			return fmt.Sprintf("Result extraction error: %v", err), nil
 		}
 
-		rowData := make(map[string]interface{})
+		rowData := make(map[string]any)
 		for i, colName := range cols {
 			val := columns[i]
 			if b, ok := val.([]byte); ok {

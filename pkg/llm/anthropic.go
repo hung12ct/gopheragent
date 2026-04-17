@@ -55,7 +55,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 					blocks = append(blocks, anthropic.NewTextBlock(m.Content))
 				}
 				for _, tc := range m.ToolCalls {
-					var input map[string]interface{}
+					var input map[string]any
 					if err := json.Unmarshal([]byte(tc.Arguments), &input); err != nil {
 						return agent.LLMResult{}, fmt.Errorf("corrupt tool call args for %s: %w", tc.Name, err)
 					}
@@ -156,5 +156,11 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		}
 	}
 
-	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls}, nil
+	usage := agent.TokenUsage{
+		PromptTokens:     int(accumulated.Usage.InputTokens),
+		CompletionTokens: int(accumulated.Usage.OutputTokens),
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+
+	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}, nil
 }
