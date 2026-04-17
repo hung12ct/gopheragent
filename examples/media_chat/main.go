@@ -1,3 +1,12 @@
+// media_chat demonstrates native multimodal input: uploaded images are
+// injected into the conversation history as MediaParts and become directly
+// visible to the LLM — no tool call, no separate vision API, no base64
+// round-trip each turn. "User uploads photo, assistant references it 3
+// turns later" works for free.
+//
+// Video and text files still use a describe_file tool fallback because
+// video input isn't uniformly supported across providers (Anthropic
+// declines it; Gemini requires Files-API uploads).
 package main
 
 import (
@@ -35,53 +44,58 @@ var uploadDir = filepath.Join(os.TempDir(), "gopheragent-media")
 
 // ── File session tracking ──────────────────────────────────────────────────
 
+// uploadedFile tracks a non-image file (video, text) that still uses the
+// describe_file tool path. Image uploads bypass this — they go straight
+// into conversation history as MediaParts.
 type uploadedFile struct {
-	Path     string // absolute path on disk
-	MIMEType string // e.g. "image/jpeg"
-	Name     string // original filename
+	Path     string
+	MIMEType string
+	Name     string
 }
 
 // allowedMIME lists accepted upload types and how to handle them.
+// The "image" category routes through native MediaParts; everything
+// else routes through describe_file.
 var allowedMIME = map[string]string{
-	"image/jpeg":      "image",
-	"image/png":       "image",
-	"image/gif":       "image",
-	"image/webp":      "image",
-	"image/svg+xml":   "image",
-	"video/mp4":       "video",
-	"video/webm":      "video",
-	"video/quicktime": "video",
-	"video/ogg":       "video",
-	"text/plain":      "text",
-	"text/markdown":   "text",
-	"text/csv":        "text",
+	"image/jpeg":       "image",
+	"image/png":        "image",
+	"image/gif":        "image",
+	"image/webp":       "image",
+	"image/svg+xml":    "image",
+	"video/mp4":        "video",
+	"video/webm":       "video",
+	"video/quicktime":  "video",
+	"video/ogg":        "video",
+	"text/plain":       "text",
+	"text/markdown":    "text",
+	"text/csv":         "text",
 	"application/json": "text",
 }
 
 // ── Analyzer interface ────────────────────────────────────────────────────
 
-// analyzer is the narrow interface satisfied by llm.OpenAIVisionAnalyzer and
-// llm.GeminiMediaAnalyzer.
+// analyzer is the narrow interface satisfied by llm.GeminiMediaAnalyzer —
+// kept only for the video path. OpenAI vision is no longer needed because
+// image analysis happens natively in the main LLM call.
 type analyzer interface {
 	Analyze(ctx context.Context, media, prompt string) (string, error)
 }
 
-// ── DescribeFileTool ──────────────────────────────────────────────────────
+// ── DescribeFileTool (video + text only) ──────────────────────────────────
 
-// DescribeFileTool lets the agent query the file the user uploaded for the
-// current session. It encodes images/videos as base64 data URIs and passes
-// them to the vision/media model; text files are returned verbatim.
+// DescribeFileTool analyzes the video or text file the user uploaded for
+// the current session. Image uploads never reach this tool — they're
+// attached natively to the conversation so the main LLM sees them
+// directly.
 type DescribeFileTool struct {
 	mu       sync.RWMutex
-	sessions map[string]uploadedFile // sessionKey → file
-	vision   analyzer                // images (OpenAI or Gemini); may be nil
-	media    analyzer                // images + videos (Gemini); may be nil
+	sessions map[string]uploadedFile
+	media    analyzer // Gemini media analyzer; may be nil
 }
 
-func newDescribeFileTool(v, m analyzer) *DescribeFileTool {
+func newDescribeFileTool(m analyzer) *DescribeFileTool {
 	return &DescribeFileTool{
 		sessions: make(map[string]uploadedFile),
-		vision:   v,
 		media:    m,
 	}
 }
@@ -92,16 +106,15 @@ func (t *DescribeFileTool) setFile(sessionKey string, f uploadedFile) {
 	t.mu.Unlock()
 }
 
-func (t *DescribeFileTool) getFile(sessionKey string) (uploadedFile, bool) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	f, ok := t.sessions[sessionKey]
-	return f, ok
+func (t *DescribeFileTool) clearFile(sessionKey string) {
+	t.mu.Lock()
+	delete(t.sessions, sessionKey)
+	t.mu.Unlock()
 }
 
 func (t *DescribeFileTool) Name() string { return "describe_file" }
 func (t *DescribeFileTool) Description() string {
-	return "Analyze the file the user uploaded in this session. Pass the user's exact question or analysis instruction as the prompt. For images this calls a vision model; for text files it reads the content. Always call this before answering questions about the uploaded file."
+	return "Analyze a video or text file the user uploaded in this session. Pass the user's exact question or analysis instruction as the prompt. Not used for images — images are visible directly in the conversation."
 }
 func (t *DescribeFileTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
@@ -109,7 +122,7 @@ func (t *DescribeFileTool) ParametersSchema() tools.ToolSchema {
 		Properties: map[string]any{
 			"prompt": map[string]any{
 				"type":        "string",
-				"description": "Specific question or instruction for the uploaded file, e.g. 'What does this chart show?' or 'Summarize the key points.'",
+				"description": "Specific question or instruction for the uploaded file, e.g. 'Summarize the key events in this video.'",
 			},
 		},
 		Required: []string{"prompt"},
@@ -133,112 +146,72 @@ func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (string
 	f, ok := t.sessions[sessionKey]
 	t.mu.RUnlock()
 	if !ok {
-		return "", fmt.Errorf("tools: no file uploaded for this session — ask the user to upload a file first")
+		return "", fmt.Errorf("tools: no video or text file uploaded for this session")
 	}
 
-	category := allowedMIME[f.MIMEType]
-
-	switch category {
-	case "image", "video":
-		return t.describeMedia(ctx, f, args.Prompt)
-	case "text":
-		return t.describeText(f, args.Prompt)
-	default:
-		return "", fmt.Errorf("tools: unsupported file type %q", f.MIMEType)
-	}
-}
-
-// describeMedia handles both image and video files by base64-encoding them as
-// data URIs. Video files require a media-capable analyzer (Gemini); images
-// fall back to the OpenAI vision analyzer if no media analyzer is configured.
-func (t *DescribeFileTool) describeMedia(ctx context.Context, f uploadedFile, prompt string) (string, error) {
-	category := allowedMIME[f.MIMEType]
-
-	// Pick the right analyzer.
-	var a analyzer
-	if t.media != nil {
-		a = t.media // Gemini: handles images and videos
-	} else if category == "image" && t.vision != nil {
-		a = t.vision // OpenAI: images only
-	}
-	if a == nil {
-		if category == "video" {
-			return "", fmt.Errorf("tools: video analysis requires GEMINI_API_KEY — set it to enable video support")
+	switch allowedMIME[f.MIMEType] {
+	case "video":
+		if t.media == nil {
+			return "", fmt.Errorf("tools: video analysis requires GEMINI_API_KEY")
 		}
-		return "", fmt.Errorf("tools: vision analysis not configured — set OPENAI_API_KEY or GEMINI_API_KEY")
+		raw, err := os.ReadFile(f.Path)
+		if err != nil {
+			return "", fmt.Errorf("tools: read file: %w", err)
+		}
+		dataURI := fmt.Sprintf("data:%s;base64,%s", f.MIMEType, base64.StdEncoding.EncodeToString(raw))
+		return t.media.Analyze(ctx, dataURI, args.Prompt)
+	case "text":
+		raw, err := os.ReadFile(f.Path)
+		if err != nil {
+			return "", fmt.Errorf("tools: read file: %w", err)
+		}
+		const maxRunes = 12_000
+		runes := []rune(string(raw))
+		truncated := false
+		if len(runes) > maxRunes {
+			runes = runes[:maxRunes]
+			truncated = true
+		}
+		out := fmt.Sprintf("File: %s\nType: %s\n\nContent:\n%s", f.Name, f.MIMEType, string(runes))
+		if truncated {
+			out += "\n\n[File truncated at 12,000 characters]"
+		}
+		out += fmt.Sprintf("\n\n---\nUser instruction: %s", args.Prompt)
+		return out, nil
+	default:
+		return "", fmt.Errorf("tools: unsupported file type %q for describe_file", f.MIMEType)
 	}
-
-	raw, err := os.ReadFile(f.Path)
-	if err != nil {
-		return "", fmt.Errorf("tools: read file: %w", err)
-	}
-	dataURI := fmt.Sprintf("data:%s;base64,%s", f.MIMEType, base64.StdEncoding.EncodeToString(raw))
-	return a.Analyze(ctx, dataURI, prompt)
-}
-
-func (t *DescribeFileTool) describeText(f uploadedFile, prompt string) (string, error) {
-	raw, err := os.ReadFile(f.Path)
-	if err != nil {
-		return "", fmt.Errorf("tools: read file: %w", err)
-	}
-	const maxRunes = 12_000
-	content := string(raw)
-	runes := []rune(content)
-	truncated := false
-	if len(runes) > maxRunes {
-		runes = runes[:maxRunes]
-		truncated = true
-	}
-	result := fmt.Sprintf("File: %s\nType: %s\n\nContent:\n%s", f.Name, f.MIMEType, string(runes))
-	if truncated {
-		result += "\n\n[File truncated at 12,000 characters]"
-	}
-	result += fmt.Sprintf("\n\n---\nUser instruction: %s", prompt)
-	return result, nil
 }
 
 // ── Agent setup ───────────────────────────────────────────────────────────
 
-const systemPrompt = `You are an expert file analysis assistant. The user can upload images, videos, and text documents, then ask you questions about them.
+const systemPrompt = `You are an expert file-analysis assistant.
 
-**Your tool:**
-- ` + "`describe_file(prompt)`" + ` — analyze the uploaded file with a specific question. For images and videos, this calls a multimodal vision model. For text files, this returns the content.
+**Images:** Uploaded images are visible to you directly in this conversation — describe, analyze, compare, and reference them as if they were part of the user's message. You do NOT need a tool for images.
 
-**Workflow:**
-1. When the user asks anything about the uploaded file, call ` + "`describe_file`" + ` with their question as the prompt.
-2. After receiving the analysis, give a detailed, insightful answer — don't just repeat the raw output.
-3. You may call ` + "`describe_file`" + ` multiple times with different prompts to explore different aspects.
-4. If no file has been uploaded yet, ask the user to upload one.
+**Videos and text files:** Call ` + "`describe_file(prompt)`" + ` to analyze them. Pass the user's exact question as the prompt.
 
-**For images:** provide rich analysis — describe objects, layout, colors, text, data trends, or anything relevant to the user's question.
-**For videos:** describe what is happening, key scenes, people, objects, actions, or any relevant content the user asks about.
-**For documents:** summarize, extract key points, compare data, or answer specific questions about the content.`
+**Memory:** When a user uploads an image and then asks follow-up questions (possibly many turns later), the image is still in this conversation history — you can still see and reason about it.
+
+Be specific, detailed, and insightful — don't just rephrase tool output or image captions. Point out noteworthy details, patterns, or implications the user might miss.`
 
 var (
-	agentLoop    *agent.AgentLoop
-	descFileTool *DescribeFileTool
+	agentLoop      *agent.AgentLoop
+	sessionManager *history.InMemSessionManager
+	descFileTool   *DescribeFileTool
 )
 
-// buildAnalyzers returns (imageAnalyzer, mediaAnalyzer).
-// mediaAnalyzer (Gemini) handles images AND videos.
-// imageAnalyzer (OpenAI) is a fallback for images when Gemini is unavailable.
-func buildAnalyzers() (imageOnly, media analyzer) {
-	if a, err := llm.NewGeminiMediaAnalyzer("", ""); err == nil {
-		log.Printf("Media analyzer: Gemini (images + video)")
-		media = a
-	} else {
-		log.Printf("Gemini media analyzer unavailable (%v)", err)
+// buildMediaAnalyzer returns the Gemini media analyzer for video analysis.
+// Nil is a valid return value — the tool surfaces a clear error when
+// GEMINI_API_KEY is missing and the user uploads a video.
+func buildMediaAnalyzer() analyzer {
+	a, err := llm.NewGeminiMediaAnalyzer("", "")
+	if err != nil {
+		log.Printf("Gemini media analyzer unavailable (video uploads will fail): %v", err)
+		return nil
 	}
-	if a, err := llm.NewOpenAIVisionAnalyzer("", ""); err == nil {
-		log.Printf("Image analyzer: OpenAI gpt-4o (images only)")
-		imageOnly = a
-	} else {
-		log.Printf("OpenAI vision analyzer unavailable (%v)", err)
-	}
-	if media == nil && imageOnly == nil {
-		log.Printf("No vision analyzer configured — set GEMINI_API_KEY (images+video) or OPENAI_API_KEY (images only)")
-	}
-	return
+	log.Printf("Media analyzer: Gemini (video)")
+	return a
 }
 
 func buildLLMProvider() agent.LLMProvider {
@@ -268,22 +241,23 @@ func buildLLMProvider() agent.LLMProvider {
 }
 
 func initAgent() {
-	imageOnly, media := buildAnalyzers()
-	descFileTool = newDescribeFileTool(imageOnly, media)
+	descFileTool = newDescribeFileTool(buildMediaAnalyzer())
 
 	reg := tools.NewRegistry()
 	reg.Register(descFileTool)
 
-	sm := history.NewInMemSessionManager(systemPrompt)
-	agentLoop = agent.NewAgentLoop(sm, reg, buildLLMProvider())
+	sessionManager = history.NewInMemSessionManager(systemPrompt)
+	agentLoop = agent.NewAgentLoop(sessionManager, reg, buildLLMProvider())
 	agentLoop.EmitThoughts = true
 }
 
 // ── HTTP handlers ─────────────────────────────────────────────────────────
 
-// UploadHandler accepts multipart/form-data with fields:
-//   - file: the file to upload
-//   - session_id: identifies the session
+// UploadHandler accepts multipart/form-data. Image uploads are written
+// directly into session history as a user message carrying a MediaPart
+// plus a short synthetic assistant ack (keeping the user/assistant
+// alternation that Anthropic requires). Video and text uploads register
+// with describe_file as before.
 func UploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if r.Method != http.MethodPost {
@@ -309,21 +283,19 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Detect MIME type.
 	mimeType := header.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = mime.TypeByExtension(filepath.Ext(header.Filename))
 	}
-	// Strip parameters (e.g. "text/plain; charset=utf-8" → "text/plain")
 	if idx := strings.Index(mimeType, ";"); idx >= 0 {
 		mimeType = strings.TrimSpace(mimeType[:idx])
 	}
-	if _, ok := allowedMIME[mimeType]; !ok {
-		http.Error(w, fmt.Sprintf("unsupported file type %q — supported: jpg, png, gif, webp, mp4, webm, mov, txt, md, csv, json", mimeType), http.StatusBadRequest)
+	category, ok := allowedMIME[mimeType]
+	if !ok {
+		http.Error(w, fmt.Sprintf("unsupported file type %q", mimeType), http.StatusBadRequest)
 		return
 	}
 
-	// Save to upload directory.
 	ext := filepath.Ext(header.Filename)
 	if ext == "" {
 		ext = extensionForMIME(mimeType)
@@ -342,24 +314,62 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	descFileTool.setFile(sessionKey, uploadedFile{
-		Path:     destPath,
-		MIMEType: mimeType,
-		Name:     header.Filename,
-	})
-
-	log.Printf("Upload: session=%s file=%s type=%s", sessionKey, header.Filename, mimeType)
+	switch category {
+	case "image":
+		if err := injectImageIntoHistory(r.Context(), sessionKey, destPath, mimeType, header.Filename); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Drop any stale non-image file association — the user has moved on.
+		descFileTool.clearFile(sessionKey)
+		log.Printf("Upload: session=%s image=%s (injected into history)", sessionKey, header.Filename)
+	default:
+		descFileTool.setFile(sessionKey, uploadedFile{
+			Path:     destPath,
+			MIMEType: mimeType,
+			Name:     header.Filename,
+		})
+		log.Printf("Upload: session=%s file=%s type=%s (describe_file)", sessionKey, header.Filename, mimeType)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":        true,
 		"name":      header.Filename,
 		"mime_type": mimeType,
-		"category":  allowedMIME[mimeType],
+		"category":  category,
+		"native":    category == "image",
 	})
 }
 
-// ChatHandler streams the agent's response over SSE.
+// injectImageIntoHistory appends (user-with-image, assistant-ack) pair to
+// the session. The ack message preserves provider alternation rules and
+// gives the frontend a visible signal that the file was received. Every
+// subsequent chat turn sees the image in history without re-encoding.
+func injectImageIntoHistory(ctx context.Context, sessionKey, path, mimeType, name string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read upload: %w", err)
+	}
+	msgs := sessionManager.GetHistory(ctx, sessionKey)
+	msgs = append(msgs,
+		history.Message{
+			Role:    "user",
+			Content: fmt.Sprintf("[Uploaded image: %s]", name),
+			Parts:   []history.MediaPart{history.NewImagePartBytes(mimeType, raw)},
+		},
+		history.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("Got it — I can see %q. What would you like to know about it?", name),
+		},
+	)
+	sessionManager.SetHistory(ctx, sessionKey, msgs)
+	return sessionManager.Save(ctx, sessionKey)
+}
+
+// ChatHandler streams the agent's response over SSE. Plain text in, SSE
+// events out — all the multimodal magic is already in session history by
+// the time we get here.
 func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -379,14 +389,6 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	userMsg := r.URL.Query().Get("message")
 	if userMsg == "" {
 		userMsg = "What can you tell me about this file?"
-	}
-
-	// Prepend file context so the LLM knows a file has been uploaded.
-	if f, ok := descFileTool.getFile(sessionKey); ok {
-		userMsg = fmt.Sprintf(
-			"[Context: The user has uploaded a file named %q (MIME type: %s). Call describe_file to analyze it when answering questions about it.]\n\n%s",
-			f.Name, f.MIMEType, userMsg,
-		)
 	}
 
 	streamChan := make(chan agent.StreamEvent, 32)

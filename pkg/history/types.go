@@ -3,12 +3,71 @@ package history
 
 // Message represents a single message in a chat conversation.
 // It supports all standard roles: "system", "user", "assistant", and "tool".
+//
+// Multimodal input is expressed through Parts: when len(Parts) > 0, LLM
+// provider adapters iterate Parts instead of (or in addition to) Content.
+// When Parts is empty, adapters fall back to the plain-text Content path —
+// so every existing caller and test continues to work unchanged.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCallID string     `json:"tool_call_id,omitempty"` // for role:"tool" result messages
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // for role:"assistant" messages with tool calls
-	IsError    bool       `json:"is_error,omitempty"`     // true when a tool execution failed
+	Role       string      `json:"role"`
+	Content    string      `json:"content"`
+	Parts      []MediaPart `json:"parts,omitempty"`        // optional multimodal parts (images, richer text)
+	ToolCallID string      `json:"tool_call_id,omitempty"` // for role:"tool" result messages
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`   // for role:"assistant" messages with tool calls
+	IsError    bool        `json:"is_error,omitempty"`     // true when a tool execution failed
+}
+
+// PartType enumerates the kinds of content a MediaPart can hold.
+// Video and audio are intentionally omitted for now — Anthropic does not
+// accept them in messages today, and Gemini video requires Files-API upload
+// semantics that do not fit the simple inline model. Video remains on the
+// tool path via media_analyze.
+type PartType string
+
+const (
+	// PartText is a plain-text fragment. Equivalent to the Content string when
+	// used alone; useful when interleaved with image parts.
+	PartText PartType = "text"
+	// PartImage is an image. MIME must be set (e.g. "image/png", "image/jpeg").
+	// Exactly one of URL or Data should be populated.
+	PartImage PartType = "image"
+)
+
+// MediaPart is a typed chunk of a multimodal message.
+//
+// Usage rules:
+//   - Type=="text": only Text is read.
+//   - Type=="image": MIME is required; populate exactly one of URL or Data.
+//     URL may be an https:// URL or a data: URI. Data is raw bytes and
+//     will be base64-encoded by the adapter for providers that require it.
+//
+// The zero value is invalid — callers should use NewTextPart / NewImagePartURL
+// / NewImagePartBytes for safety.
+type MediaPart struct {
+	Type PartType `json:"type"`
+	Text string   `json:"text,omitempty"`
+	MIME string   `json:"mime,omitempty"` // e.g. "image/png"; required for non-text parts
+	URL  string   `json:"url,omitempty"`  // https://, http://, or data: URI
+	Data []byte   `json:"data,omitempty"` // raw bytes; JSON-marshals as base64
+}
+
+// NewTextPart constructs a text-only MediaPart.
+func NewTextPart(text string) MediaPart {
+	return MediaPart{Type: PartText, Text: text}
+}
+
+// NewImagePartURL constructs an image part referencing a remote URL (https)
+// or a data: URI. mime is a best-effort hint; providers that derive MIME
+// from the URL ignore it.
+func NewImagePartURL(mime, url string) MediaPart {
+	return MediaPart{Type: PartImage, MIME: mime, URL: url}
+}
+
+// NewImagePartBytes constructs an image part from raw bytes. The adapter
+// layer base64-encodes when the provider expects base64 and synthesizes a
+// data: URI when the provider expects a URL.
+func NewImagePartBytes(mime string, data []byte) MediaPart {
+	return MediaPart{Type: PartImage, MIME: mime, Data: data}
 }
 
 // ToolCall represents a tool invocation declared by the assistant.
