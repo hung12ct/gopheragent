@@ -1,6 +1,23 @@
 // Package history provides message types and session storage backends for agent conversations.
 package history
 
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+)
+
+// newForkKey returns a deterministic-format session key for a fork:
+// "<parent>-fork-<8 hex chars>". The random suffix avoids collisions when
+// the same session is forked multiple times in rapid succession.
+func newForkKey(parent string) (string, error) {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("history: generate fork key: %w", err)
+	}
+	return parent + "-fork-" + hex.EncodeToString(buf[:]), nil
+}
+
 // Message represents a single message in a chat conversation.
 // It supports all standard roles: "system", "user", "assistant", and "tool".
 //
