@@ -40,139 +40,24 @@ loop.RunIteration(ctx, sessionKey, userMessage)
 go get github.com/hung12ct/gopheragent
 ```
 
-## The YAML Builder — Let Business Build Agents
+## The YAML Builder
 
-The core idea: **engineers build tools, business builds agents**.
-
-Engineers register tools into a Global Catalog:
+Engineers register tools into a catalog; PMs wire agents with YAML.
 
 ```go
 catalog := builder.NewGlobalCatalog()
 catalog.Register(&CheckInventoryTool{})
-catalog.Register(&LookupOrderTool{db: db})
 catalog.Register(builtin.NewReadURLTool())
 webSearch, _ := builtin.NewWebSearchTool("")
 catalog.Register(webSearch)
-```
 
-Business/PMs create agents by writing YAML — no Go knowledge needed:
-
-```yaml
-agent:
-  name: "Sales Assistant"
-  system_prompt: |
-    You are a sales assistant. Before answering questions about shipping,
-    always check the inventory first!
-  max_iterations: 10
-  tools_required:
-    - "check_inventory"   # mapped to Go struct automatically
-    - "web_search"
-```
-
-Load and run:
-
-```go
 provider, _ := llm.NewOpenAIProvider("", "gpt-4o")
 loop, _, _, _ := builder.BuildFromYAML("agent.yaml", catalog, provider, nil)
-
 resp, _ := loop.RunIteration(ctx, "session_1", "Do we have iPhone 16 in stock?")
-fmt.Println(resp)
 ```
 
-### Example YAML Agents
-
-<details>
-<summary><b>Customer Support Agent</b></summary>
-
-```yaml
-agent:
-  name: "Customer Support"
-  system_prompt: |
-    You are a friendly customer support agent for an e-commerce platform.
-    
-    RULES:
-    - Always look up the order before answering shipping/return questions.
-    - If the customer is angry, acknowledge their frustration first.
-    - For billing disputes, say: "Let me escalate this to our billing team."
-    - Never make up order statuses — use the lookup tool.
-  max_iterations: 8
-  tools_required:
-    - "lookup_order"
-    - "web_search"
-```
-</details>
-
-<details>
-<summary><b>Data Analyst Agent</b></summary>
-
-```yaml
-agent:
-  name: "Data Analyst"
-  system_prompt: |
-    You are a senior data analyst. Translate business questions into SQL queries.
-    
-    WORKFLOW:
-    1. Clarify the question if ambiguous.
-    2. Use call_sql_agent to query the database.
-    3. Summarize results in a clear markdown table.
-    4. Add business insights — don't just dump raw numbers.
-    
-    RULES:
-    - Never SELECT * — pick only needed columns.
-    - Always LIMIT to 100 rows maximum.
-    - If the query returns no results, suggest alternative queries.
-  max_iterations: 12
-  tools_required:
-    - "call_sql_agent"
-    - "web_search"
-```
-</details>
-
-<details>
-<summary><b>Content Writer Agent</b></summary>
-
-```yaml
-agent:
-  name: "Content Writer"
-  system_prompt: |
-    You are an SEO-focused content writer.
-    
-    WORKFLOW:
-    1. Research the topic using web_search and read_url.
-    2. Read at least 2 source articles with read_url before writing.
-    3. Write original content — never copy-paste from sources.
-    4. Include relevant keywords naturally.
-    5. Output in markdown with proper headings.
-    
-    STYLE: Professional but approachable. Short paragraphs. Use examples.
-  max_iterations: 15
-  tools_required:
-    - "web_search"
-    - "read_url"
-```
-</details>
-
-<details>
-<summary><b>Multi-Agent SQL Analytics Hub</b></summary>
-
-```yaml
-agent:
-  name: "SQL Analytics Hub"
-  system_prompt: |
-    You are an AI Data Scientist. Classify requests and delegate to specialists.
-    
-    WORKFLOW:
-    1. If data retrieval needed → call_sql_agent
-    2. If external context needed → web_search
-    3. If deep analysis needed → call_analytics_agent
-    4. Summarize final results in markdown with tables.
-  max_iterations: 15
-  tools_required:
-    - "call_sql_agent"
-    - "call_analytics_agent"
-    - "web_search"
-```
-</details>
+More YAML agent patterns (customer support, data analyst, content writer,
+multi-agent SQL hub) live in [`examples/yaml_agents`](./examples/yaml_agents).
 
 ## Built-in Tools
 
@@ -181,22 +66,21 @@ Import `github.com/hung12ct/gopheragent/pkg/tools/builtin`:
 | Tool | Constructor | Description |
 |---|---|---|
 | Web search | `NewWebSearchTool(apiKey)` | Internet search via Tavily API |
-| Read URL | `NewReadURLTool()` | Fetch and parse any web page to plain text |
+| Read URL | `NewReadURLTool()` | Fetch and parse any web page to plain text; SSRF-protected |
 | Show media | `NewShowMediaTool()` | Embed images or videos inline in streaming UIs |
-| HTTP request | `NewHTTPRequestTool()` | Call JSON APIs and webhooks; SSRF-protected host allowlist |
+| HTTP request | `NewHTTPRequestTool()` | Call JSON APIs and webhooks; SSRF-protected + host allowlist |
 | File read | `NewFileReadTool(root)` | Read local files; path-traversal-safe root sandbox |
 | Media analyze | `NewMediaAnalyzeTool(analyzer)` | Describe images or videos via any multimodal model |
-| Memory set/get/delete/list | `NewMemorySetTool(store)` etc. | Agent-curated key/value facts; survives context pruning; shared across sub-agents |
+| Memory set/get/delete/list | `NewMemorySetTool(store)` etc. | Agent-curated key/value facts; survives context pruning |
 | Code interpreter | `NewCodeInterpreterTool()` | Execute Python or Node snippets; output-capped, timeout-bounded |
 | SQL agent | `NewSQLAgentTool(db, schema, sm, provider)` | Natural language → read-only SQL; DML-proof + self-consistency |
-| Generate image | `NewGenerateImageTool(apiKey, model)` | DALL-E 3 image generation; saves locally, returns inline markdown embed |
-| Generate video | `NewGenerateVideoTool(apiKey, model)` | Veo 2 video generation (5–8 s); polls async op, downloads via Gemini Files API, returns inline `<video>` |
+| Generate image | `NewGenerateImageTool(apiKey, model)` | DALL-E 3 image generation; returns inline markdown embed |
+| Generate video | `NewGenerateVideoTool(apiKey, model)` | Veo 2 video generation (5–8 s); inline `<video>` result |
 
 ## Writing Custom Tools
 
 Implement the `tools.Tool` interface — one struct, five methods. Use
-`tools.SchemaFor[T]()` to derive the JSON schema from a Go struct instead
-of hand-writing `map[string]any` literals:
+`tools.SchemaFor[T]()` to derive the JSON schema from a Go struct:
 
 ```go
 type CheckInventoryArgs struct {
@@ -205,217 +89,44 @@ type CheckInventoryArgs struct {
 
 type CheckInventoryTool struct{ db *sql.DB }
 
-func (t *CheckInventoryTool) Name() string               { return "check_inventory" }
-func (t *CheckInventoryTool) Description() string        { return "Check product stock in warehouse" }
+func (t *CheckInventoryTool) Name() string        { return "check_inventory" }
+func (t *CheckInventoryTool) Description() string { return "Check product stock" }
 func (t *CheckInventoryTool) ParametersSchema() tools.ToolSchema {
     return tools.SchemaFor[CheckInventoryArgs]()
 }
 func (t *CheckInventoryTool) RequiresConfirmation() bool { return false }
 func (t *CheckInventoryTool) Execute(ctx context.Context, argsJSON string) (string, error) {
     var args CheckInventoryArgs
-    if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-        return "", err
-    }
-    // your logic here
-    return `{"in_stock": 250, "warehouse": "HCM-01"}`, nil
+    _ = json.Unmarshal([]byte(argsJSON), &args)
+    return `{"in_stock": 250}`, nil
 }
 ```
 
-Supported tags: `json:"name,omitempty"`, `description:"..."`, `enum:"a,b,c"`,
-`required:"true"`/`"false"`. Pointers and `omitempty` fields default to
-optional. See `pkg/tools/schema.go` for the full list of supported types.
+Supported tags: `json`, `description`, `enum`, `required`. See
+[`pkg/tools/schema.go`](./pkg/tools/schema.go) for the full type list.
 
-Register it once → every YAML agent can use it:
-```go
-catalog.Register(&CheckInventoryTool{db: db})
-```
+## Native Multimodal Input
 
-## Production Patterns
+Conversation history accepts typed `MediaPart`s — images go straight into
+the LLM request on OpenAI, Anthropic, and Gemini, no base64 round-trip per
+turn. See [`examples/media_chat`](./examples/media_chat).
 
-### Multi-Model Router
+## Production-Ready Features
 
-Route cheap tasks to fast models, complex tasks to powerful ones:
+All of the below are documented with full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent):
 
-```go
-fast, _ := llm.NewOpenAIProvider("", "gpt-4o-mini")
-powerful, _ := llm.NewOpenAIProvider("", "gpt-4o")
-claude, _ := llm.NewAnthropicProvider("", "")
-
-router := llm.NewRouterProvider(powerful).
-    AddRoute(llm.IfSystemPromptContains("summarizer"), fast).
-    AddRoute(llm.IfTokensUnder(300), fast).
-    AddRoute(llm.IfLastMessageContains("sql", "query"), claude)
-
-loop := agent.NewAgentLoop(sessions, registry, router)
-```
-
-### Session TTL + Auto Cleanup
-
-```go
-sm := history.NewInMemSessionManager("You are an assistant.").
-    WithTTL(30 * time.Minute).
-    StartCleanup(ctx, 5 * time.Minute)
-```
-
-### Observability + Retry
-
-```go
-loop.Retry = agent.DefaultRetryConfig()
-loop.OnEvent(telemetry.NewOTelHandler(tracer))
-loop.OnEvent(func(ctx context.Context, sessionKey string, ev agent.StreamEvent) {
-    // your metrics/logging here
-})
-```
-
-### Tool Middleware
-
-```go
-import "github.com/hung12ct/gopheragent/pkg/tools"
-
-reg.Register(tools.Chain(myTool,
-    tools.WithTimeout(10 * time.Second),
-    tools.WithRateLimit(5),
-    tools.WithLogging(slog.Default()),
-))
-```
-
-### Debug Mode — Log All Tool Calls
-
-One line to enable structured logging for every tool in a registry:
-
-```go
-registry := tools.NewRegistry()
-registry.Register(myTool)
-registry.Register(sqlTool)
-
-if debug {
-    registry.EnableDebug(nil) // nil = use slog.Default()
-}
-```
-
-Every tool call will log name, args, result size, and errors:
-
-```
-INFO tool call  tool=call_sql_agent args={"query":"top 5 customers"}
-INFO tool ok    tool=call_sql_agent result_bytes=312
-```
-
-Pass a custom `*slog.Logger` for JSON output or custom sinks:
-
-```go
-registry.EnableDebug(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-```
-
-### Text-to-SQL Agent (`SQLAgentTool`)
-
-A sub-agent that converts natural-language questions into read-only SQL.
-Implements the techniques from Google's [*Techniques for improving
-text-to-SQL*](https://cloud.google.com/blog/products/databases/techniques-for-improving-text-to-sql):
-structured schema grounding, few-shot examples, business glossary,
-comment-aware validation, LIMIT injection, per-query timeouts, and optional
-self-consistency.
-
-```go
-schema := builtin.Schema{
-    Tables: []builtin.TableSchema{{
-        Name: "customers", Description: "Paying customers.",
-        Columns: []builtin.ColumnSchema{
-            {Name: "id", Type: "INT"},
-            {Name: "status", Type: "VARCHAR(16)",
-                Examples: []string{"ACTIVE", "CHURNED"}},
-        },
-        PrimaryKey: []string{"id"},
-    }},
-}
-
-sqlTool := builtin.NewSQLAgentTool(db, "", sessions, provider).
-    WithSchema(schema).
-    WithBusinessRules(
-        "'active' customers have status='ACTIVE' — never 'active'.",
-        "Revenue excludes refunds; always JOIN refunds and subtract.",
-    ).
-    WithExamples(builtin.SQLExample{
-        Question: "How many active customers?",
-        SQL:      "SELECT COUNT(*) FROM customers WHERE status = 'ACTIVE'",
-    }).
-    WithMaxRows(1000).                   // auto-append LIMIT 1000 when absent
-    WithQueryTimeout(5 * time.Second).   // per-query context deadline
-    WithSelfConsistency(3).              // run 3 in parallel, vote on result
-    OnSQL(func(ctx context.Context, ev builtin.SQLQueryEvent) {
-        slog.InfoContext(ctx, "sql_agent.query",
-            "session", ev.SessionKey, "sql", ev.Query, "err", ev.Error,
-        )
-    })
-```
-
-**Safety guarantees on every executed statement:**
-
-- Multi-statement input is rejected (`SELECT 1; DROP TABLE x` → error).
-- Comments are stripped before classification — `/* SELECT */ DROP` is
-  correctly flagged as DROP.
-- Only `SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE` may start a statement.
-- `WithMaxRows(n)` appends `LIMIT n` when missing, plus a `2×n` defensive
-  hard cap on scanned rows.
-- `execute_sql` returns a structured envelope (`{sql, columns, rows,
-  row_count, execution_ms, truncated, error}`) so the LLM can make informed
-  retry decisions.
-
-### Per-Session Token Budget
-
-Cap spend per conversation. `BudgetTracker` plugs into the loop as an event
-handler (to accumulate usage) and a before-LLM hook (to deny new calls once
-the cap is hit):
-
-```go
-bt := agent.NewBudgetTracker(100_000) // 100k tokens per session
-
-loop.OnEvent(bt.Handler())
-loop.BeforeLLMHooks = append(loop.BeforeLLMHooks, bt.Guard())
-
-// Inspect or reset at any time:
-used := bt.Usage("session-123")
-bt.Reset("session-123")
-```
-
-Every provider emits a `usage` StreamEvent after each LLM call carrying
-prompt / completion / total tokens — use the same handler for cost tracking,
-dashboards, or per-tenant billing.
-
-### Bounded Async Workers
-
-`AsyncTaskManager` spawns a goroutine per background task. Cap concurrency so
-a burst of `start_async_task` calls cannot exhaust the process:
-
-```go
-mgr := agent.NewAsyncTaskManager(sessions, registry, provider).
-    WithMaxConcurrent(8)
-```
-
-`StartTask` returns `agent: async task cap reached (8 in flight)` when the
-cap is saturated — the caller decides whether to retry, queue externally, or
-surface to the user. Cancelling or completing any in-flight task frees a slot.
-
-### Human-In-The-Loop
-
-Tools that declare `RequiresConfirmation() == true` trigger `ConfirmHITL`
-before execution. See [`examples/hitl_server`](./examples/hitl_server) for a
-reference bridge between the synchronous callback and an async HTTP approval
-endpoint.
-
-### Structured Error Handling
-
-```go
-_, err := loop.RunIteration(ctx, key, input)
-
-if errors.Is(err, agent.ErrMaxIterations) { /* hit iteration cap */ }
-if errors.Is(err, agent.ErrLLMFailure)    { /* provider error */ }
-if errors.Is(err, agent.ErrToolNotFound)  { /* missing tool */ }
-
-var lfe *agent.LLMFailureError
-if errors.As(err, &lfe) {
-    log.Println("provider error:", lfe.Cause)
-}
-```
+- **Multi-model routing** — `llm.RouterProvider` dispatches requests to different models per condition (token count, system prompt, keyword).
+- **Retry + structured errors** — `agent.DefaultRetryConfig()`; `errors.Is` / `errors.As` against `ErrMaxIterations`, `ErrLLMFailure`, `LLMFailureError`, ...
+- **Observability** — `loop.OnEvent(...)` for custom sinks; `telemetry.NewOTelHandler(tracer)` for OpenTelemetry; `BudgetTracker.MetricsHandler()` for Prometheus/Grafana.
+- **Per-session token budget** — `agent.NewBudgetTracker(cap)` enforces spend caps as a before-LLM hook.
+- **Session TTL + auto cleanup** — `sm.WithTTL(30*time.Minute).StartCleanup(ctx, 5*time.Minute)`.
+- **Tool middleware** — `tools.Chain(t, WithTimeout, WithRateLimit, WithLogging)`; one-line `registry.EnableDebug(nil)` for structured tool-call logs.
+- **Bounded async workers** — `agent.NewAsyncTaskManager(...).WithMaxConcurrent(8)`; 5 lifecycle tools (`start_async_task`, `check_async_task`, ...) for background work.
+- **Human-in-the-loop** — `RequiresConfirmation() == true` triggers `ConfirmHITL`. See [`examples/hitl_server`](./examples/hitl_server).
+- **Sub-agent streaming** — forwarded events tagged `Source="subagent:<name>"` + `ParentID`; parent UI renders nested activity timelines.
+- **Conversation forking** — `sm.Fork(ctx, key, atIndex)` and `agent.ForkAtLastUser(...)` branch history safely (boundary-snapped past dangling tool calls).
+- **Typed event payloads** — `ev.Payload()` returns a sealed `EventPayload` for exhaustive, compiler-checked type switches.
+- **SSRF-hardened HTTP tools** — post-DNS IP check defeats rebinding; `WithAllowedHosts(...)` for per-host allowlisting.
 
 ## Supported Providers
 
@@ -431,20 +142,16 @@ All providers auto-discover API keys from environment variables when key is `""`
 
 ## Examples
 
-See `examples/` — each folder has its own `README.md` and `.env.example`.
-
 | Example | What it shows |
 |---|---|
-| [`examples/demo`](./examples/demo) | **Full chat UI** — web research, memory sidebar, Python execution, live HITL approval, SSE streaming |
-| [`examples/creative_studio`](./examples/creative_studio) | **AI Creative Director** — DALL-E 3 images + Veo 2 video clips generated inline; gallery sidebar; ARIA persona rewrites prompts cinematically |
-| [`examples/media_chat`](./examples/media_chat) | **Media Q&A** — upload an image, video, or document, ask questions; Gemini multimodal (images + video) or GPT-4o vision (images) answers in real time |
+| [`examples/demo`](./examples/demo) | Full chat UI — web research, memory sidebar, Python execution, live HITL, SSE streaming |
+| [`examples/creative_studio`](./examples/creative_studio) | AI Creative Director — DALL-E 3 images + Veo 2 video clips generated inline |
+| [`examples/media_chat`](./examples/media_chat) | Media Q&A — upload image/video/doc, native multimodal history, multi-turn references |
 | [`examples/sse_server`](./examples/sse_server) | Minimal streaming HTTP server using Server-Sent Events |
 | [`examples/hitl_server`](./examples/hitl_server) | Human-in-the-loop approvals over HTTP (async bridge) |
 | [`examples/dynamic_builder`](./examples/dynamic_builder) | Load an agent from YAML at runtime |
 | [`examples/multi_agent_data`](./examples/multi_agent_data) | SQL analytics hub with dynamic schema injection |
 | [`examples/yaml_agents`](./examples/yaml_agents) | Multiple YAML-defined agents sharing a catalog |
-
-The demo is the fastest way to see everything at once:
 
 ```bash
 cd examples/demo
