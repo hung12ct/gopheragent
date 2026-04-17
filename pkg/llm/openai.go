@@ -77,7 +77,7 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 				Function: &openai.FunctionDefinition{
 					Name:        t.Name(),
 					Description: t.Description(),
-					Parameters: map[string]interface{}{
+					Parameters: map[string]any{
 						"type":       schema.Type,
 						"properties": schema.Properties,
 						"required":   schema.Required,
@@ -92,6 +92,9 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 		Messages: reqMessages,
 		Tools:    openaiTools,
 		Stream:   true,
+		StreamOptions: &openai.StreamOptions{
+			IncludeUsage: true,
+		},
 	}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, req)
@@ -101,6 +104,7 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 	defer stream.Close()
 
 	var finalContent string
+	var usage agent.TokenUsage
 
 	// Accumulate parallel tool calls by index (OpenAI streams them split across chunks)
 	type toolCallAccum struct {
@@ -119,6 +123,15 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 		}
 		if err != nil {
 			return agent.LLMResult{}, fmt.Errorf("openai chunk read error: %w", err)
+		}
+
+		// The final chunk carries Usage when StreamOptions.IncludeUsage is set.
+		if response.Usage != nil {
+			usage = agent.TokenUsage{
+				PromptTokens:     response.Usage.PromptTokens,
+				CompletionTokens: response.Usage.CompletionTokens,
+				TotalTokens:      response.Usage.TotalTokens,
+			}
 		}
 
 		if len(response.Choices) == 0 {
@@ -167,5 +180,6 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 	return agent.LLMResult{
 		Content:   finalContent,
 		ToolCalls: pendingCalls,
+		Usage:     usage,
 	}, nil
 }

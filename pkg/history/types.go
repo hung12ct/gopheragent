@@ -20,6 +20,15 @@ type ToolCall struct {
 
 // Session represents a chat session with its full message history.
 type Session struct {
-	Key      string    `json:"key"`
-	Messages []Message `json:"messages"`
+	Key        string               `json:"key"`
+	Messages   []Message            `json:"messages"`
+	AsyncTasks map[string]AsyncTask `json:"async_tasks,omitempty"`
+}
+
+// AsyncTask represents a background task managed by the session.
+type AsyncTask struct {
+	TaskID    string `json:"task_id"`
+	AgentName string `json:"agent_name"`
+	Status    string `json:"status"` // "running", "success", "error", "cancelled", "interrupted"
+	Result    string `json:"result,omitempty"`
 }

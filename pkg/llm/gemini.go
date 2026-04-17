@@ -133,13 +133,24 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 
 	var finalContent string
 	var pendingCalls []agent.PendingToolCall
+	var usage agent.TokenUsage
 
 	for resp, err := range iter {
 		if err != nil {
 			return agent.LLMResult{}, err
 		}
 
-		if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		if resp == nil {
+			continue
+		}
+		if resp.UsageMetadata != nil {
+			usage = agent.TokenUsage{
+				PromptTokens:     int(resp.UsageMetadata.PromptTokenCount),
+				CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount),
+				TotalTokens:      int(resp.UsageMetadata.TotalTokenCount),
+			}
+		}
+		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
 			continue
 		}
 
@@ -162,6 +173,7 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 	return agent.LLMResult{
 		Content:   finalContent,
 		ToolCalls: pendingCalls,
+		Usage:     usage,
 	}, nil
 }
 
@@ -197,7 +209,7 @@ func mapRegistrySchemaToGeminiSchema(s tools.ToolSchema) *genai.Schema {
 	if s.Properties != nil {
 		schema.Properties = make(map[string]*genai.Schema)
 		for k, v := range s.Properties {
-			vMap, ok := v.(map[string]interface{})
+			vMap, ok := v.(map[string]any)
 			if !ok {
 				continue
 			}

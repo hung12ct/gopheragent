@@ -13,6 +13,7 @@ const backgroundSumNewMsgThreshold = 10 // min new messages since last summariza
 type InMemSessionManager struct {
 	mu              sync.RWMutex
 	sessions        map[string][]Message
+	asyncTasks      map[string]map[string]AsyncTask
 	behaviors       map[string]string
 	lastSumLen      map[string]int
 	SystemPrompt    string
@@ -34,6 +35,7 @@ func NewInMemSessionManager(systemPrompt ...string) *InMemSessionManager {
 	}
 	return &InMemSessionManager{
 		sessions:     make(map[string][]Message),
+		asyncTasks:   make(map[string]map[string]AsyncTask),
 		behaviors:    make(map[string]string),
 		lastSumLen:   make(map[string]int),
 		SystemPrompt: sp,
@@ -86,6 +88,7 @@ func (m *InMemSessionManager) evictExpired() {
 		if t, ok := m.lastUse.Load(key); ok {
 			if now.Sub(t.(time.Time)) > m.TTL {
 				delete(m.sessions, key)
+				delete(m.asyncTasks, key)
 				delete(m.behaviors, key)
 				delete(m.lastSumLen, key)
 				m.lastUse.Delete(key)
@@ -142,6 +145,45 @@ func (m *InMemSessionManager) SetHistory(_ context.Context, sessionKey string, m
 	copy(cp, messages)
 	m.sessions[sessionKey] = cp
 	m.touch(sessionKey)
+}
+
+func (m *InMemSessionManager) GetAsyncTasks(ctx context.Context, sessionKey string) map[string]AsyncTask {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	m.touch(sessionKey)
+	tasks, ok := m.asyncTasks[sessionKey]
+	if !ok {
+		return map[string]AsyncTask{}
+	}
+	cp := make(map[string]AsyncTask, len(tasks))
+	for k, v := range tasks {
+		cp[k] = v
+	}
+	return cp
+}
+
+func (m *InMemSessionManager) SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make(map[string]AsyncTask, len(tasks))
+	for k, v := range tasks {
+		cp[k] = v
+	}
+	m.asyncTasks[sessionKey] = cp
+	m.touch(sessionKey)
+}
+
+// DeleteSession removes all in-memory state for sessionKey.
+// Deleting a non-existent session is a no-op.
+func (m *InMemSessionManager) DeleteSession(_ context.Context, sessionKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, sessionKey)
+	delete(m.asyncTasks, sessionKey)
+	delete(m.behaviors, sessionKey)
+	delete(m.lastSumLen, sessionKey)
+	m.lastUse.Delete(sessionKey)
+	return nil
 }
 
 func (m *InMemSessionManager) Save(_ context.Context, sessionKey string) error {

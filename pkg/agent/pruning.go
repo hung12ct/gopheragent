@@ -20,13 +20,24 @@ const RetentionTail = 1500
 // (~50k chars is around 12k tokens, often indicating memory leaks or raw database dumps).
 const OutlierTrimThreshold = 50000
 
-// runeSlice returns s[0:n] measured in runes, safe for multi-byte UTF-8.
+// ToolArgTruncateLen is the rune length kept by TruncateToolArguments when a
+// tool result is force-truncated as a last-resort token-budget defense.
+const ToolArgTruncateLen = 500
+
+// runeSlice returns s[start:end] measured in runes, safe for multi-byte UTF-8.
+// Returns "" when the range is empty, inverted, or entirely out of bounds.
+// When end exceeds the rune count the slice is clamped to the string's end.
 func runeSlice(s string, start, end int) string {
+	if end <= start || start < 0 {
+		return ""
+	}
 	var byteStart, byteEnd int
+	startFound := false
 	runeIdx := 0
 	for i := range s {
 		if runeIdx == start {
 			byteStart = i
+			startFound = true
 		}
 		if runeIdx == end {
 			byteEnd = i
@@ -34,8 +45,8 @@ func runeSlice(s string, start, end int) string {
 		}
 		runeIdx++
 	}
-	if runeIdx == end {
-		return s[byteStart:]
+	if !startFound {
+		return ""
 	}
 	return s[byteStart:]
 }
@@ -77,5 +88,78 @@ func PruneContextMessages(msgs []history.Message, protectedEnds int) []history.M
 		result = append(result, msg)
 	}
 
+	return result
+}
+
+// PatchDanglingToolCalls scans message history and injects synthetic tool
+// responses for any tool_call that never received a reply. Without this,
+// provider APIs (Anthropic / OpenAI) reject the request with a 400/500
+// because every tool_use must be paired with a tool_result before the next
+// user/assistant turn.
+//
+// Synthetic messages are appended *after* any existing tool responses for the
+// same assistant turn so call order matches the source tool_calls order.
+func PatchDanglingToolCalls(msgs []history.Message) []history.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	patched := make([]history.Message, 0, len(msgs))
+
+	for i := 0; i < len(msgs); i++ {
+		m := msgs[i]
+		patched = append(patched, m)
+
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+
+		// Consume the contiguous tool-response block following this assistant turn.
+		responded := make(map[string]bool)
+		j := i + 1
+		for j < len(msgs) {
+			if msgs[j].Role == "assistant" || msgs[j].Role == "user" {
+				break
+			}
+			if msgs[j].Role == "tool" && msgs[j].ToolCallID != "" {
+				responded[msgs[j].ToolCallID] = true
+			}
+			patched = append(patched, msgs[j])
+			j++
+		}
+
+		// Append synthetic responses for any unmatched tool_call.
+		for _, tc := range m.ToolCalls {
+			if !responded[tc.ID] {
+				patched = append(patched, history.Message{
+					Role:       "tool",
+					Content:    "[System] Tool call cancelled due to system interruption.",
+					ToolCallID: tc.ID,
+					IsError:    true,
+				})
+			}
+		}
+
+		i = j - 1 // skip the block we already emitted
+	}
+	return patched
+}
+
+// TruncateToolArguments forcefully truncates tool outputs to prevent context
+// window overflow when running tight on token budget. Non-tool messages pass
+// through unchanged. Truncation is rune-safe.
+func TruncateToolArguments(msgs []history.Message) []history.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	result := make([]history.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg.Role == "tool" {
+			runeLen := utf8.RuneCountInString(msg.Content)
+			if runeLen > ToolArgTruncateLen {
+				msg.Content = runeSlice(msg.Content, 0, ToolArgTruncateLen) + "\n... (output truncated by system to save tokens)"
+			}
+		}
+		result = append(result, msg)
+	}
 	return result
 }

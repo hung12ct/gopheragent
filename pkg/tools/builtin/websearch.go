@@ -41,17 +41,17 @@ func (t *WebSearchTool) Description() string {
 func (t *WebSearchTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
 		Type: "object",
-		Properties: map[string]interface{}{
-			"query": map[string]interface{}{
+		Properties: map[string]any{
+			"query": map[string]any{
 				"type":        "string",
 				"description": "The search query to look up on the internet (e.g. 'latest news about AI').",
 			},
-			"topic": map[string]interface{}{
+			"topic": map[string]any{
 				"type":        "string",
 				"enum":        []string{"general", "news"},
 				"description": "Search category. Use 'news' for recent events, headlines, or time-sensitive queries. Default: 'general'.",
 			},
-			"days": map[string]interface{}{
+			"days": map[string]any{
 				"type":        "integer",
 				"description": "Only return results from the last N days. Use 1 for 'today', 7 for 'this week'. Only applies when topic is 'news'. Default: 3.",
 			},
@@ -78,7 +78,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, argsJSON string) (string, e
 		args.Topic = "general"
 	}
 
-	reqBody := map[string]interface{}{
+	reqBody := map[string]any{
 		"api_key":        t.apiKey,
 		"query":          args.Query,
 		"search_depth":   "basic",

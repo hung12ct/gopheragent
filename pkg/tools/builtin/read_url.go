@@ -48,8 +48,8 @@ func (t *ReadURLTool) Description() string {
 func (t *ReadURLTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
 		Type: "object",
-		Properties: map[string]interface{}{
-			"url": map[string]interface{}{
+		Properties: map[string]any{
+			"url": map[string]any{
 				"type":        "string",
 				"description": "The exact valid HTTP/HTTPS URL of the webpage to scrape.",
 			},

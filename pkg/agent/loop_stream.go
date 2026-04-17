@@ -31,10 +31,21 @@ type ConfirmFunc func(ctx context.Context, toolName string, argsJSON string) boo
 type EventHandler func(ctx context.Context, sessionKey string, ev StreamEvent)
 
 // SessionManager interface abstracts history storage.
+//
+// Breaking-change note: DeleteSession was added to support ephemeral worker
+// sessions (sub-agent and async-task workers). Any external implementation of
+// this interface must provide it.
 type SessionManager interface {
 	GetHistory(ctx context.Context, sessionKey string) []history.Message
 	SetHistory(ctx context.Context, sessionKey string, messages []history.Message)
+	GetAsyncTasks(ctx context.Context, sessionKey string) map[string]history.AsyncTask
+	SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]history.AsyncTask)
 	Save(ctx context.Context, sessionKey string) error
+	// DeleteSession removes all in-memory and persisted state for sessionKey.
+	// Used to clean up ephemeral sub-agent and async-worker sessions after they
+	// complete so they do not accumulate in storage. Deleting a non-existent
+	// session is a no-op (returns nil).
+	DeleteSession(ctx context.Context, sessionKey string) error
 }
 
 // PendingToolCall represents a single tool invocation requested by the LLM.
@@ -44,15 +55,31 @@ type PendingToolCall struct {
 	ArgsJSON string
 }
 
+// TokenUsage carries per-call token accounting returned by an LLM provider.
+// Providers that do not report usage leave the fields zero.
+type TokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 // LLMResult represents the structured response from the LLM provider.
 // Content is optional — the agent loop accumulates content from "content" stream events.
 // Providers may still set Content for backward compatibility, but it is only used as a
 // fallback when no content events were emitted on the stream.
 // ToolCalls must be populated when the model wants to invoke tools.
+// Usage carries token accounting when the provider reports it.
 type LLMResult struct {
 	Content   string
 	ToolCalls []PendingToolCall
+	Usage     TokenUsage
 }
+
+// BeforeLLMHook fires immediately before each GenerateStream call. Returning
+// an error aborts the iteration (the loop emits an error event and exits).
+// Use for per-session budget enforcement, rate limiting, or policy checks.
+// estimatedTokens is a rough (chars/4) pre-call estimate of the prompt size.
+type BeforeLLMHook func(ctx context.Context, sessionKey string, estimatedTokens int) error
 
 // LLMProvider abstracts the model backend (OpenAI/Gemini/Claude).
 type LLMProvider interface {
@@ -92,6 +119,12 @@ type AgentLoop struct {
 	// nil disables retries. Use DefaultRetryConfig() for sensible defaults.
 	// Retries are skipped when content has already started streaming to the client.
 	Retry *RetryConfig
+
+	// BeforeLLMHooks fire right before every GenerateStream call (including
+	// retries). Any non-nil error aborts the iteration. Useful for per-session
+	// spend caps and policy enforcement; pair with a BudgetTracker for a
+	// ready-made implementation.
+	BeforeLLMHooks []BeforeLLMHook
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -127,7 +160,7 @@ func (al *AgentLoop) emit(ctx context.Context, sessionKey string, streamChan cha
 // StreamEvent represents a chunk of data sent via SSE.
 // When Type is "error", Err holds the structured error so callers can use errors.Is/As.
 type StreamEvent struct {
-	Type    string `json:"type"` // "content", "thought", "tool_call", "action_required", "error", "done"
+	Type    string `json:"type"` // "content", "thought", "tool_call", "action_required", "usage", "error", "done"
 	Content string `json:"content"`
 	Err     error  `json:"-"`
 }
@@ -210,9 +243,13 @@ func (al *AgentLoop) saveSession(_ context.Context, sessionKey string, msgs []hi
 	}
 }
 
+// SessionKey string is the type used to inject sessionKey into context
+type SessionKeyCtx string
+
 // runLogicLoop holds the actual execution context separated from the stream proxy
 func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userInput string, streamChan chan<- StreamEvent) {
 	defer close(streamChan)
+	ctx = context.WithValue(ctx, SessionKeyCtx("sessionKey"), sessionKey)
 
 	loopTracker := NewLoopDetector()
 
@@ -227,6 +264,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 	}
 
 	msgs := append(al.Sessions.GetHistory(ctx, sessionKey), history.Message{Role: "user", Content: userInput})
+	msgs = PatchDanglingToolCalls(msgs)
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
 	for iteration := 0; iteration < al.MaxIters; iteration++ {
@@ -236,12 +274,24 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			return
 		}
 
-		// Token budget enforcement: if over budget, prune more aggressively (keep 1).
-		if al.MaxTokenBudget > 0 && estimateTokens(msgs) > al.MaxTokenBudget {
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf(
-				"Token budget exceeded (~%d est. tokens). Applying emergency context pruning.", estimateTokens(msgs),
-			)})
-			msgs = PruneContextMessages(msgs, 1)
+		// Token budget enforcement
+		if al.MaxTokenBudget > 0 {
+			estToks := estimateTokens(msgs)
+			thresh85 := int(float64(al.MaxTokenBudget) * 0.85)
+			
+			if estToks > thresh85 && estToks <= al.MaxTokenBudget {
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh85)})
+				msgs = TruncateToolArguments(msgs)
+			}
+			
+			if estimateTokens(msgs) > al.MaxTokenBudget {
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf(
+					"Token budget exceeded (~%d est. tokens). Applying emergency context pruning.", estimateTokens(msgs),
+				)})
+				msgs = PruneContextMessages(msgs, 1)
+			} else {
+				msgs = PruneContextMessages(msgs, 3)
+			}
 		} else {
 			msgs = PruneContextMessages(msgs, 3)
 		}
@@ -259,6 +309,16 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		// accumulates content. Returns (finalContent, result, contentWasEmitted, err).
 		// Retry is safe only when contentWasEmitted == false.
 		callLLM := func() (string, LLMResult, bool, error) {
+			// BeforeLLMHooks: any non-nil error aborts this call (no retry).
+			for _, h := range al.BeforeLLMHooks {
+				if h == nil {
+					continue
+				}
+				if err := h(ctx, sessionKey, estimateTokens(msgs)); err != nil {
+					return "", LLMResult{}, false, err
+				}
+			}
+
 			pChan := make(chan StreamEvent, 50)
 			var buf strings.Builder
 			var emitted bool
@@ -288,6 +348,11 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			content := buf.String()
 			if content == "" {
 				content = res.Content
+			}
+			// Emit a usage event when the provider reported token accounting.
+			if err == nil && res.Usage.TotalTokens > 0 {
+				payload, _ := json.Marshal(res.Usage)
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "usage", Content: string(payload)})
 			}
 			return content, res, emitted, err
 		}

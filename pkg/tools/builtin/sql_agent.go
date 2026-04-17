@@ -15,10 +15,12 @@ import (
 
 var dmlMatcher = regexp.MustCompile(`(?i)(update\s|delete\s|drop\s|insert\s|create\s|alter\s|truncate\s|merge\s|grant\s|revoke\s)`)
 
-// SQLQueryEvent carries metadata about a SQL query the sub-agent is about to execute.
+// SQLQueryEvent carries metadata about a SQL query executed by the sub-agent.
+// Error is non-empty when the query failed (DB error or DML rejection).
 type SQLQueryEvent struct {
 	SessionKey string
 	Query      string
+	Error      string // empty on success
 }
 
 // SQLAgentTool spins up an isolated Sub-Agent dedicated solely to converting Natural Language to SQL and querying the database safely.
@@ -62,8 +64,8 @@ func (t *SQLAgentTool) Description() string {
 func (t *SQLAgentTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
 		Type: "object",
-		Properties: map[string]interface{}{
-			"query": map[string]interface{}{
+		Properties: map[string]any{
+			"query": map[string]any{
 				"type":        "string",
 				"description": "The natural language query or task for the SQL database Sub-Agent to perform.",
 			},
@@ -165,8 +167,8 @@ func (t *executeSQLTool) Description() string {
 func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{
 		Type: "object",
-		Properties: map[string]interface{}{
-			"sql_query": map[string]interface{}{
+		Properties: map[string]any{
+			"sql_query": map[string]any{
 				"type":        "string",
 				"description": "The exact SQL query string to run.",
 			},
@@ -186,21 +188,26 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 	}
 	sqlStr := args.SQLQuery
 
-	if t.onSQL != nil {
-		t.onSQL(ctx, SQLQueryEvent{SessionKey: t.sessionKey, Query: sqlStr})
+	notify := func(errMsg string) {
+		if t.onSQL != nil {
+			t.onSQL(ctx, SQLQueryEvent{SessionKey: t.sessionKey, Query: sqlStr, Error: errMsg})
+		}
 	}
 
 	// 1. Anti-DML/DDL Safety Validation via Regex
 	if dmlMatcher.MatchString(sqlStr) {
-		return "Invalid SQL: Contains disallowed DML/DDL operations. Database access is strictly read-only.", nil
+		msg := "Invalid SQL: Contains disallowed DML/DDL operations. Database access is strictly read-only."
+		notify(msg)
+		return msg, nil
 	}
 
 	// 2. Query execution
 	rows, err := t.db.QueryContext(ctx, sqlStr)
 	if err != nil {
-		// Crucial Error Feedback Loop! We return the raw error message to the LLM.
+		notify(err.Error())
 		return fmt.Sprintf("Query error: %v\nPlease analyze the error and try correcting the SQL statement.", err), nil
 	}
+	notify("") // success
 	defer rows.Close()
 
 	// 3. Dynamic columns parsing
@@ -209,10 +216,10 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 		return fmt.Sprintf("Query error (failed to retrieve columns): %v", err), nil
 	}
 
-	var results []map[string]interface{}
+	var results []map[string]any
 	for rows.Next() {
-		columns := make([]interface{}, len(cols))
-		columnPointers := make([]interface{}, len(cols))
+		columns := make([]any, len(cols))
+		columnPointers := make([]any, len(cols))
 		for i := range columns {
 			columnPointers[i] = &columns[i]
 		}
@@ -220,7 +227,7 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 			return fmt.Sprintf("Result extraction error: %v", err), nil
 		}
 
-		rowData := make(map[string]interface{})
+		rowData := make(map[string]any)
 		for i, colName := range cols {
 			val := columns[i]
 			if b, ok := val.([]byte); ok {
