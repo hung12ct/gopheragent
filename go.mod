@@ -1,6 +1,6 @@
 module github.com/hung12ct/gopheragent
 
-go 1.25.0
+go 1.24.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.27.1
