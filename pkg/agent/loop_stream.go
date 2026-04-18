@@ -213,6 +213,15 @@ type AgentLoop struct {
 	// budget must be strictly less than the provider's MaxTokens; the
 	// Anthropic adapter clamps accordingly.
 	ThinkingBudget int
+
+	// Permissions, when non-nil, is consulted for every tool call before
+	// the HITL prompt fires. Allow bypasses RequiresConfirmation(); Deny
+	// short-circuits even for tools that would otherwise run silently;
+	// Prompt defers to the existing ConfirmHITL flow. Use a
+	// PermissionRuleSet for the built-in glob-based DSL, or implement
+	// PermissionChecker directly for custom logic (OPA, database-backed
+	// ACLs, etc).
+	Permissions PermissionChecker
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -730,7 +739,34 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						return
 					}
 
-					if tool.RequiresConfirmation() {
+					// Consult the permission policy before HITL. Allow bypasses
+					// RequiresConfirmation(); Deny short-circuits even for tools
+					// that would otherwise run without a prompt; Prompt falls
+					// through to the existing HITL flow.
+					permDecision := PermissionPrompt
+					if al.Permissions != nil {
+						permDecision = al.Permissions.Check(ctx, tCall.Name, tCall.ArgsJSON)
+					}
+					if permDecision == PermissionAllow && tool.RequiresConfirmation() {
+						// Make it visible in the transcript that a HITL-gated
+						// tool was auto-approved by policy rather than a human.
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Permission policy auto-approved %s (bypassing HITL).", tCall.Name)})
+					}
+					if permDecision == PermissionDeny {
+						deniedErr := &PermissionDeniedError{ToolName: tCall.Name}
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)})
+						completedMu.Lock()
+						toolMsgs[tCall.ID] = history.Message{
+							Role:       "tool",
+							Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
+							ToolCallID: tCall.ID,
+							IsError:    true,
+						}
+						completedMu.Unlock()
+						return
+					}
+
+					if tool.RequiresConfirmation() && permDecision != PermissionAllow {
 						approved := func() bool {
 							hitlMu.Lock()
 							defer hitlMu.Unlock()
