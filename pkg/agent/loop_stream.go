@@ -177,6 +177,14 @@ type AgentLoop struct {
 	// tool_call_ready events; today that is the Anthropic adapter. Other
 	// providers fall back to the original post-stream execution path.
 	SpeculativeTools bool
+	// ToolErrorHintFormatter customizes the text the loop writes back to
+	// the model when a tool execution returns an error. nil uses
+	// defaultToolErrorHint, which wraps the raw error with a short
+	// structured retry hint. Override to inject domain remediation advice
+	// (SQL error → "check column exists", filesystem error → "verify the
+	// path is under /tmp", etc.); the model re-reads the tool result on
+	// every subsequent turn, so better wording compounds.
+	ToolErrorHintFormatter ToolErrorHintFormatter
 
 	// Reflect runs N serial self-critique passes after the model produces a
 	// final answer with no pending tool calls. Each pass appends a synthetic
@@ -806,7 +814,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					content := toolResult
 					isToolErr := execErr != nil
 					if isToolErr {
-						content = fmt.Sprintf("Error: %v", execErr)
+						content = al.formatToolError(tCall.Name, execErr.Error())
 					}
 
 					if !isToolErr {
