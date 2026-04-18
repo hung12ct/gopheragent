@@ -150,6 +150,21 @@ type AgentLoop struct {
 	// not already contain the syntax. Set to true when you have documented
 	// the syntax yourself or explicitly want to opt out of scheduling.
 	DisableToolChainingHint bool
+
+	// PlanMode gates every tool except exit_plan_mode. When true, the loop
+	// injects a plan-mode system hint on each LLM call; any tool call other
+	// than exit_plan_mode is rejected with an error steering the model to
+	// present a plan first. Calling exit_plan_mode invokes ConfirmPlan (or
+	// emits an action_required event if unset); approval clears PlanMode
+	// and normal execution resumes on the next iteration.
+	PlanMode bool
+
+	// ConfirmPlan runs when the model calls exit_plan_mode while PlanMode is
+	// true. Returning true approves the plan and clears PlanMode; false
+	// denies and the tool result asks the model to revise. When nil, the
+	// loop emits an action_required event and auto-denies until the caller
+	// approves out-of-band and re-runs the iteration with PlanMode=false.
+	ConfirmPlan ConfirmPlanFunc
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -408,7 +423,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					})
 				}
 			}
-			msgsForLLM := al.withToolChainingHint(msgs)
+			msgsForLLM := al.withPlanModeHint(al.withToolChainingHint(msgs))
 			res, err := al.LLM.GenerateStream(ctx, msgsForLLM, toolsForCall, pChan)
 			close(pChan)
 			<-done
@@ -533,6 +548,55 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					hasFatal := fatalErr != nil
 					fatalMu.Unlock()
 					if hasFatal {
+						return
+					}
+
+					// Plan-mode gate runs before the tool-registry lookup so
+					// exit_plan_mode can be a loop-level sentinel even when
+					// the caller did not register a concrete tool for it.
+					if func() bool {
+						hitlMu.Lock()
+						defer hitlMu.Unlock()
+						if !al.PlanMode {
+							return false
+						}
+						if tCall.Name != ExitPlanModeToolName {
+							msg := fmt.Sprintf(`{"error":"tool %q is blocked in plan mode. Present your full plan via exit_plan_mode first and wait for user approval."}`, tCall.Name)
+							completedMu.Lock()
+							toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: msg, ToolCallID: tCall.ID, IsError: true}
+							completedMu.Unlock()
+							return true
+						}
+						var pa struct {
+							Plan string `json:"plan"`
+						}
+						_ = json.Unmarshal([]byte(tCall.ArgsJSON), &pa)
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Plan proposed — awaiting human approval."})
+						approved := false
+						if al.ConfirmPlan != nil {
+							approved = al.ConfirmPlan(ctx, pa.Plan)
+						} else {
+							payload, _ := json.Marshal(map[string]string{"tool": ExitPlanModeToolName, "plan": pa.Plan})
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
+						}
+						var result string
+						isErr := false
+						if approved {
+							al.PlanMode = false
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Plan approved — exiting plan mode."})
+							result = `{"approved":true}`
+						} else {
+							result = `{"approved":false,"reason":"User rejected the plan. Revise based on their feedback and propose again via exit_plan_mode."}`
+							isErr = true
+						}
+						completedMu.Lock()
+						toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: result, ToolCallID: tCall.ID, IsError: isErr}
+						if !isErr {
+							resultsByID[tCall.ID] = result
+						}
+						completedMu.Unlock()
+						return true
+					}() {
 						return
 					}
 
