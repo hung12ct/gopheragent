@@ -142,6 +142,14 @@ type AgentLoop struct {
 	// accuracy for large catalogs (50+ tools). See tools.NewSelector. A nil
 	// selector means every registered tool is presented every turn (default).
 	ToolSelector *tools.Selector
+
+	// DisableToolChainingHint suppresses the automatic system-prompt snippet
+	// that teaches the LLM to chain tool calls via <output_of:ID.path>. By
+	// default (false), the hint is appended to the system message on every
+	// LLM call when at least two tools are registered and the prompt does
+	// not already contain the syntax. Set to true when you have documented
+	// the syntax yourself or explicitly want to opt out of scheduling.
+	DisableToolChainingHint bool
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -400,7 +408,8 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					})
 				}
 			}
-			res, err := al.LLM.GenerateStream(ctx, msgs, toolsForCall, pChan)
+			msgsForLLM := al.withToolChainingHint(msgs)
+			res, err := al.LLM.GenerateStream(ctx, msgsForLLM, toolsForCall, pChan)
 			close(pChan)
 			<-done
 			content := buf.String()
