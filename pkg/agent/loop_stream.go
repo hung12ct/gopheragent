@@ -135,6 +135,13 @@ type AgentLoop struct {
 	// spend caps and policy enforcement; pair with a BudgetTracker for a
 	// ready-made implementation.
 	BeforeLLMHooks []BeforeLLMHook
+
+	// ToolSelector, when non-nil, filters the tool list presented to the LLM
+	// each turn by semantic similarity between the latest user message and
+	// tool descriptions. Reduces prompt-token cost and improves tool-choice
+	// accuracy for large catalogs (50+ tools). See tools.NewSelector. A nil
+	// selector means every registered tool is presented every turn (default).
+	ToolSelector *tools.Selector
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -246,6 +253,17 @@ func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, 
 	}()
 
 	go al.runLogicLoop(ctx, sessionKey, userInput, internalChan)
+}
+
+// latestUserMessage returns the Content of the most recent user message, or
+// "" if no user message exists. Used by ToolSelector to embed per-turn intent.
+func latestUserMessage(msgs []history.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 // estimateTokens returns a rough token count using the 4-chars/token heuristic.
@@ -370,7 +388,19 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					}
 				}
 			}()
-			res, err := al.LLM.GenerateStream(ctx, msgs, al.Tools, pChan)
+			toolsForCall := al.Tools
+			if al.ToolSelector != nil {
+				query := latestUserMessage(msgs)
+				if filtered, selErr := al.ToolSelector.SelectRegistry(ctx, query); selErr == nil && filtered != nil {
+					toolsForCall = filtered
+				} else if selErr != nil {
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{
+						Type:    "thought",
+						Content: fmt.Sprintf("Tool selector error, falling back to full registry: %v", selErr),
+					})
+				}
+			}
+			res, err := al.LLM.GenerateStream(ctx, msgs, toolsForCall, pChan)
 			close(pChan)
 			<-done
 			content := buf.String()
