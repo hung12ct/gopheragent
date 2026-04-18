@@ -29,6 +29,11 @@ var (
 
 	// ErrContextCancelled is returned when the request context is cancelled mid-loop.
 	ErrContextCancelled = errors.New("agent: operation cancelled")
+
+	// ErrPermissionDenied is returned (as a StreamEvent) when a configured
+	// PermissionChecker rejects a tool call before it runs. Distinct from
+	// ErrHITLDenied because no human was in the loop — a policy denied it.
+	ErrPermissionDenied = errors.New("agent: tool execution denied by permission policy")
 )
 
 // ToolNotFoundError carries the name of the missing tool.
@@ -55,6 +60,19 @@ func (e *HITLDeniedError) Error() string {
 
 func (e *HITLDeniedError) Is(target error) bool {
 	return target == ErrHITLDenied
+}
+
+// PermissionDeniedError carries the tool name that was denied by policy.
+type PermissionDeniedError struct {
+	ToolName string
+}
+
+func (e *PermissionDeniedError) Error() string {
+	return fmt.Sprintf("agent: permission policy denied execution of tool %q", e.ToolName)
+}
+
+func (e *PermissionDeniedError) Is(target error) bool {
+	return target == ErrPermissionDenied
 }
 
 // HookRejectedError carries the underlying hook error.
