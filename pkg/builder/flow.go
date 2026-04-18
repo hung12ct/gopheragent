@@ -4,6 +4,7 @@ package builder
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
@@ -25,6 +26,8 @@ import (
 //	  tools_required:                     # optional
 //	    - "web_search"
 //	    - "read_url"
+//	  knowledge_base: "./kb"              # optional — directory of reference
+//	                                      # docs auto-appended to system_prompt
 type AgentConfig struct {
 	Agent struct {
 		Name          string   `yaml:"name"`
@@ -34,6 +37,11 @@ type AgentConfig struct {
 		EmitThoughts  *bool    `yaml:"emit_thoughts,omitempty"`
 		SystemPrompt  string   `yaml:"system_prompt"`
 		ToolsRequired []string `yaml:"tools_required"`
+		// KnowledgeBase, when non-empty, is a directory path (relative to
+		// the YAML file's directory, or absolute) whose whitelisted text
+		// files are concatenated and appended to SystemPrompt at build
+		// time. See LoadKnowledgeBase for the file selection rules.
+		KnowledgeBase string `yaml:"knowledge_base,omitempty"`
 	} `yaml:"agent"`
 }
 
@@ -136,6 +144,11 @@ func BuildFromYAMLWithSession(yamlPath string, catalog *GlobalCatalog, llm agent
 
 // ParseYAMLConfig reads and validates a YAML config file without building the agent.
 // Useful when you need the system prompt before constructing the session manager.
+//
+// When the config declares knowledge_base, ParseYAMLConfig resolves the dir
+// relative to yamlPath and returns SystemPrompt with the KB block already
+// appended — downstream session managers receive the same final prompt
+// whether callers take this shortcut or go through buildFromYAML.
 func ParseYAMLConfig(yamlPath string) (AgentConfig, error) {
 	var config AgentConfig
 	data, err := os.ReadFile(yamlPath)
@@ -144,6 +157,17 @@ func ParseYAMLConfig(yamlPath string) (AgentConfig, error) {
 	}
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return config, fmt.Errorf("invalid YAML syntax in %q: %w", yamlPath, err)
+	}
+	if config.Agent.KnowledgeBase != "" {
+		kbDir := config.Agent.KnowledgeBase
+		if !filepath.IsAbs(kbDir) {
+			kbDir = filepath.Join(filepath.Dir(yamlPath), kbDir)
+		}
+		augmented, kbErr := WithKnowledgeBase(config.Agent.SystemPrompt, kbDir)
+		if kbErr != nil {
+			return config, kbErr
+		}
+		config.Agent.SystemPrompt = augmented
 	}
 	return config, nil
 }
@@ -163,6 +187,21 @@ func buildFromYAML(yamlPath string, catalog *GlobalCatalog, llm agent.LLMProvide
 
 	if err := validateConfig(yamlPath, &config, catalog); err != nil {
 		return nil, nil, config, err
+	}
+
+	// Resolve knowledge_base relative to the YAML file's directory so the
+	// config stays portable across working directories. Absolute paths
+	// pass through filepath.Join unchanged.
+	if config.Agent.KnowledgeBase != "" {
+		kbDir := config.Agent.KnowledgeBase
+		if !filepath.IsAbs(kbDir) {
+			kbDir = filepath.Join(filepath.Dir(yamlPath), kbDir)
+		}
+		augmented, kbErr := WithKnowledgeBase(config.Agent.SystemPrompt, kbDir)
+		if kbErr != nil {
+			return nil, nil, config, kbErr
+		}
+		config.Agent.SystemPrompt = augmented
 	}
 
 	registry := tools.NewRegistry()
