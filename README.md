@@ -72,6 +72,7 @@ Import `github.com/hung12ct/gopheragent/pkg/tools/builtin`:
 | File read | `NewFileReadTool(root)` | Read local files; path-traversal-safe root sandbox |
 | Media analyze | `NewMediaAnalyzeTool(analyzer)` | Describe images or videos via any multimodal model |
 | Memory set/get/delete/list | `NewMemorySetTool(store)` etc. | Agent-curated key/value facts; survives context pruning |
+| Task tracking (create/update/list) | `RegisterTaskTools(registry, store)` | Structured planning scratchpad with enum status (pending/in_progress/completed) |
 | Code interpreter | `NewCodeInterpreterTool()` | Execute Python or Node snippets; output-capped, timeout-bounded |
 | SQL agent | `NewSQLAgentTool(db, schema, sm, provider)` | Natural language → read-only SQL; DML-proof + self-consistency |
 | Generate image | `NewGenerateImageTool(apiKey, model)` | DALL-E 3 image generation; returns inline markdown embed |
@@ -115,6 +116,10 @@ turn. See [`examples/media_chat`](./examples/media_chat).
 
 All of the below are documented with full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent):
 
+- **Tool RAG (dynamic tool selection)** — `tools.NewSelector(ctx, registry, embedder, topK)` embeds tool descriptors once at init, re-ranks per-turn by cosine similarity to the latest user message, and passes only the top-K to the LLM. Cuts prompt bloat when you have 50+ tools. OpenAI + Gemini embedders ship in `pkg/llm`.
+- **Dependency-aware parallel tool scheduling** — the LLM emits `<output_of:ID.path>` inside one call's args to reference another's output; the loop parses refs, topologically orders calls into execution waves, runs each wave in parallel, and substitutes upstream JSON before the dependent call fires. One LLM round-trip instead of N. See `pkg/agent/scheduler.go`.
+- **Auto-injected tool-chaining hint** — when 2+ tools are registered the loop prepends a short `<output_of:ID>` usage snippet into the system prompt at LLM-call time (never persisted). Opt out with `loop.DisableToolChainingHint = true`.
+- **First-class task tracking** — `create_task` / `update_task` / `list_tasks` built-ins give the LLM a structured planning scratchpad with enum-enforced status (`pending`/`in_progress`/`completed`). Per-session isolated; wire all three via `builtin.RegisterTaskTools(registry, builtin.NewInMemoryTaskStore())`.
 - **Multi-model routing** — `llm.RouterProvider` dispatches requests to different models per condition (token count, system prompt, keyword).
 - **Retry + structured errors** — `agent.DefaultRetryConfig()`; `errors.Is` / `errors.As` against `ErrMaxIterations`, `ErrLLMFailure`, `LLMFailureError`, ...
 - **Observability** — `loop.OnEvent(...)` for custom sinks; `telemetry.NewOTelHandler(tracer)` for OpenTelemetry; `BudgetTracker.MetricsHandler()` for Prometheus/Grafana.
