@@ -132,6 +132,9 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	if len(anthropicTools) > 0 {
 		params.Tools = anthropicTools
 	}
+	if b := resolveThinkingBudget(ctx, p.MaxTokens); b > 0 {
+		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(b)
+	}
 
 	streamChan <- agent.StreamEvent{Type: "thought", Content: fmt.Sprintf("Analyzing with Claude (%s)...", p.model)}
 
@@ -186,6 +189,31 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}, nil
+}
+
+// resolveThinkingBudget clamps a caller-supplied extended-thinking budget
+// to what the Anthropic API accepts for the current request.
+//
+// Returns 0 (disabled) when the context carries no budget or when maxTokens
+// is too small to fit the 1024-token floor alongside any output. Otherwise
+// the budget is raised to at least 1024 and lowered to at most maxTokens-1
+// so the API call does not 400 on "budget_tokens must be < max_tokens".
+func resolveThinkingBudget(ctx context.Context, maxTokens int64) int64 {
+	b := int64(agent.ThinkingBudgetFromContext(ctx))
+	if b <= 0 {
+		return 0
+	}
+	const minBudget int64 = 1024
+	if maxTokens <= minBudget {
+		return 0
+	}
+	if b < minBudget {
+		b = minBudget
+	}
+	if b >= maxTokens {
+		b = maxTokens - 1
+	}
+	return b
 }
 
 // stampCacheControl marks a ContentBlockParamUnion as an Anthropic

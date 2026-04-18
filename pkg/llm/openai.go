@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -109,6 +110,9 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 			IncludeUsage: true,
 		},
 	}
+	if effort := reasoningEffortFor(p.model, agent.ThinkingBudgetFromContext(ctx)); effort != "" {
+		req.ReasoningEffort = effort
+	}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, req)
 	if err != nil {
@@ -195,6 +199,40 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 		ToolCalls: pendingCalls,
 		Usage:     usage,
 	}, nil
+}
+
+// reasoningEffortFor maps a generic ThinkingBudget token count to the
+// reasoning_effort string the OpenAI chat API understands.
+//
+// Only reasoning-capable models receive the field: OpenAI rejects
+// reasoning_effort on stock chat models like gpt-4o. The allow-list uses a
+// prefix match on names that begin with "o1", "o3", "o4", or carry an
+// explicit "reasoning" tag — anything else returns an empty string and the
+// caller omits the field entirely.
+//
+// Thresholds are intentionally coarse: the API exposes only four steps
+// ("minimal"/"low"/"medium"/"high"), so a token count is a better UX than
+// asking callers to memorize magic strings.
+func reasoningEffortFor(model string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	m := strings.ToLower(model)
+	reasoning := strings.HasPrefix(m, "o1") ||
+		strings.HasPrefix(m, "o3") ||
+		strings.HasPrefix(m, "o4") ||
+		strings.Contains(m, "reasoning")
+	if !reasoning {
+		return ""
+	}
+	switch {
+	case budget <= 2048:
+		return "low"
+	case budget <= 8192:
+		return "medium"
+	default:
+		return "high"
+	}
 }
 
 // openAIPartsFromMediaParts converts GopherAgent's provider-neutral MediaPart

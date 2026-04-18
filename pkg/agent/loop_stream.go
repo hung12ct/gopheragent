@@ -165,6 +165,14 @@ type AgentLoop struct {
 	// loop emits an action_required event and auto-denies until the caller
 	// approves out-of-band and re-runs the iteration with PlanMode=false.
 	ConfirmPlan ConfirmPlanFunc
+
+	// ThinkingBudget turns on extended reasoning for providers that support
+	// it. It is a token hint, not a hard cap — see WithThinkingBudget for the
+	// per-provider mapping. Set to 0 (default) to keep requests on the normal
+	// non-reasoning path. Anthropic requires a minimum of 1024 tokens and the
+	// budget must be strictly less than the provider's MaxTokens; the
+	// Anthropic adapter clamps accordingly.
+	ThinkingBudget int
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -424,7 +432,11 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 			}
 			msgsForLLM := al.withPlanModeHint(al.withToolChainingHint(msgs))
-			res, err := al.LLM.GenerateStream(ctx, msgsForLLM, toolsForCall, pChan)
+			llmCtx := ctx
+			if al.ThinkingBudget > 0 {
+				llmCtx = WithThinkingBudget(ctx, al.ThinkingBudget)
+			}
+			res, err := al.LLM.GenerateStream(llmCtx, msgsForLLM, toolsForCall, pChan)
 			close(pChan)
 			<-done
 			content := buf.String()
