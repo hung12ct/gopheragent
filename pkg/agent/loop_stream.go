@@ -468,158 +468,196 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		msgs = append(msgs, assistantMsg)
 		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
-		var wg sync.WaitGroup
-		toolMsgs := make([]history.Message, len(result.ToolCalls))
+		// Schedule tool calls into dependency waves. When the LLM emits
+		// <output_of:ID.path> references in ArgsJSON, calls are ordered so
+		// each wave depends only on completed waves; substitution happens
+		// right before a call runs. If scheduling fails (cycle, unknown ref)
+		// we fall back to the legacy behavior of running all calls in
+		// parallel, letting the tools themselves reject bad input.
+		waves, schedErr := ScheduleToolCalls(result.ToolCalls)
+		if schedErr != nil {
+			al.emit(ctx, sessionKey, streamChan, StreamEvent{
+				Type:    "thought",
+				Content: fmt.Sprintf("Tool scheduler: %v — running all calls in one wave.", schedErr),
+			})
+			waves = [][]PendingToolCall{result.ToolCalls}
+		}
+
+		toolMsgs := make(map[string]history.Message, len(result.ToolCalls))
+		resultsByID := make(map[string]string, len(result.ToolCalls))
+		var completedMu sync.Mutex
 		var fatalErr error
 		var fatalMu sync.Mutex
 		var hitlMu sync.Mutex
 
-		for i, tc := range result.ToolCalls {
-			wg.Add(1)
-			go func(idx int, tCall PendingToolCall) {
-				defer wg.Done()
-
-				fatalMu.Lock()
-				hasFatal := fatalErr != nil
-				fatalMu.Unlock()
-				if hasFatal {
-					return
+		for _, wave := range waves {
+			// Substitute <output_of:...> tokens in this wave's args using
+			// results from earlier waves. Resolver reads under the lock to
+			// stay race-free against any residual goroutine writes.
+			substitutedWave := make([]PendingToolCall, len(wave))
+			for i, tc := range wave {
+				completedMu.Lock()
+				resolver := func(id string) (string, bool) {
+					r, ok := resultsByID[id]
+					return r, ok
 				}
+				newArgs, subErr := Substitute(tc.ArgsJSON, resolver)
+				completedMu.Unlock()
+				if subErr == nil {
+					tc.ArgsJSON = newArgs
+				} else {
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{
+						Type:    "thought",
+						Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v", tc.Name, subErr),
+					})
+				}
+				substitutedWave[i] = tc
+			}
 
-				tool, ok := al.Tools.Get(tCall.Name)
-				if !ok {
-					toolErr := &ToolNotFoundError{ToolName: tCall.Name}
-					al.emit(ctx, sessionKey, streamChan, errEvent(toolErr))
-					toolMsgs[idx] = history.Message{
-						Role:       "tool",
-						Content:    toolErr.Error(),
-						ToolCallID: tCall.ID,
-						IsError:    true,
+			var wg sync.WaitGroup
+			for _, tc := range substitutedWave {
+				wg.Add(1)
+				go func(tCall PendingToolCall) {
+					defer wg.Done()
+
+					fatalMu.Lock()
+					hasFatal := fatalErr != nil
+					fatalMu.Unlock()
+					if hasFatal {
+						return
 					}
-					return
-				}
 
-				if tool.RequiresConfirmation() {
-					approved := func() bool {
-						hitlMu.Lock()
-						defer hitlMu.Unlock()
-
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "CRITICAL: Tool requires human confirmation."})
-
-						// When no custom handler is registered, emit action_required here
-						// so the frontend still knows a confirmation was needed.
-						// When ConfirmHITL is set, the handler is responsible for emitting
-						// action_required (with any metadata such as approval_id).
-						appr := false
-						if al.ConfirmHITL != nil {
-							appr = al.ConfirmHITL(ctx, tCall.Name, tCall.ArgsJSON)
-						} else {
-							payload, _ := json.Marshal(map[string]string{"tool": tCall.Name, "args": tCall.ArgsJSON})
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
-						}
-						return appr
-					}()
-
-					if !approved {
-						deniedErr := &HITLDeniedError{ToolName: tCall.Name}
-						toolMsgs[idx] = history.Message{
+					tool, ok := al.Tools.Get(tCall.Name)
+					if !ok {
+						toolErr := &ToolNotFoundError{ToolName: tCall.Name}
+						al.emit(ctx, sessionKey, streamChan, errEvent(toolErr))
+						completedMu.Lock()
+						toolMsgs[tCall.ID] = history.Message{
 							Role:       "tool",
-							Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
+							Content:    toolErr.Error(),
 							ToolCallID: tCall.ID,
 							IsError:    true,
 						}
+						completedMu.Unlock()
 						return
 					}
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Human APPROVED tool execution."})
-				}
 
-				cacheKey := tCall.Name + ":" + tCall.ArgsJSON
-				if al.Cache != nil {
-					if cached, hit := al.Cache.Get(cacheKey); hit {
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
-						toolMsgs[idx] = history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}
+					if tool.RequiresConfirmation() {
+						approved := func() bool {
+							hitlMu.Lock()
+							defer hitlMu.Unlock()
+
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "CRITICAL: Tool requires human confirmation."})
+
+							appr := false
+							if al.ConfirmHITL != nil {
+								appr = al.ConfirmHITL(ctx, tCall.Name, tCall.ArgsJSON)
+							} else {
+								payload, _ := json.Marshal(map[string]string{"tool": tCall.Name, "args": tCall.ArgsJSON})
+								al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
+							}
+							return appr
+						}()
+
+						if !approved {
+							deniedErr := &HITLDeniedError{ToolName: tCall.Name}
+							completedMu.Lock()
+							toolMsgs[tCall.ID] = history.Message{
+								Role:       "tool",
+								Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
+								ToolCallID: tCall.ID,
+								IsError:    true,
+							}
+							completedMu.Unlock()
+							return
+						}
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Human APPROVED tool execution."})
+					}
+
+					cacheKey := tCall.Name + ":" + tCall.ArgsJSON
+					if al.Cache != nil {
+						if cached, hit := al.Cache.Get(cacheKey); hit {
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
+							completedMu.Lock()
+							toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}
+							resultsByID[tCall.ID] = cached
+							completedMu.Unlock()
+							return
+						}
+					}
+
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "tool_call", Content: fmt.Sprintf("Executing: %s", tCall.Name)})
+
+					toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
+						ev := StreamEvent{Type: "tool_progress", Content: msg}
+						select {
+						case streamChan <- ev:
+							for _, h := range al.EventHandlers {
+								h(ctx, sessionKey, ev)
+							}
+						default:
+						}
+					})
+					toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
+						select {
+						case streamChan <- ev:
+							for _, h := range al.EventHandlers {
+								h(ctx, sessionKey, ev)
+							}
+						default:
+						}
+					})
+					toolResult, execErr := tool.Execute(toolCtx, tCall.ArgsJSON)
+					content := toolResult
+					isToolErr := execErr != nil
+					if isToolErr {
+						content = fmt.Sprintf("Error: %v", execErr)
+					}
+
+					if !isToolErr {
+						if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "content", Content: "\n\n" + content + "\n\n"})
+						}
+					}
+
+					if al.Cache != nil && !isToolErr {
+						al.Cache.Put(cacheKey, content)
+					}
+
+					loopTracker.AddCall(tCall.Name, tCall.ArgsJSON, content)
+					warnMessage, loopErr := loopTracker.Detect()
+					if loopErr != nil {
+						fatalMu.Lock()
+						if fatalErr == nil {
+							fatalErr = loopErr
+						}
+						fatalMu.Unlock()
 						return
 					}
-				}
-
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "tool_call", Content: fmt.Sprintf("Executing: %s", tCall.Name)})
-
-				// Inject a progress reporter so the tool can emit status updates
-				// during long-running operations (polling, downloads, etc.) without
-				// taking a dependency on the streaming layer.
-				//
-				// Sends are non-blocking: progress is inherently lossy, and a
-				// high-frequency emitter (byte counters, SQL row counts) must
-				// not be able to stall the tool goroutine if the SSE consumer
-				// backs up.
-				toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
-					ev := StreamEvent{Type: "tool_progress", Content: msg}
-					select {
-					case streamChan <- ev:
-						for _, h := range al.EventHandlers {
-							h(ctx, sessionKey, ev)
-						}
-					default:
-						// Consumer is backed up; drop this progress tick.
+					if warnMessage != "" {
+						content += "\n\n" + warnMessage
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "System inserted an anti-loop warning into context window."})
 					}
-				})
 
-				// Inject a sub-agent emitter so tools running nested agent loops
-				// (call_sub_agent, async workers) can stream their events back to
-				// this parent loop's consumer. Like progress, sends are
-				// non-blocking: a slow consumer must never stall a sub-agent.
-				toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
-					select {
-					case streamChan <- ev:
-						for _, h := range al.EventHandlers {
-							h(ctx, sessionKey, ev)
-						}
-					default:
-						// Consumer is backed up; drop this forwarded event.
+					completedMu.Lock()
+					toolMsgs[tCall.ID] = history.Message{
+						Role:       "tool",
+						Content:    content,
+						ToolCallID: tCall.ID,
+						IsError:    isToolErr,
 					}
-				})
-				toolResult, execErr := tool.Execute(toolCtx, tCall.ArgsJSON)
-				content := toolResult
-				isToolErr := execErr != nil
-				if isToolErr {
-					content = fmt.Sprintf("Error: %v", execErr)
-				}
-
-				if !isToolErr {
-					if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "content", Content: "\n\n" + content + "\n\n"})
+					if !isToolErr {
+						resultsByID[tCall.ID] = content
 					}
-				}
+					completedMu.Unlock()
+				}(tc)
+			}
+			wg.Wait()
 
-				if al.Cache != nil && !isToolErr {
-					al.Cache.Put(cacheKey, content)
-				}
-
-				loopTracker.AddCall(tCall.Name, tCall.ArgsJSON, content)
-				warnMessage, loopErr := loopTracker.Detect()
-				if loopErr != nil {
-					fatalMu.Lock()
-					if fatalErr == nil {
-						fatalErr = loopErr
-					}
-					fatalMu.Unlock()
-					return
-				}
-				if warnMessage != "" {
-					content += "\n\n" + warnMessage
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "System inserted an anti-loop warning into context window."})
-				}
-
-				toolMsgs[idx] = history.Message{
-					Role:       "tool",
-					Content:    content,
-					ToolCallID: tCall.ID,
-					IsError:    isToolErr,
-				}
-			}(i, tc)
+			if fatalErr != nil {
+				break
+			}
 		}
-
-		wg.Wait()
 
 		if fatalErr != nil {
 			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, fatalErr)))
@@ -627,8 +665,11 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			return
 		}
 
-		for _, m := range toolMsgs {
-			if m.Role != "" {
+		// Append tool results in the LLM's original ToolCall order so the
+		// transcript matches what the model emitted, regardless of which
+		// scheduling wave each call ran in.
+		for _, tc := range result.ToolCalls {
+			if m, ok := toolMsgs[tc.ID]; ok && m.Role != "" {
 				msgs = append(msgs, m)
 			}
 		}
