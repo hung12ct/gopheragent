@@ -46,13 +46,22 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	for _, m := range memory {
 		switch m.Role {
 		case "system":
-			systemBlocks = append(systemBlocks, anthropic.TextBlockParam{Text: m.Content})
-		case "user":
-			if len(m.Parts) > 0 {
-				messages = append(messages, anthropic.NewUserMessage(anthropicBlocksFromMediaParts(m.Content, m.Parts)...))
-			} else {
-				messages = append(messages, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
+			block := anthropic.TextBlockParam{Text: m.Content}
+			if m.CacheHint {
+				block.CacheControl = anthropic.NewCacheControlEphemeralParam()
 			}
+			systemBlocks = append(systemBlocks, block)
+		case "user":
+			var blocks []anthropic.ContentBlockParamUnion
+			if len(m.Parts) > 0 {
+				blocks = anthropicBlocksFromMediaParts(m.Content, m.Parts)
+			} else {
+				blocks = []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)}
+			}
+			if m.CacheHint && len(blocks) > 0 {
+				stampCacheControl(&blocks[len(blocks)-1])
+			}
+			messages = append(messages, anthropic.NewUserMessage(blocks...))
 		case "assistant":
 			if len(m.ToolCalls) > 0 {
 				var blocks []anthropic.ContentBlockParamUnion
@@ -72,17 +81,26 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 						},
 					})
 				}
+				if m.CacheHint && len(blocks) > 0 {
+					stampCacheControl(&blocks[len(blocks)-1])
+				}
 				messages = append(messages, anthropic.MessageParam{Role: anthropic.MessageParamRoleAssistant, Content: blocks})
 			} else {
+				blocks := []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)}
+				if m.CacheHint {
+					stampCacheControl(&blocks[0])
+				}
 				messages = append(messages, anthropic.MessageParam{
 					Role:    anthropic.MessageParamRoleAssistant,
-					Content: []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)},
+					Content: blocks,
 				})
 			}
 		case "tool":
-			messages = append(messages, anthropic.NewUserMessage(
-				anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError),
-			))
+			block := anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError)
+			if m.CacheHint {
+				stampCacheControl(&block)
+			}
+			messages = append(messages, anthropic.NewUserMessage(block))
 		}
 	}
 
@@ -168,6 +186,27 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}, nil
+}
+
+// stampCacheControl marks a ContentBlockParamUnion as an Anthropic
+// prompt-cache breakpoint. The request will cache every content block from
+// the start of the prompt up to and including this one for ~5 minutes;
+// subsequent requests that reuse the same prefix hit the cache at ~10% of
+// the normal input-token cost. A request can carry up to 4 breakpoints.
+func stampCacheControl(block *anthropic.ContentBlockParamUnion) {
+	cc := anthropic.NewCacheControlEphemeralParam()
+	switch {
+	case block.OfText != nil:
+		block.OfText.CacheControl = cc
+	case block.OfToolUse != nil:
+		block.OfToolUse.CacheControl = cc
+	case block.OfToolResult != nil:
+		block.OfToolResult.CacheControl = cc
+	case block.OfImage != nil:
+		block.OfImage.CacheControl = cc
+	case block.OfDocument != nil:
+		block.OfDocument.CacheControl = cc
+	}
 }
 
 // anthropicBlocksFromMediaParts converts MediaParts into the Anthropic
