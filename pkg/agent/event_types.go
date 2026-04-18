@@ -16,6 +16,11 @@ const (
 	EventTypeUsage          = "usage"
 	EventTypeError          = "error"
 	EventTypeDone           = "done"
+	// EventTypeReflected carries the canonical answer produced by a
+	// self-critique round. Streaming consumers should treat it as a
+	// replacement for any prior Source="" content that fell in the same
+	// iteration; RunIteration does exactly this by resetting its buffer.
+	EventTypeReflected = "reflected"
 )
 
 // EventPayload is a sealed interface implemented by every typed event. Use it
@@ -106,6 +111,15 @@ type DoneEvent struct {
 	BaseEvent
 }
 
+// ReflectedEvent delivers a post-critique canonical answer. Round indicates
+// which self-critique pass produced it (1-indexed); consumers typically keep
+// the last seen payload as the authoritative response.
+type ReflectedEvent struct {
+	BaseEvent
+	Text  string
+	Round int
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -123,6 +137,7 @@ func (ActionRequiredEvent) isEventPayload() {}
 func (UsageEvent) isEventPayload()          {}
 func (ErrorEvent) isEventPayload()          {}
 func (DoneEvent) isEventPayload()           {}
+func (ReflectedEvent) isEventPayload()      {}
 func (UnknownEvent) isEventPayload()        {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
@@ -164,6 +179,20 @@ func (ev StreamEvent) Payload() EventPayload {
 		return ErrorEvent{BaseEvent: base, Err: err, Message: msg}
 	case EventTypeDone:
 		return DoneEvent{BaseEvent: base}
+	case EventTypeReflected:
+		out := ReflectedEvent{BaseEvent: base}
+		var decoded struct {
+			Text  string `json:"text"`
+			Round int    `json:"round"`
+		}
+		if err := json.Unmarshal([]byte(ev.Content), &decoded); err == nil && decoded.Text != "" {
+			out.Text = decoded.Text
+			out.Round = decoded.Round
+		} else {
+			// Fallback for callers that emitted the raw text.
+			out.Text = ev.Content
+		}
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -185,6 +214,7 @@ type EventVisitor interface {
 	VisitUsage(UsageEvent)
 	VisitError(ErrorEvent)
 	VisitDone(DoneEvent)
+	VisitReflected(ReflectedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -209,6 +239,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitError(p)
 	case DoneEvent:
 		v.VisitDone(p)
+	case ReflectedEvent:
+		v.VisitReflected(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}

@@ -166,6 +166,26 @@ type AgentLoop struct {
 	// approves out-of-band and re-runs the iteration with PlanMode=false.
 	ConfirmPlan ConfirmPlanFunc
 
+	// Reflect runs N serial self-critique passes after the model produces a
+	// final answer with no pending tool calls. Each pass appends a synthetic
+	// critique prompt and asks the model to revise its answer; the final
+	// round's text becomes the canonical response saved to history and
+	// emitted to callers. 0 (default) disables reflection entirely.
+	//
+	// Reflection is opt-in because it multiplies latency and token cost by
+	// (1 + N). It targets correctness-critical tasks — SQL generation, code
+	// synthesis, multi-step analysis — where a second-pass review routinely
+	// catches mistakes the first pass missed.
+	Reflect int
+
+	// ReflectPrompt overrides the default critique instruction appended at
+	// each reflection round. Leave empty to use defaultReflectPrompt, which
+	// is a neutral "review and revise if wrong; otherwise repeat verbatim"
+	// prompt suitable for most tasks. Override with domain-specific criteria
+	// (e.g. "check every JOIN condition binds a valid FK") when the default
+	// misses task-specific pitfalls.
+	ReflectPrompt string
+
 	// ThinkingBudget turns on extended reasoning for providers that support
 	// it. It is a token hint, not a hard cap — see WithThinkingBudget for the
 	// per-provider mapping. Set to 0 (default) to keep requests on the normal
@@ -249,6 +269,15 @@ func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userIn
 		switch ev.Type {
 		case "content":
 			buf.WriteString(ev.Content)
+		case EventTypeReflected:
+			// A reflection round produced a canonical revised answer — it
+			// replaces whatever Source="" content was streamed earlier this
+			// iteration so RunIteration always returns the final post-critique
+			// text.
+			if p, ok := ev.Payload().(ReflectedEvent); ok && p.Text != "" {
+				buf.Reset()
+				buf.WriteString(p.Text)
+			}
 		case "error":
 			if ev.Err != nil {
 				lastErr = ev.Err
@@ -487,8 +516,39 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		}
 
 		if len(result.ToolCalls) == 0 {
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "done"})
 			msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
+
+			// Optional serial self-critique. Runs only on the terminal branch
+			// so we never reflect over partial states where the model still
+			// owes tool calls. Errors inside a round are surfaced as thought
+			// events and break out of the loop so the original answer stands.
+			if al.Reflect > 0 && finalContent != "" {
+				for r := 1; r <= al.Reflect; r++ {
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{
+						Type:    "thought",
+						Content: fmt.Sprintf("Self-critique pass %d/%d...", r, al.Reflect),
+					})
+					revised, rerr := al.reflectOnce(ctx, sessionKey, msgs, r, streamChan)
+					if rerr != nil {
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{
+							Type:    "thought",
+							Content: fmt.Sprintf("Self-critique aborted: %v", rerr),
+						})
+						break
+					}
+					if revised == "" || revised == finalContent {
+						continue
+					}
+					finalContent = revised
+					msgs[len(msgs)-1].Content = finalContent
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{
+						Type:    EventTypeReflected,
+						Content: reflectedEventContent(finalContent, r),
+					})
+				}
+			}
+
+			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "done"})
 			al.saveSession(ctx, sessionKey, msgs)
 			return
 		}
