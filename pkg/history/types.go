@@ -32,6 +32,15 @@ type Message struct {
 	ToolCallID string      `json:"tool_call_id,omitempty"` // for role:"tool" result messages
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`   // for role:"assistant" messages with tool calls
 	IsError    bool        `json:"is_error,omitempty"`     // true when a tool execution failed
+
+	// CacheHint requests that LLM adapters mark this message as a prompt-cache
+	// breakpoint when the underlying provider supports it. The Anthropic
+	// adapter translates CacheHint=true into `cache_control:{type:"ephemeral"}`
+	// on the corresponding content block, which is cached for ~5 minutes and
+	// cuts input-token cost ~90% on cached portions of subsequent requests.
+	// Providers without a prompt-cache API (OpenAI/Gemini auto-cache server-side)
+	// ignore this flag — it is always safe to set.
+	CacheHint bool `json:"cache_hint,omitempty"`
 }
 
 // PartType enumerates the kinds of content a MediaPart can hold.
