@@ -1,0 +1,149 @@
+package llm
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/hung12ct/gopheragent/pkg/agent"
+	"github.com/hung12ct/gopheragent/pkg/history"
+	"github.com/sashabaranov/go-openai"
+)
+
+// captureOpenAIRequest spins up an httptest server that records the decoded
+// ChatCompletionRequest body and returns an immediate [DONE] SSE frame so
+// GenerateStream completes cleanly without needing real streaming content.
+func captureOpenAIRequest(t *testing.T, run func(p *OpenAIProvider)) map[string]any {
+	t.Helper()
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := openai.DefaultConfig("test-key")
+	cfg.BaseURL = srv.URL
+	p := &OpenAIProvider{
+		client: openai.NewClientWithConfig(cfg),
+		model:  "gpt-4o",
+	}
+	run(p)
+	if captured == nil {
+		t.Fatal("request body never captured")
+	}
+	return captured
+}
+
+func TestOpenAI_StructuredOutput_SetsResponseFormat(t *testing.T) {
+	so := agent.StructuredOutput{
+		Name:        "person",
+		Description: "a human",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required": []string{"name"},
+		},
+		Strict: true,
+	}
+
+	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+		ctx := agent.WithStructuredOutput(context.Background(), so)
+		ch := make(chan agent.StreamEvent, 4)
+		go func() {
+			for range ch {
+			}
+		}()
+		_, _ = p.GenerateStream(ctx, []history.Message{{Role: "user", Content: "hi"}}, nil, ch)
+		close(ch)
+	})
+
+	rf, ok := req["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format missing or wrong shape: %v", req["response_format"])
+	}
+	if rf["type"] != "json_schema" {
+		t.Fatalf("type: want json_schema, got %v", rf["type"])
+	}
+	js, ok := rf["json_schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("json_schema missing: %v", rf)
+	}
+	if js["name"] != "person" {
+		t.Fatalf("name: want person, got %v", js["name"])
+	}
+	if js["description"] != "a human" {
+		t.Fatalf("description: want 'a human', got %v", js["description"])
+	}
+	if js["strict"] != true {
+		t.Fatalf("strict: want true, got %v", js["strict"])
+	}
+	schema, ok := js["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing: %v", js)
+	}
+	if schema["type"] != "object" {
+		t.Fatalf("schema.type: want object, got %v", schema["type"])
+	}
+}
+
+func TestOpenAI_StructuredOutput_DefaultsNameWhenMissing(t *testing.T) {
+	// Callers can leave Name empty; the provider should supply a fallback
+	// rather than letting OpenAI reject an empty string.
+	so := agent.StructuredOutput{
+		Schema: map[string]any{"type": "object"},
+	}
+	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+		ctx := agent.WithStructuredOutput(context.Background(), so)
+		ch := make(chan agent.StreamEvent, 4)
+		go func() {
+			for range ch {
+			}
+		}()
+		_, _ = p.GenerateStream(ctx, []history.Message{{Role: "user", Content: "hi"}}, nil, ch)
+		close(ch)
+	})
+	rf := req["response_format"].(map[string]any)
+	js := rf["json_schema"].(map[string]any)
+	if name, _ := js["name"].(string); name == "" {
+		t.Fatalf("expected non-empty fallback name, got empty")
+	}
+}
+
+func TestOpenAI_NoStructuredOutput_OmitsResponseFormat(t *testing.T) {
+	// The default path must not send response_format; that would change wire
+	// semantics for every non-JSON-mode call.
+	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+		ch := make(chan agent.StreamEvent, 4)
+		go func() {
+			for range ch {
+			}
+		}()
+		_, _ = p.GenerateStream(context.Background(), []history.Message{{Role: "user", Content: "hi"}}, nil, ch)
+		close(ch)
+	})
+	if _, ok := req["response_format"]; ok {
+		t.Fatalf("response_format must be omitted by default, got %v", req["response_format"])
+	}
+}
+
+// Defensive: confirm that the jsonSchemaMarshaler produces a JSON object,
+// not the Go map's default encoding quirks, when the map is empty.
+func TestJSONSchemaMarshaler_EmptyMap(t *testing.T) {
+	raw, err := jsonSchemaMarshaler(map[string]any{}).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != "{}" {
+		t.Fatalf("want '{}', got %q", string(raw))
+	}
+}

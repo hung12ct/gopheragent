@@ -112,6 +112,8 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 		SystemInstruction: systemInstruction,
 	}
 
+	applyGeminiStructuredOutput(config, agent.StructuredOutputFromContext(ctx))
+
 	if availableTools != nil {
 		var geminiTools []*genai.Tool
 		var funcDecls []*genai.FunctionDeclaration
@@ -217,6 +219,19 @@ func geminiPartsFromMediaParts(caption string, parts []history.MediaPart) []*gen
 		}
 	}
 	return out
+}
+
+// applyGeminiStructuredOutput translates the ctx-carried StructuredOutput
+// request to Gemini's native response_mime_type + response_json_schema
+// fields. Nil so is a no-op (default path, wire semantics unchanged).
+// Name/Description/Strict have no analog on Gemini — the API exposes no
+// schema-name field and enforces the schema unconditionally.
+func applyGeminiStructuredOutput(config *genai.GenerateContentConfig, so *agent.StructuredOutput) {
+	if so == nil || len(so.Schema) == 0 {
+		return
+	}
+	config.ResponseMIMEType = "application/json"
+	config.ResponseJsonSchema = so.Schema
 }
 
 func mapRegistrySchemaToGeminiSchema(s tools.ToolSchema) *genai.Schema {

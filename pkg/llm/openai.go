@@ -4,6 +4,7 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,14 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 	"github.com/sashabaranov/go-openai"
 )
+
+// jsonSchemaMarshaler adapts a map[string]any to json.Marshaler so it can be
+// handed to openai.ChatCompletionResponseFormatJSONSchema.Schema.
+type jsonSchemaMarshaler map[string]any
+
+func (m jsonSchemaMarshaler) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any(m))
+}
 
 // OpenAIProvider implements agent.LLMProvider using the OpenAI Chat Completions API.
 type OpenAIProvider struct {
@@ -112,6 +121,21 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 	}
 	if effort := reasoningEffortFor(p.model, agent.ThinkingBudgetFromContext(ctx)); effort != "" {
 		req.ReasoningEffort = effort
+	}
+	if so := agent.StructuredOutputFromContext(ctx); so != nil {
+		name := so.Name
+		if name == "" {
+			name = "response"
+		}
+		req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+				Name:        name,
+				Description: so.Description,
+				Schema:      jsonSchemaMarshaler(so.Schema),
+				Strict:      so.Strict,
+			},
+		}
 	}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, req)

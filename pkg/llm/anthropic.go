@@ -121,6 +121,19 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		}
 	}
 
+	// Anthropic has no native JSON mode — synthesize a single tool whose
+	// input schema matches the requested shape and force the model to call
+	// it. The tool's Input is surfaced back to the caller as .Content on the
+	// LLMResult so Mode A / GenerateJSON consumers see a plain JSON string
+	// and never learn about the tool trick.
+	so := agent.StructuredOutputFromContext(ctx)
+	structuredToolName := ""
+	if so != nil && len(so.Schema) > 0 {
+		tool, name := synthesizeAnthropicStructuredTool(so)
+		anthropicTools = append(anthropicTools, tool)
+		structuredToolName = name
+	}
+
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: p.MaxTokens,
@@ -131,6 +144,9 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	}
 	if len(anthropicTools) > 0 {
 		params.Tools = anthropicTools
+	}
+	if structuredToolName != "" {
+		params.ToolChoice = anthropic.ToolChoiceParamOfTool(structuredToolName)
 	}
 	if b := resolveThinkingBudget(ctx, p.MaxTokens); b > 0 {
 		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(b)
@@ -197,6 +213,15 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 			if err != nil {
 				return agent.LLMResult{}, fmt.Errorf("failed to marshal tool input for %s: %w", v.Name, err)
 			}
+			// When the caller requested structured output, Anthropic answers
+			// by calling the synthesized tool — its Input IS the JSON the
+			// caller asked for. Surface it as Content so downstream code
+			// (GenerateJSON, etc.) sees the same shape OpenAI and Gemini
+			// return natively, and do not leak the tool call upstream.
+			if structuredToolName != "" && v.Name == structuredToolName {
+				finalContent = string(argsBytes)
+				continue
+			}
 			pendingCalls = append(pendingCalls, agent.PendingToolCall{
 				ID:       v.ID,
 				Name:     v.Name,
@@ -212,6 +237,64 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}, nil
+}
+
+// synthesizeAnthropicStructuredTool builds a fake tool whose InputSchema
+// mirrors the user's StructuredOutput and returns it alongside the tool
+// name the caller should pass to ToolChoiceParamOfTool. Anthropic exposes
+// no native JSON mode, so forcing the model to call this tool is the
+// standard trick for schema-constrained output.
+//
+// Top-level type/properties/required are extracted into the typed fields;
+// any other JSON-Schema keywords (additionalProperties, $defs, oneOf, …)
+// ride along via ExtraFields, which the SDK merges at marshal time.
+func synthesizeAnthropicStructuredTool(so *agent.StructuredOutput) (anthropic.ToolUnionParam, string) {
+	name := so.Name
+	if name == "" {
+		name = "structured_response"
+	}
+	inputSchema := anthropic.ToolInputSchemaParam{}
+	extras := map[string]any{}
+	for k, v := range so.Schema {
+		switch k {
+		case "properties":
+			inputSchema.Properties = v
+		case "required":
+			switch req := v.(type) {
+			case []string:
+				inputSchema.Required = req
+			case []any:
+				out := make([]string, 0, len(req))
+				for _, e := range req {
+					if s, ok := e.(string); ok {
+						out = append(out, s)
+					}
+				}
+				inputSchema.Required = out
+			}
+		case "type":
+			// ToolInputSchemaParam.Type is pinned to "object" — anything
+			// else from the caller is dropped silently. That matches the
+			// practical reality: Anthropic's tool inputs must be objects.
+		default:
+			extras[k] = v
+		}
+	}
+	if len(extras) > 0 {
+		inputSchema.ExtraFields = extras
+	}
+	description := so.Description
+	if description == "" {
+		description = "Return the response as JSON matching the provided schema."
+	}
+	tool := anthropic.ToolUnionParam{
+		OfTool: &anthropic.ToolParam{
+			Name:        name,
+			Description: anthropic.String(description),
+			InputSchema: inputSchema,
+		},
+	}
+	return tool, name
 }
 
 // resolveThinkingBudget clamps a caller-supplied extended-thinking budget
