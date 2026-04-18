@@ -21,6 +21,12 @@ const (
 	// replacement for any prior Source="" content that fell in the same
 	// iteration; RunIteration does exactly this by resetting its buffer.
 	EventTypeReflected = "reflected"
+	// EventTypeToolCallReady is emitted mid-stream by providers that
+	// surface a complete tool invocation before the overall response
+	// finishes streaming. It carries the fully-parsed {id,name,args} so
+	// the agent loop can start executing safe tools in parallel with the
+	// remaining stream, shaving one tail-latency round trip per tool.
+	EventTypeToolCallReady = "tool_call_ready"
 )
 
 // EventPayload is a sealed interface implemented by every typed event. Use it
@@ -120,6 +126,17 @@ type ReflectedEvent struct {
 	Round int
 }
 
+// ToolCallReadyEvent announces that a tool invocation has been fully parsed
+// from the LLM stream and is eligible for execution even though the overall
+// response is still streaming. AgentLoop.SpeculativeTools turns this signal
+// into actual parallel execution for safe calls.
+type ToolCallReadyEvent struct {
+	BaseEvent
+	ID       string
+	Name     string
+	ArgsJSON string
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -138,6 +155,7 @@ func (UsageEvent) isEventPayload()          {}
 func (ErrorEvent) isEventPayload()          {}
 func (DoneEvent) isEventPayload()           {}
 func (ReflectedEvent) isEventPayload()      {}
+func (ToolCallReadyEvent) isEventPayload()  {}
 func (UnknownEvent) isEventPayload()        {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
@@ -193,6 +211,18 @@ func (ev StreamEvent) Payload() EventPayload {
 			out.Text = ev.Content
 		}
 		return out
+	case EventTypeToolCallReady:
+		out := ToolCallReadyEvent{BaseEvent: base}
+		var decoded struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Args string `json:"args"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded)
+		out.ID = decoded.ID
+		out.Name = decoded.Name
+		out.ArgsJSON = decoded.Args
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -215,6 +245,7 @@ type EventVisitor interface {
 	VisitError(ErrorEvent)
 	VisitDone(DoneEvent)
 	VisitReflected(ReflectedEvent)
+	VisitToolCallReady(ToolCallReadyEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -241,6 +272,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitDone(p)
 	case ReflectedEvent:
 		v.VisitReflected(p)
+	case ToolCallReadyEvent:
+		v.VisitToolCallReady(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}

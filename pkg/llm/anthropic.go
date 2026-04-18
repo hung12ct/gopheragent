@@ -156,6 +156,29 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 					streamChan <- agent.StreamEvent{Type: "content", Content: delta.Text}
 				}
 			}
+		case anthropic.ContentBlockStopEvent:
+			// A content block just finalized. If it was a tool_use block,
+			// the full {id, name, input} is available on `accumulated`
+			// right now — emit tool_call_ready so the agent loop can
+			// speculatively start safe tools while the response keeps
+			// streaming. Any downstream consumer that doesn't care simply
+			// ignores the event type.
+			idx := int(variant.Index)
+			if idx >= 0 && idx < len(accumulated.Content) {
+				if tu, ok := accumulated.Content[idx].AsAny().(anthropic.ToolUseBlock); ok {
+					argsBytes, err := json.Marshal(tu.Input)
+					if err == nil {
+						payload, pErr := json.Marshal(struct {
+							ID   string `json:"id"`
+							Name string `json:"name"`
+							Args string `json:"args"`
+						}{ID: tu.ID, Name: tu.Name, Args: string(argsBytes)})
+						if pErr == nil {
+							streamChan <- agent.StreamEvent{Type: agent.EventTypeToolCallReady, Content: string(payload)}
+						}
+					}
+				}
+			}
 		}
 	}
 

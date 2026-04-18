@@ -166,6 +166,18 @@ type AgentLoop struct {
 	// approves out-of-band and re-runs the iteration with PlanMode=false.
 	ConfirmPlan ConfirmPlanFunc
 
+	// SpeculativeTools, when true, executes safe tool calls in parallel with
+	// the remaining LLM stream as soon as their arguments finish streaming —
+	// trimming one tail-latency round trip per call, ~200ms on average for
+	// Claude. Eligibility is conservative: HITL-gated tools, exit_plan_mode,
+	// calls that reference <output_of:...>, and anything while PlanMode is
+	// active are never speculated. See shouldSpeculate for the exact rules.
+	//
+	// Enabling this has no effect unless the provider emits mid-stream
+	// tool_call_ready events; today that is the Anthropic adapter. Other
+	// providers fall back to the original post-stream execution path.
+	SpeculativeTools bool
+
 	// Reflect runs N serial self-critique passes after the model produces a
 	// final answer with no pending tool calls. Each pass appends a synthetic
 	// critique prompt and asks the model to revise its answer; the final
@@ -411,10 +423,23 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			al.Sessions.SetHistory(ctx, sessionKey, msgs)
 		}
 
+		// speculativeMap carries results for tool calls the drainer kicked
+		// off mid-stream. Allocated fresh per iteration so retries never
+		// see stale entries from an earlier failed attempt.
+		specMap := newSpeculativeMap()
+		var specMu sync.Mutex
+
 		// callLLM taps a fresh providerChan, forwards events to streamChan, and
 		// accumulates content. Returns (finalContent, result, contentWasEmitted, err).
 		// Retry is safe only when contentWasEmitted == false.
 		callLLM := func() (string, LLMResult, bool, error) {
+			// Reset speculation state at the start of each attempt so a
+			// retry's map never mixes with prior-attempt speculations.
+			specMu.Lock()
+			for k := range specMap {
+				delete(specMap, k)
+			}
+			specMu.Unlock()
 			// BeforeLLMHooks: any non-nil error aborts this call (no retry).
 			for _, h := range al.BeforeLLMHooks {
 				if h == nil {
@@ -435,6 +460,16 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					if ev.Type == "content" {
 						buf.WriteString(ev.Content)
 						emitted = true
+					}
+					// Kick off safe tool calls the moment the provider has a
+					// complete invocation. Errors in eligibility are silent —
+					// the wave executor will run the tool the normal way.
+					if ev.Type == EventTypeToolCallReady {
+						if p, ok := ev.Payload().(ToolCallReadyEvent); ok {
+							if al.shouldSpeculate(p.ID, p.Name, p.ArgsJSON) {
+								al.spawnSpeculative(ctx, p.ID, p.Name, p.ArgsJSON, &specMu, specMap)
+							}
+						}
 					}
 					select {
 					case streamChan <- ev:
@@ -752,7 +787,22 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						default:
 						}
 					})
-					toolResult, execErr := tool.Execute(toolCtx, tCall.ArgsJSON)
+					// If the drainer speculatively started this call mid-stream,
+					// block on its result rather than re-executing. The
+					// speculation is always for the exact argsJSON we have now
+					// because shouldSpeculate refuses to speculate anything
+					// that could later be rewritten (<output_of:...> refs).
+					specMu.Lock()
+					sm, speculated := specMap[tCall.ID]
+					specMu.Unlock()
+					var toolResult string
+					var execErr error
+					if speculated {
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)})
+						toolResult, execErr = awaitSpeculative(toolCtx, sm)
+					} else {
+						toolResult, execErr = tool.Execute(toolCtx, tCall.ArgsJSON)
+					}
 					content := toolResult
 					isToolErr := execErr != nil
 					if isToolErr {
