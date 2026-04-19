@@ -599,6 +599,40 @@
             margin-top: 0.6rem;
             animation: fadeIn 0.3s ease-out;
         }
+        .plan-card {
+            background: linear-gradient(135deg, rgba(91,141,238,0.1), rgba(154,107,255,0.06));
+            border: 1px solid rgba(91,141,238,0.4);
+            border-radius: 10px;
+            padding: 0.9rem;
+            margin-top: 0.6rem;
+            animation: fadeIn 0.3s ease-out;
+        }
+        .plan-card-header {
+            display: flex; align-items: center; gap: 6px;
+            color: var(--accent); font-weight: 600; font-size: 0.85rem;
+            margin-bottom: 0.75rem;
+        }
+        .plan-card-body {
+            font-size: 0.82rem; color: var(--text-soft); line-height: 1.6;
+            max-height: 280px; overflow-y: auto; padding-right: 4px;
+            border-top: 1px solid rgba(91,141,238,0.15); padding-top: 0.6rem;
+        }
+        .plan-card-body h1,.plan-card-body h2,.plan-card-body h3 {
+            color: var(--text); font-size: 0.85rem; margin: 0.5rem 0 0.25rem;
+        }
+        .plan-card-body ul,.plan-card-body ol { padding-left: 1.2rem; margin: 0.25rem 0; }
+        .plan-card-body li { margin-bottom: 0.15rem; }
+        .plan-card-body strong { color: var(--text); }
+        .plan-toggle {
+            background: none; border: 1px solid var(--border-2); color: var(--muted);
+            border-radius: 6px; padding: 0 10px; height: 36px; cursor: pointer;
+            font-size: 0.75rem; font-family: inherit; transition: all 0.15s; white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .plan-toggle:hover { border-color: var(--accent); color: var(--text); }
+        .plan-toggle.active {
+            background: rgba(91,141,238,0.15); border-color: var(--accent); color: var(--accent);
+        }
         .action-title { color: #fca5a5; font-weight: 600; margin-bottom: 0.5rem; font-size: 0.85rem; }
         .action-body { font-size: 0.82rem; color: var(--text-soft); }
         .action-body strong { color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
@@ -893,6 +927,7 @@
             </div>
             <div class="input-wrapper">
                 <input type="text" id="userInput" placeholder="Ask anything — the cockpit will show every step…" autocomplete="off">
+                <button class="plan-toggle" id="planToggle" title="Plan Mode: agent drafts a plan for your approval before acting" onclick="togglePlanMode()">📋 Plan Mode</button>
                 <button class="btn-send" id="sendBtn" onclick="sendMessage()">Send</button>
             </div>
         </div>
@@ -927,6 +962,7 @@ let currentEventSource = null;
 let sessionId = newSessionId();
 let startTime = null;
 let elapsedTimer = null;
+let planModeEnabled = false;
 
 const stats = { turns: 0, calls: 0, tokens: 0 };
 const timelineState = { events: 0, activeItem: null };
@@ -1197,6 +1233,15 @@ function attachImageHandlers(el) {
 function newSessionId() { return `demo_${Date.now()}_${Math.random().toString(36).slice(2,8)}`; }
 
 input.addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
+function togglePlanMode() {
+    planModeEnabled = !planModeEnabled;
+    const t = document.getElementById('planToggle');
+    t.classList.toggle('active', planModeEnabled);
+    t.title = planModeEnabled
+        ? 'Plan Mode ON — agent will draft a plan for your approval before acting'
+        : 'Plan Mode: agent drafts a plan for your approval before acting';
+}
+
 function useSuggestion(el) {
     const text = el.childNodes[1]?.textContent?.trim() || el.textContent.trim();
     input.value = text;
@@ -1628,8 +1673,13 @@ function renderActionBox(block, cursor, data) {
 
     const approvalId = rawArgs.approval_id || '';
     const toolName   = rawArgs.tool || 'unknown';
-    const argsObj    = rawArgs.args || {};
 
+    if (toolName === 'exit_plan_mode') {
+        renderPlanCard(block, cursor, approvalId, rawArgs.plan || '');
+        return;
+    }
+
+    const argsObj = rawArgs.args || {};
     addTimelineItem({
         kind: 'thought',
         icon: '⚠️',
@@ -1649,6 +1699,37 @@ function renderActionBox(block, cursor, data) {
     box.querySelector('.btn-approve').addEventListener('click', () => handleApprove(approvalId, true, box));
     box.querySelector('.btn-reject').addEventListener('click', () => handleApprove(approvalId, false, box));
     block.content.insertBefore(box, cursor);
+}
+
+function renderPlanCard(block, cursor, approvalId, planText) {
+    addTimelineItem({ kind: 'thought', icon: '📋', label: 'Plan ready — awaiting your approval' });
+
+    const card = document.createElement('div');
+    card.className = 'plan-card';
+
+    const header = document.createElement('div');
+    header.className = 'plan-card-header';
+    header.innerHTML = '<span>📋</span><span>Plan ready for review</span>';
+
+    const body = document.createElement('div');
+    body.className = 'plan-card-body';
+    body.innerHTML = renderMarkdown(planText);
+
+    const buttons = document.createElement('div');
+    buttons.className = 'action-buttons';
+    buttons.style.marginTop = '0.75rem';
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'btn-approve';
+    approveBtn.textContent = 'Approve & Execute';
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = 'btn-reject';
+    rejectBtn.textContent = 'Revise Plan';
+    approveBtn.addEventListener('click', () => handleApprove(approvalId, true, card));
+    rejectBtn.addEventListener('click', () => handleApprove(approvalId, false, card));
+    buttons.append(approveBtn, rejectBtn);
+
+    card.append(header, body, buttons);
+    block.content.insertBefore(card, cursor);
 }
 
 async function handleApprove(approvalId, approved, box) {
@@ -1693,7 +1774,7 @@ async function sendMessage() {
     block.content.appendChild(cursor);
 
     if (currentEventSource) currentEventSource.close();
-    const url = `/api/chat?session_id=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}`;
+    const url = `/api/chat?session_id=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}${planModeEnabled ? '&plan_mode=true' : ''}`;
     currentEventSource = new EventSource(url);
     FlowGraph.activateLLM(); // show "analyzing…" immediately when the turn starts
 

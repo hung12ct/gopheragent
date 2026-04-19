@@ -501,6 +501,9 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 			}()
 			toolsForCall := al.Tools
+			if al.PlanMode {
+				toolsForCall = withPlanModeTool(toolsForCall)
+			}
 			if al.ToolSelector != nil {
 				query := latestUserMessage(msgs)
 				if filtered, selErr := al.ToolSelector.SelectRegistry(ctx, query); selErr == nil && filtered != nil {
