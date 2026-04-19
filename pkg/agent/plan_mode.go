@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
+	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
 // ExitPlanModeToolName is the canonical name the AgentLoop special-cases
@@ -26,6 +27,40 @@ const planModeHint = planModeSentinel + " Do not call any tool except exit_plan_
 // true to approve (loop exits plan mode and resumes normal execution) or
 // false to deny (the model is told to revise via the tool result).
 type ConfirmPlanFunc func(ctx context.Context, plan string) bool
+
+// planModeTool is the tool definition injected into the LLM's tool list
+// when PlanMode is active. It is never executed — the loop intercepts calls
+// to exit_plan_mode before they reach the registry — but the LLM must see
+// its schema to be able to call it.
+type planModeTool struct{}
+
+func (t *planModeTool) Name() string { return ExitPlanModeToolName }
+func (t *planModeTool) Description() string {
+	return "Propose a completed plan for the user's approval. Call this exactly once — when your plan is fully specified — with the plan text as `plan`. The system pauses execution until the user approves; approval unlocks normal tool use."
+}
+
+type planModeToolArgs struct {
+	Plan string `json:"plan" description:"The full plan as markdown text: goals, ordered steps, tools you will call, and acceptance criteria."`
+}
+
+func (t *planModeTool) ParametersSchema() tools.ToolSchema {
+	return tools.SchemaFor[planModeToolArgs]()
+}
+func (t *planModeTool) RequiresConfirmation() bool { return false }
+func (t *planModeTool) Execute(_ context.Context, _ string) (string, error) {
+	return `{"approved":true}`, nil
+}
+
+// withPlanModeTool returns a registry that includes exit_plan_mode,
+// cloning the original only if the tool is not already registered.
+func withPlanModeTool(reg *tools.Registry) *tools.Registry {
+	if _, ok := reg.Get(ExitPlanModeToolName); ok {
+		return reg
+	}
+	clone := reg.Clone()
+	clone.Register(&planModeTool{})
+	return clone
+}
 
 // withPlanModeHint returns msgs augmented with the plan-mode instructions
 // when PlanMode is active. Input slice is never mutated; sentinel check

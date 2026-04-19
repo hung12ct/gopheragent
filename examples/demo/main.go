@@ -37,6 +37,10 @@ var agentInfo AgentInfo
 // memoryStore is shared across all sessions and keyed internally by sessionKey.
 var memoryStore = builtin.NewInMemoryStore()
 
+// planModeDefault is read once from PLAN_MODE env var at startup.
+// When true, every request runs in plan mode regardless of the UI toggle.
+var planModeDefault bool
+
 func loadEnvFiles() {
 	for _, p := range []string{".env", "../../.env"} {
 		if _, err := os.Stat(p); err == nil {
@@ -121,6 +125,45 @@ var (
 	pendingMu       sync.Mutex
 	pendingApprovals = make(map[string]chan bool)
 )
+
+// buildConfirmPlan returns a ConfirmPlanFunc that emits an action_required
+// event with the proposed plan over SSE and blocks until the user approves
+// or denies via POST /api/approve.
+func buildConfirmPlan() agent.ConfirmPlanFunc {
+	return func(ctx context.Context, plan string) bool {
+		approvalID := fmt.Sprintf("%d", uniqueID())
+		ch := make(chan bool, 1)
+
+		pendingMu.Lock()
+		pendingApprovals[approvalID] = ch
+		pendingMu.Unlock()
+
+		defer func() {
+			pendingMu.Lock()
+			delete(pendingApprovals, approvalID)
+			pendingMu.Unlock()
+		}()
+
+		sessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+
+		payload, _ := json.Marshal(map[string]any{
+			"approval_id": approvalID,
+			"tool":        "exit_plan_mode",
+			"plan":        plan,
+		})
+		if sseStream := getStream(sessionKey); sseStream != nil {
+			sseStream <- agent.StreamEvent{Type: "action_required", Content: string(payload)}
+		}
+
+		select {
+		case approved := <-ch:
+			log.Printf("[PLAN] approval_id=%s approved=%v", approvalID, approved)
+			return approved
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
 
 // buildHITL returns a ConfirmFunc that emits an action_required event over
 // the session's active SSE stream and blocks until the user approves or
@@ -259,6 +302,8 @@ func initApp() {
 
 	// Wire HITL: emits action_required over SSE and waits for /api/approve.
 	loop.ConfirmHITL = buildHITL()
+	loop.ConfirmPlan = buildConfirmPlan()
+	planModeDefault = os.Getenv("PLAN_MODE") == "true"
 
 	myAgentApp = loop
 	log.Printf("Demo loaded: %s", yamlPath)
@@ -335,7 +380,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	if sessionKey == "" {
 		sessionKey = r.RemoteAddr
 	}
-
+	myAgentApp.PlanMode = planModeDefault || r.URL.Query().Get("plan_mode") == "true"
 	streamChan := make(chan agent.StreamEvent, 32)
 	registerStream(sessionKey, streamChan)
 	defer unregisterStream(sessionKey)

@@ -4,6 +4,7 @@ package tools
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sort"
 	"sync"
 )
@@ -138,6 +139,20 @@ func (r *Registry) GetAll() []Tool {
 		result = append(result, t)
 	}
 	return result
+}
+
+// Clone returns a shallow copy of the registry with the same tools, debug
+// flag, and logger. Changes to the clone do not affect the original.
+func (r *Registry) Clone() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	c := &Registry{
+		tools:  make(map[string]Tool, len(r.tools)),
+		debug:  r.debug,
+		logger: r.logger,
+	}
+	maps.Copy(c.tools, r.tools)
+	return c
 }
 
 // debugWrapped returns a cached logging-wrapped tool. Must be called under r.mu.
