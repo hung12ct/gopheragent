@@ -120,13 +120,22 @@
         /* ─── Left panel ─────────────────────────────────────── */
         .sidebar {
             width: 360px;
-            min-width: 360px;
+            min-width: 220px;
             background: var(--panel);
-            border-right: 1px solid var(--border);
+            border-right: none;
             display: flex;
             flex-direction: column;
             overflow: hidden;
         }
+        .resize-handle {
+            width: 5px;
+            flex-shrink: 0;
+            cursor: col-resize;
+            background: var(--border);
+            transition: background 0.15s;
+            z-index: 10;
+        }
+        .resize-handle:hover, .resize-handle.dragging { background: var(--accent); }
         .panel-section { border-bottom: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
         .panel-section:last-child { border-bottom: none; }
         .panel-header {
@@ -149,7 +158,7 @@
         }
 
         /* Graph */
-        .graph-panel { height: 240px; }
+        .graph-panel { height: 295px; }
         .graph-wrap { flex: 1; position: relative; overflow: hidden; padding: 0 0.5rem 0.5rem; }
         #flow-graph { width: 100%; height: 100%; display: block; }
         .graph-legend {
@@ -526,6 +535,23 @@
             position: relative;
             height: 300px;
         }
+        .followup-chips {
+            display: flex; flex-wrap: wrap; gap: 6px;
+            margin-top: 12px; padding-top: 10px;
+            border-top: 1px solid var(--border);
+        }
+        .followup-chip {
+            padding: 5px 12px;
+            background: var(--panel-2);
+            border: 1px solid var(--border-2);
+            border-radius: 999px;
+            font-size: 0.78rem; color: var(--text-soft);
+            cursor: pointer; transition: all 0.15s; font-family: inherit;
+        }
+        .followup-chip:hover {
+            border-color: var(--accent); color: var(--text);
+            background: rgba(91,141,238,0.08); transform: translateY(-1px);
+        }
         .suggestion-cat.dashboard { background: rgba(154,107,255,0.22); color: #c5b1ff; }
         .media-fallback {
             display: inline-flex;
@@ -795,14 +821,15 @@
                 <span class="count" id="graphCallCount">idle</span>
             </div>
             <div class="graph-wrap">
-                <svg id="flow-graph" viewBox="0 0 340 200" preserveAspectRatio="xMidYMid meet"></svg>
+                <svg id="flow-graph" viewBox="0 0 340 200" preserveAspectRatio="xMinYMid meet"></svg>
             </div>
             <div class="graph-legend">
                 <span class="legend-item"><span class="legend-dot" style="background:var(--tool-web)"></span>web</span>
                 <span class="legend-item"><span class="legend-dot" style="background:var(--tool-memory)"></span>memory</span>
                 <span class="legend-item"><span class="legend-dot" style="background:var(--tool-code)"></span>code</span>
                 <span class="legend-item"><span class="legend-dot" style="background:var(--tool-media)"></span>media</span>
-                <span class="legend-item"><span class="legend-dot" style="background:var(--tool-agent)"></span>sub-agent</span>
+                <span class="legend-item"><span class="legend-dot" style="background:var(--tool-agent)"></span>agent</span>
+                <span class="legend-item" style="margin-left:auto;font-style:italic">columns = parallel batches</span>
             </div>
         </section>
 
@@ -829,6 +856,8 @@
         </section>
 
     </aside>
+
+    <div class="resize-handle" id="resizeHandle"></div>
 
     <!-- ── CENTER: chat ───────────────────────────────────────── -->
     <div class="chat-area">
@@ -981,6 +1010,7 @@ async function renderVisualsIn(root) {
     replaceBlocks(root, 'callout', renderCalloutBlock);
     replaceBlocks(root, 'progress', renderProgressBlock);
     replaceBlocks(root, 'chart', renderChartBlock);
+    replaceBlocks(root, 'follow-ups', renderFollowUpsBlock);
 }
 
 function replaceBlocks(root, lang, renderFn) {
@@ -1077,6 +1107,26 @@ function renderChartBlock(pre, raw) {
     new Chart(canvas, cfg);
 }
 
+function renderFollowUpsBlock(pre, raw) {
+    const questions = JSON.parse(raw);
+    if (!Array.isArray(questions)) throw new Error('expected JSON array');
+    const wrap = document.createElement('div');
+    wrap.className = 'followup-chips';
+    questions.forEach(q => {
+        const btn = document.createElement('button');
+        btn.className = 'followup-chip';
+        btn.textContent = String(q);
+        btn.onclick = () => sendFollowUp(String(q));
+        wrap.appendChild(btn);
+    });
+    pre.replaceWith(wrap);
+}
+
+function sendFollowUp(question) {
+    input.value = question;
+    sendMessage();
+}
+
 function renderKpiCard({ label, value, delta, positive }) {
     const card = document.createElement('div');
     card.className = 'kpi-card';
@@ -1163,6 +1213,7 @@ const TOOL_META = {
     memory_list:      { cat: 'memory', color: 'var(--tool-memory)', icon: '📋' },
     memory_delete:    { cat: 'memory', color: 'var(--tool-memory)', icon: '🗑' },
     code_interpreter: { cat: 'code',   color: 'var(--tool-code)',   icon: '🐍' },
+    __llm__:          { cat: 'llm',    color: 'var(--accent)',      icon: '⚡' },
 };
 function toolMeta(name) {
     if (TOOL_META[name]) return TOOL_META[name];
@@ -1172,129 +1223,209 @@ function toolMeta(name) {
     return { cat: 'other', color: 'var(--tool-default)', icon: '🛠' };
 }
 
-/* ── Flow graph ───────────────────────────────────────── */
+/* ── Flow graph — left-to-right execution DAG ─────────── */
 const FlowGraph = (() => {
     const svg = document.getElementById('flow-graph');
     const SVG_NS = 'http://www.w3.org/2000/svg';
-    const CX = 170, CY = 100, R = 70;
-    const nodes = new Map();     // name -> { groupEl, labelEl, countEl, circleEl, count, x, y }
-    const edges = new Map();     // name -> line element
+
+    // Layout constants
+    const AX = 36, AY = 95, AR = 23;    // agent circle
+    const FIRST_X = 120, COL_W = 108;   // first wave x, column step
+    const RX = 45, RY = 17;             // tool ellipse radii
+    const MAX_SP = 40;                   // max vertical spacing between nodes in a wave
+
+    // State
+    let waves = [];              // string[][] — duplicate names allowed (parallel calls)
+    let activeCounts = new Map(); // name → number of active instances
+    let doneSet    = new Set();
+    let agentBusy  = false;
+    let needNewWave = false;     // set externally before next activate()
+    let llmActive  = false;      // whether the __llm__ analysis node is currently shown
 
     function el(tag, attrs) {
         const e = document.createElementNS(SVG_NS, tag);
-        for (const k in attrs) e.setAttribute(k, attrs[k]);
+        for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
         return e;
     }
 
-    function clear() {
-        while (svg.firstChild) svg.removeChild(svg.firstChild);
-        nodes.clear();
-        edges.clear();
+    function clear() { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+
+    function abbrev(name) {
+        if (name === '__llm__') return 'analyzing…';
+        const map = { code_interpreter: 'code_interp', memory_delete: 'mem_delete', memory_list: 'mem_list', memory_set: 'mem_set', memory_get: 'mem_get' };
+        name = map[name] || name;
+        return name.length <= 13 ? name : name.slice(0, 12) + '…';
+    }
+
+    function wavePts(wi, wave) {
+        const N = wave.length;
+        const sp = Math.min(MAX_SP, 140 / Math.max(N, 1));
+        const x = FIRST_X + wi * COL_W;
+        return wave.map((name, i) => ({ name, x, y: AY - (N - 1) * sp / 2 + i * sp }));
+    }
+
+    function render() {
+        clear();
+        const vbW = Math.max(300, FIRST_X + waves.length * COL_W + RX + 20);
+        svg.setAttribute('viewBox', `0 0 ${vbW} 190`);
+
+        // Arrow marker
+        const defs = el('defs', {});
+        const mk = el('marker', { id: 'arr', markerWidth: '7', markerHeight: '6', refX: '6', refY: '3', orient: 'auto' });
+        mk.appendChild(el('polygon', { points: '0,0 7,3 0,6', fill: '#3a4556' }));
+        defs.appendChild(mk);
+        svg.appendChild(defs);
+
+        const allPts = waves.map((w, i) => wavePts(i, w));
+
+        // Edges (drawn first so nodes render on top)
+        allPts.forEach((pts, wi) => {
+            const srcs = wi === 0
+                ? [{ x: AX + AR, y: AY }]
+                : allPts[wi - 1].map(p => ({ x: p.x + RX + 2, y: p.y }));
+            const dsts = pts.map(p => ({ x: p.x - RX - 2, y: p.y }));
+            const pN = srcs.length, cN = dsts.length;
+            if (pN <= 2 && cN <= 2) {
+                srcs.forEach(s => dsts.forEach(d => drawEdge(s.x, s.y, d.x, d.y)));
+            } else {
+                const sx = srcs.reduce((a, p) => a + p.x, 0) / pN;
+                const sy = srcs.reduce((a, p) => a + p.y, 0) / pN;
+                const dx = dsts.reduce((a, p) => a + p.x, 0) / cN;
+                const dy = dsts.reduce((a, p) => a + p.y, 0) / cN;
+                drawEdge(sx, sy, dx, dy);
+            }
+        });
+
+        drawAgent();
+        allPts.forEach(pts => pts.forEach(({ name, x, y }) => drawTool(x, y, name)));
     }
 
     function drawAgent() {
-        const g = el('g', { class: 'node-group' });
-        const c = el('circle', { cx: CX, cy: CY, r: 22, class: 'node-circle agent', id: 'agent-core' });
-        const t = el('text', { x: CX, y: CY + 3, class: 'node-label agent-label' });
+        const g = el('g', {});
+        const c = el('circle', {
+            cx: AX, cy: AY, r: AR,
+            fill: '#1a2440', stroke: 'var(--accent)', 'stroke-width': '2',
+            id: 'agent-core', class: 'node-circle agent' + (agentBusy ? ' busy' : ''),
+        });
+        const t = el('text', {
+            x: AX, y: AY, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+            'font-family': 'JetBrains Mono,monospace', 'font-size': '9',
+            fill: 'var(--text)', 'font-weight': '700', 'pointer-events': 'none',
+        });
         t.textContent = 'AGENT';
-        g.appendChild(c);
-        g.appendChild(t);
+        g.appendChild(c); g.appendChild(t);
         svg.appendChild(g);
     }
 
-    function layoutTools(toolNames) {
-        clear();
-        drawAgent();
-        const N = Math.max(toolNames.length, 1);
-        toolNames.forEach((name, i) => {
-            const angle = (2 * Math.PI * i) / N - Math.PI / 2;
-            const x = CX + R * Math.cos(angle);
-            const y = CY + R * Math.sin(angle);
-            addNode(name, x, y, { dim: true });
-        });
-    }
-
-    function addNode(name, x, y, opts = {}) {
-        if (nodes.has(name)) return nodes.get(name);
+    function drawTool(x, y, name) {
         const meta = toolMeta(name);
-        const line = el('line', {
-            x1: CX, y1: CY, x2: x, y2: y,
-            class: 'edge', stroke: meta.color,
-        });
-        svg.insertBefore(line, svg.firstChild);
-        edges.set(name, line);
+        const isActive = (activeCounts.get(name) || 0) > 0;
+        const isDone   = doneSet.has(name) && !isActive;
+        const color    = meta.color;
 
-        const g = el('g', { class: 'node-group node-enter' });
-        g.setAttribute('transform', `translate(${x}, ${y})`);
-        const dimCls = opts.dim ? ' dim' : '';
-        const circle = el('circle', {
-            cx: 0, cy: 0, r: 10,
-            class: `node-circle${dimCls}`,
-            fill: '#0e131c',
-            stroke: meta.color,
-            'stroke-width': 1.8,
+        const g = el('g', { transform: `translate(${x},${y})`, class: 'node-group' });
+
+        const isLLM = name === '__llm__';
+        const ellipse = el('ellipse', {
+            cx: 0, cy: 0, rx: RX, ry: RY,
+            fill: isActive ? (isLLM ? '#111b33' : '#141c2a') : '#0d1219',
+            stroke: color,
+            'stroke-width': isActive ? '2.5' : '1.8',
+            'stroke-dasharray': isLLM ? '4 2' : 'none',
+            opacity: isDone ? '0.55' : '1',
         });
-        const label = el('text', { x: 0, y: -14, class: 'node-label' });
-        label.textContent = shortName(name);
-        const countText = el('text', { x: 0, y: 3.5, class: 'node-count' });
-        countText.textContent = '';
-        g.appendChild(circle);
-        g.appendChild(label);
-        g.appendChild(countText);
+
+        const label = el('text', {
+            x: 0, y: 0, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+            'font-family': 'JetBrains Mono,monospace', 'font-size': '9',
+            'font-style': isLLM ? 'italic' : 'normal',
+            fill: isActive ? 'var(--text)' : 'var(--text-soft)',
+            'pointer-events': 'none',
+        });
+        label.textContent = abbrev(name);
+
+        g.appendChild(ellipse); g.appendChild(label);
         svg.appendChild(g);
-
-        const entry = { groupEl: g, labelEl: label, countEl: countText, circleEl: circle, count: 0, x, y };
-        nodes.set(name, entry);
-        return entry;
     }
 
-    function shortName(name) {
-        if (name.length <= 14) return name;
-        return name.slice(0, 12) + '…';
+    function drawEdge(x1, y1, x2, y2) {
+        const mx = (x1 + x2) / 2;
+        const path = el('path', {
+            d: `M${x1.toFixed(1)},${y1.toFixed(1)} C${mx.toFixed(1)},${y1.toFixed(1)} ${mx.toFixed(1)},${y2.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`,
+            fill: 'none', stroke: '#2d3647', 'stroke-width': '1.3',
+            'marker-end': 'url(#arr)',
+        });
+        svg.insertBefore(path, svg.children[1] || null);
     }
 
     function activate(name) {
-        const n = nodes.get(name) || addNode(name, randomOrbit().x, randomOrbit().y);
-        n.count += 1;
-        n.countEl.textContent = String(n.count);
-        n.circleEl.classList.remove('dim');
-        const edge = edges.get(name);
-        if (edge) { edge.classList.add('active'); edge.classList.remove('recent'); }
-        setAgentBusy(true);
+        if (needNewWave || waves.length === 0) {
+            waves.push([name]);
+            needNewWave = false;
+        } else {
+            waves[waves.length - 1].push(name); // allow duplicates — each parallel call is its own node
+        }
+        activeCounts.set(name, (activeCounts.get(name) || 0) + 1);
+        doneSet.delete(name);
+        agentBusy = true;
+        render();
     }
 
     function deactivate(name) {
-        const edge = edges.get(name);
-        if (edge) {
-            edge.classList.remove('active');
-            edge.classList.add('recent');
-            setTimeout(() => edge && edge.classList.remove('recent'), 1200);
+        const cnt = (activeCounts.get(name) || 0) - 1;
+        if (cnt <= 0) {
+            activeCounts.delete(name);
+            doneSet.add(name);
+        } else {
+            activeCounts.set(name, cnt);
         }
+        render();
     }
 
-    function setAgentBusy(busy) {
-        const core = document.getElementById('agent-core');
-        if (!core) return;
-        core.classList.toggle('busy', busy);
+    function activateLLM() {
+        if (llmActive) return;
+        llmActive = true;
+        if (needNewWave || waves.length === 0) {
+            waves.push(['__llm__']);
+            needNewWave = false;
+        } else {
+            waves[waves.length - 1].push('__llm__');
+        }
+        activeCounts.set('__llm__', 1);
+        doneSet.delete('__llm__');
+        agentBusy = true;
+        render();
     }
+
+    function deactivateLLM() {
+        if (!llmActive) return;
+        llmActive = false;
+        activeCounts.delete('__llm__');
+        doneSet.add('__llm__');
+        needNewWave = true; // tools/next-pass start in a fresh column
+        render();
+    }
+
+    function newWave() { needNewWave = true; }
+
+    function setAgentBusy(b) {
+        agentBusy = b;
+        const core = document.getElementById('agent-core');
+        if (core) core.setAttribute('class', 'node-circle agent' + (b ? ' busy' : ''));
+    }
+
+    function layoutTools(_tools) { resetAll(); }
 
     function resetAll() {
-        // Keep layout but clear active states and counters
-        nodes.forEach(n => {
-            n.count = 0;
-            n.countEl.textContent = '';
-            n.circleEl.classList.add('dim');
-        });
-        edges.forEach(e => { e.classList.remove('active'); e.classList.remove('recent'); });
-        setAgentBusy(false);
+        waves = []; activeCounts = new Map(); doneSet = new Set();
+        needNewWave = false; agentBusy = false; llmActive = false;
+        clear();
+        svg.setAttribute('viewBox', '0 0 300 190');
+        svg.appendChild(el('defs', {}));
+        drawAgent();
     }
 
-    function randomOrbit() {
-        const a = Math.random() * 2 * Math.PI;
-        return { x: CX + R * Math.cos(a), y: CY + R * Math.sin(a) };
-    }
-
-    return { layoutTools, activate, deactivate, setAgentBusy, resetAll };
+    return { layoutTools, activate, deactivate, setAgentBusy, resetAll, newWave, activateLLM, deactivateLLM };
 })();
 
 /* ── Timeline ─────────────────────────────────────────── */
@@ -1564,6 +1695,7 @@ async function sendMessage() {
     if (currentEventSource) currentEventSource.close();
     const url = `/api/chat?session_id=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}`;
     currentEventSource = new EventSource(url);
+    FlowGraph.activateLLM(); // show "analyzing…" immediately when the turn starts
 
     currentEventSource.onmessage = async (ev) => {
         let data;
@@ -1581,6 +1713,7 @@ function handleStreamEvent(data, block, cursor) {
     const sourceTag = data.source ? ` [${data.source}]` : '';
     switch (data.type) {
         case 'thought': {
+            FlowGraph.activateLLM(); // re-activate for subsequent analysis rounds
             addTimelineItem({
                 kind: 'thought',
                 icon: '💭',
@@ -1589,6 +1722,7 @@ function handleStreamEvent(data, block, cursor) {
             break;
         }
         case 'tool_call': {
+            FlowGraph.deactivateLLM(); // LLM finished reasoning, tools start
             const now = performance.now();
             // If this tool_call is far enough past the last one, the prior
             // tool(s) have clearly finished — freeze their rows now instead
@@ -1596,6 +1730,7 @@ function handleStreamEvent(data, block, cursor) {
             // consecutive tool batches.
             if (lastToolCallAt !== 0 && now - lastToolCallAt > PARALLEL_WINDOW_MS) {
                 finalizeToolDurations();
+                FlowGraph.newWave();
             }
             lastToolCallAt = now;
 
@@ -1659,6 +1794,7 @@ function handleStreamEvent(data, block, cursor) {
         }
         case 'done': {
             currentEventSource?.close();
+            FlowGraph.deactivateLLM(); // mark final analysis as complete
             finishTurn(block, cursor);
             break;
         }
@@ -1719,6 +1855,34 @@ function cloneWelcome() {
         <p>A fresh conversation — pick a suggestion or ask your own question.</p>`;
     return w;
 }
+
+/* ── Sidebar resize ───────────────────────────────────── */
+(function() {
+    const handle  = document.getElementById('resizeHandle');
+    const sidebar = document.querySelector('.sidebar');
+    let dragging = false, startX = 0, startW = 0;
+
+    handle.addEventListener('mousedown', e => {
+        dragging = true; startX = e.clientX; startW = sidebar.offsetWidth;
+        handle.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        const w = Math.max(220, Math.min(700, startW + e.clientX - startX));
+        sidebar.style.width = w + 'px';
+        sidebar.style.minWidth = w + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    });
+})();
 
 /* ── Boot ─────────────────────────────────────────────── */
 loadAgentInfo();
