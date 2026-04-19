@@ -1,6 +1,6 @@
 <div align="center">
-  <h1>GopherAgent</h1>
-  <p><b>Build AI Agents with YAML. Ship them in Go.</b></p>
+  <h1>GopherAgent — Go / Golang Agent Framework</h1>
+  <p><b>Build production LLM agents with YAML. Ship them in Go.</b></p>
   <p>
     <a href="https://pkg.go.dev/github.com/hung12ct/gopheragent"><img src="https://pkg.go.dev/badge/github.com/hung12ct/gopheragent.svg" alt="Go Reference"></a>
     <a href="https://github.com/hung12ct/gopheragent/actions/workflows/ci.yml"><img src="https://github.com/hung12ct/gopheragent/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -8,7 +8,7 @@
   </p>
 </div>
 
-Your PM writes a YAML file. Your engineer writes a Go tool. GopherAgent wires them together at runtime — no recompile, no redeploy.
+**GopherAgent** is a **Golang multi-agent LLM framework** — deterministic ReAct loops, parallel tool execution, streaming, sub-agents, and multi-model routing. Your PM writes a YAML file. Your engineer registers a Go tool. GopherAgent wires them together at runtime — no recompile, no redeploy.
 
 ```yaml
 # agent.yaml — your PM creates this
