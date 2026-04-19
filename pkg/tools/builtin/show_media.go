@@ -4,10 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
+
+// mediaExtensions enumerates the URL-path suffixes show_media will accept.
+// A webpage URL (e.g. .../humans-in-space/article/) has no match here and
+// is rejected — that forces the caller to read_url the page and extract a
+// real media URL from the body, instead of rendering a broken <img>.
+var mediaExtensions = map[string]struct{}{
+	".jpg": {}, ".jpeg": {}, ".png": {}, ".gif": {}, ".webp": {},
+	".svg": {}, ".bmp": {}, ".avif": {},
+	".mp4": {}, ".webm": {}, ".mov": {}, ".ogg": {}, ".ogv": {},
+}
 
 // ShowMediaTool instructs the frontend to render an image or video inline in the chat.
 // It returns a markdown/HTML snippet that the frontend renders natively.
@@ -43,6 +54,20 @@ func (t *ShowMediaTool) Execute(_ context.Context, argsJSON string) (string, err
 	url := strings.TrimSpace(args.URL)
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return "", fmt.Errorf("url must start with http:// or https://")
+	}
+
+	// Strip query / fragment before checking the extension so URLs like
+	// https://cdn.example.com/photo.jpg?w=800 still pass.
+	pathOnly := url
+	if i := strings.IndexAny(pathOnly, "?#"); i >= 0 {
+		pathOnly = pathOnly[:i]
+	}
+	if _, ok := mediaExtensions[strings.ToLower(path.Ext(pathOnly))]; !ok {
+		return "", fmt.Errorf(
+			"show_media requires a direct image/video URL (path ending in .jpg/.png/.gif/.webp/.svg/.mp4/.webm/etc.); got %q. "+
+				"If this looks like a webpage, call read_url on it first and pick a direct media URL from the page body",
+			url,
+		)
 	}
 
 	caption := args.Caption

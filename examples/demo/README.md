@@ -1,28 +1,49 @@
-# GopherAgent — Live Demo
+# GopherAgent — Live Cockpit Demo
 
-A full-featured chat UI that shows what GopherAgent can do out of the box:
-real-time streaming, web research, session memory, Python code execution,
-media display, and human-in-the-loop approval — all wired together in
-**~250 lines of Go**.
+A research-first chat UI that shows what GopherAgent can do out of the box.
+The agent is tuned to produce polished, well-cited mini-reports — comparison
+tables, inline source citations, embedded images, blockquoted insights — and
+the left panel is an **agent cockpit** (live SVG orchestration graph,
+per-turn reasoning timeline, session-memory viewer) so you can *see* every
+search, fetch, and decision as it happens. Python code execution and HITL
+approval are still on board for the occasional calculation, but the star of
+the show is the final report.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  GopherAgent          web search · memory · python          │
-├──────────────┬──────────────────────────────────────────────┤
-│ Session      │                                              │
-│ Memory       │  ⚙ Searching for "Anthropic Claude 4"…      │
-│              │  ⚙ Reading anthropic.com/news…              │
-│ name: Alex   │                                              │
-│ interest:    │  Here's the latest from Anthropic…          │
-│   Go, ML     │                                              │
-│              │  > Find a chart about climate change         │
-│              │  [image displayed inline]                    │
-│              │                                              │
-│              │  > Calculate the 1000th prime number         │
-│              │  ⚠ Confirm: run Python code? [Approve]       │
-│              │  Result: 7919                                │
-└──────────────┴──────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│ ● GopherAgent  [Research Assistant · gpt-4o-mini]   Turns 2 · 8 calls │
+├─────────────────────┬─────────────────────────────────────────────────┤
+│ AGENT ORCHESTRATION │                                                 │
+│      ┌──●──┐        │   > Compare 3 portfolios over 20 years          │
+│   ●──│ AGT │──●     │                                                 │
+│      └──●──┘        │   Here's the analysis…                         │
+│                     │   [rich markdown table + ASCII bar chart]       │
+│ REASONING TIMELINE  │                                                 │
+│ #1 14:23            │   > Find a chart about climate change           │
+│ "Compare 3 port…"   │   [image displayed inline]                      │
+│  💭 planning…       │                                                 │
+│  🐍 code_interpreter│   > Calculate prime #1000 with Python           │
+│     1.4s            │   ⚠ Confirm: code_interpreter? [Approve]        │
+│                     │   Result: 7919                                  │
+│ SESSION MEMORY      │                                                 │
+│ name ▸ Alex         │                                                 │
+│ interest ▸ Go, ML   │                                                 │
+└─────────────────────┴─────────────────────────────────────────────────┘
 ```
+
+## Cockpit
+
+The left sidebar is the headline feature. It gives you *x-ray vision* into
+the ReAct loop:
+
+| Panel | What you see |
+|---|---|
+| **Agent Orchestration** | A live SVG graph. Every tool declared in the YAML is pre-laid-out around the central **AGENT** node; edges pulse dashed while a call is in flight, then turn solid. Each node tracks a call counter. |
+| **Reasoning Timeline** | Per-turn log of every `thought`, `tool_call`, `tool_progress`, HITL approval, reflected/critique round, and error — colour-coded by tool category with live-measured durations. |
+| **Session Memory** | Whatever the agent has committed via `memory_set`, updated immediately after each turn. |
+
+The header strip runs live counters for turns, tool calls, tokens burned
+(from `usage` events), and elapsed wall time.
 
 ## Capabilities
 
@@ -33,7 +54,7 @@ media display, and human-in-the-loop approval — all wired together in
 | 🐍 **Code execution** | Run Python 3 snippets for math, data transforms, and text processing |
 | ✅ **HITL approval** | Code runs only after you click Approve — functional, not a mock |
 | 📡 **SSE streaming** | Thoughts, tool calls, and content stream token-by-token in real time |
-| 🗂️ **YAML-defined** | Swap the entire agent (prompt + tools) by changing one env variable |
+| 🗂️ **YAML-defined** | Swap the entire agent (prompt + tools) by changing one env variable — the cockpit picks up the new tool roster from `/api/info` on load |
 
 ## Quickstart
 
@@ -105,7 +126,8 @@ Use Python to calculate compound interest: $10,000 at 7% for 30 years
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | Chat UI |
+| `GET /` | Cockpit UI |
+| `GET /api/info` | Agent metadata (name, model, tool roster) — drives the header & graph layout |
 | `GET /api/chat?session_id=&message=` | SSE stream — agent turns |
 | `POST /api/approve?id=&approved=true\|false` | Unblock a pending HITL decision |
 | `GET /api/memory?session_id=` | JSON list of all key/value pairs for a session |
