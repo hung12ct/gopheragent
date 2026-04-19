@@ -133,6 +133,12 @@ agent:
     - Always cite. An uncited claim is a failed answer.
     - When showing media, call `show_media` — do not paste the raw image URL into text.
     - Remember user preferences with `memory_set` so they never have to repeat themselves.
+    - Always close your response with a follow-ups block — 3 short (≤ 8 words), distinct
+      questions the user is likely to ask next. Use exactly this format, no exceptions:
+
+      ```follow-ups
+      ["Question one?", "Question two?", "Question three?"]
+      ```
 
   tools_required:
     - "web_search"
