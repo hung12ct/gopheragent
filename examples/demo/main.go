@@ -23,6 +23,17 @@ import (
 
 var myAgentApp *agent.AgentLoop
 
+// agentInfo exposes the loaded YAML config to the frontend so the UI can
+// render the agent's name, model, and tool roster without hardcoding.
+type AgentInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Model       string   `json:"model"`
+	Tools       []string `json:"tools"`
+}
+
+var agentInfo AgentInfo
+
 // memoryStore is shared across all sessions and keyed internally by sessionKey.
 var memoryStore = builtin.NewInMemoryStore()
 
@@ -220,6 +231,13 @@ func initApp() {
 		log.Fatalf("Failed to parse YAML (%s): %v", yamlPath, err)
 	}
 
+	agentInfo = AgentInfo{
+		Name:        cfg.Agent.Name,
+		Description: cfg.Agent.Description,
+		Model:       cfg.Agent.Model,
+		Tools:       append([]string(nil), cfg.Agent.ToolsRequired...),
+	}
+
 	sm := buildSessionManager(cfg.Agent.SystemPrompt)
 
 	if sp, err := llm.NewSummaryProvider("", ""); err == nil {
@@ -266,6 +284,13 @@ func ApproveHandler(w http.ResponseWriter, r *http.Request) {
 	ch <- approved
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// InfoHandler handles GET /api/info — returns the loaded YAML agent config
+// (name, description, model, tools) so the frontend can render metadata.
+func InfoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(agentInfo)
 }
 
 // MemoryHandler handles GET /api/memory?session_id=<key>
@@ -342,6 +367,7 @@ func main() {
 	http.HandleFunc("/api/chat", ChatHandler)
 	http.HandleFunc("/api/approve", ApproveHandler)
 	http.HandleFunc("/api/memory", MemoryHandler)
+	http.HandleFunc("/api/info", InfoHandler)
 	fmt.Println("Server started at http://localhost:8888")
 	log.Fatal(http.ListenAndServe(":8888", nil))
 }
