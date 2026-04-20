@@ -49,6 +49,12 @@ func (t *FileReadTool) WithMaxBytes(n int64) *FileReadTool {
 
 func (t *FileReadTool) Name() string { return "file_read" }
 
+// Cacheable opts file_read into the agent-loop tool-result cache: identical
+// (path, offset, length) tuples return the same bytes within a process
+// lifetime. Files can change on disk between agent turns, but the cache is
+// in-memory and short-lived, so staleness is bounded.
+func (t *FileReadTool) Cacheable() bool { return true }
+
 func (t *FileReadTool) Description() string {
 	return "Read the contents of a file from the local workspace. Paths are resolved relative to a fixed root directory; attempts to traverse outside root are rejected."
 }
