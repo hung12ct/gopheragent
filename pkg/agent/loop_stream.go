@@ -801,7 +801,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Human APPROVED tool execution."})
 					}
 
-					cacheKey := tCall.Name + ":" + tCall.ArgsJSON
+					cacheKey := toolCacheKey(tCall.Name, tCall.ArgsJSON)
 					if al.Cache != nil {
 						if cached, hit := al.Cache.Get(cacheKey); hit {
 							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
