@@ -222,6 +222,13 @@ type AgentLoop struct {
 	// PermissionChecker directly for custom logic (OPA, database-backed
 	// ACLs, etc).
 	Permissions PermissionChecker
+
+	// MaxToolCallsPerTurn caps how many tool calls the loop will execute for
+	// a single LLM turn. 0 (default) means unlimited. When the model returns
+	// more than N calls, the first N run normally and the remainder are
+	// dropped with a synthesized tool-error message so the model can see why
+	// they did not execute. A "thought" event announces the truncation.
+	MaxToolCallsPerTurn int
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -570,6 +577,22 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			return
 		}
 
+		// Per-turn tool-call budget. Truncate-and-inform: first N schedule
+		// normally, dropped IDs remain on the assistant message so the
+		// transcript matches what the model emitted, and each dropped call
+		// gets a synthesized error tool result below so the model learns
+		// why they did not run.
+		var droppedCalls []PendingToolCall
+		scheduled := result.ToolCalls
+		if al.MaxToolCallsPerTurn > 0 && len(result.ToolCalls) > al.MaxToolCallsPerTurn {
+			droppedCalls = result.ToolCalls[al.MaxToolCallsPerTurn:]
+			scheduled = result.ToolCalls[:al.MaxToolCallsPerTurn]
+			al.emit(ctx, sessionKey, streamChan, StreamEvent{
+				Type:    "thought",
+				Content: fmt.Sprintf("Tool-call budget exceeded: executing first %d of %d; dropping %d.", al.MaxToolCallsPerTurn, len(result.ToolCalls), len(droppedCalls)),
+			})
+		}
+
 		if len(result.ToolCalls) == 0 {
 			msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
 
@@ -625,13 +648,13 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		// right before a call runs. If scheduling fails (cycle, unknown ref)
 		// we fall back to the legacy behavior of running all calls in
 		// parallel, letting the tools themselves reject bad input.
-		waves, schedErr := ScheduleToolCalls(result.ToolCalls)
+		waves, schedErr := ScheduleToolCalls(scheduled)
 		if schedErr != nil {
 			al.emit(ctx, sessionKey, streamChan, StreamEvent{
 				Type:    "thought",
 				Content: fmt.Sprintf("Tool scheduler: %v — running all calls in one wave.", schedErr),
 			})
-			waves = [][]PendingToolCall{result.ToolCalls}
+			waves = [][]PendingToolCall{scheduled}
 		}
 
 		toolMsgs := make(map[string]history.Message, len(result.ToolCalls))
@@ -905,6 +928,18 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, fatalErr)))
 			al.saveSession(ctx, sessionKey, msgs)
 			return
+		}
+
+		// Synthesize tool-error results for calls dropped by the per-turn
+		// budget so the drain loop below emits them in their original
+		// position and the model reads a clear reason next turn.
+		for _, tc := range droppedCalls {
+			toolMsgs[tc.ID] = history.Message{
+				Role:       "tool",
+				Content:    fmt.Sprintf("tools: dropped by per-turn tool-call budget (max=%d); retry fewer calls next turn.", al.MaxToolCallsPerTurn),
+				ToolCallID: tc.ID,
+				IsError:    true,
+			}
 		}
 
 		// Append tool results in the LLM's original ToolCall order so the
