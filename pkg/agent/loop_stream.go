@@ -825,7 +825,13 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					}
 
 					cacheKey := toolCacheKey(tCall.Name, tCall.ArgsJSON)
+					cacheOK := false
 					if al.Cache != nil {
+						if c, ok := tool.(tools.Cacheable); ok && c.Cacheable() {
+							cacheOK = true
+						}
+					}
+					if cacheOK {
 						if cached, hit := al.Cache.Get(cacheKey); hit {
 							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
 							completedMu.Lock()
@@ -885,7 +891,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						}
 					}
 
-					if al.Cache != nil && !isToolErr {
+					if cacheOK && !isToolErr {
 						al.Cache.Put(cacheKey, content)
 					}
 

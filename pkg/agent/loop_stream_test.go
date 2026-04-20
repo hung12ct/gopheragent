@@ -564,3 +564,4 @@ func (t *countingEchoTool) Execute(_ context.Context, args string) (string, erro
 	*t.counter++
 	return "echo:" + args, nil
 }
+func (t *countingEchoTool) Cacheable() bool { return true }
