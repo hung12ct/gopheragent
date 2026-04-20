@@ -39,6 +39,15 @@ type InlineRenderer interface {
 	InlineResult() bool
 }
 
+// Cacheable is optionally implemented by tools that produce deterministic
+// results safe to cache by the agent loop. Tools that do not implement this
+// interface — or return false — bypass caching entirely even when the
+// AgentLoop has a Cache configured. This is explicit opt-in to avoid silent
+// staleness for live-data tools (prices, weather, time, etc.).
+type Cacheable interface {
+	Cacheable() bool
+}
+
 // progressKey is the unexported context key for the progress reporting function.
 type progressKey struct{}
 
