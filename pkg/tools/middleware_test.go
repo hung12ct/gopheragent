@@ -231,3 +231,129 @@ func BenchmarkChain_WithTiming(b *testing.B) {
 		tool.Execute(ctx, "{}")
 	}
 }
+
+// schemaTool is a mockTool variant that returns a configurable schema and
+// counts ParametersSchema() calls so tests can assert the schema is cached.
+type schemaTool struct {
+	mockTool
+	schema      ToolSchema
+	schemaCalls atomic.Int32
+}
+
+func (s *schemaTool) ParametersSchema() ToolSchema {
+	s.schemaCalls.Add(1)
+	return s.schema
+}
+
+func schemaObj(required []string, props map[string]any) ToolSchema {
+	return ToolSchema{Type: "object", Properties: props, Required: required}
+}
+
+func TestWithSchemaValidation_Valid(t *testing.T) {
+	st := &schemaTool{
+		mockTool: mockTool{name: "search"},
+		schema:   schemaObj([]string{"q"}, map[string]any{"q": map[string]any{"type": "string"}}),
+	}
+	tool := Chain(st, WithSchemaValidation())
+	out, err := tool.Execute(context.Background(), `{"q":"hi"}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != `ok:{"q":"hi"}` {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestWithSchemaValidation_MissingRequired(t *testing.T) {
+	st := &schemaTool{
+		mockTool: mockTool{name: "search"},
+		schema:   schemaObj([]string{"q"}, map[string]any{"q": map[string]any{"type": "string"}}),
+	}
+	tool := Chain(st, WithSchemaValidation())
+	_, err := tool.Execute(context.Background(), `{}`)
+	if err == nil || !containsStr(err.Error(), `missing required property "q"`) {
+		t.Fatalf("expected missing-required error, got: %v", err)
+	}
+}
+
+func TestWithSchemaValidation_NonObject(t *testing.T) {
+	st := &schemaTool{
+		mockTool: mockTool{name: "search"},
+		schema:   schemaObj(nil, nil),
+	}
+	tool := Chain(st, WithSchemaValidation())
+	_, err := tool.Execute(context.Background(), `"just a string"`)
+	if err == nil || !containsStr(err.Error(), "expected JSON object") {
+		t.Fatalf("expected non-object error, got: %v", err)
+	}
+}
+
+func TestWithSchemaValidation_MalformedJSON(t *testing.T) {
+	st := &schemaTool{
+		mockTool: mockTool{name: "search"},
+		schema:   schemaObj(nil, nil),
+	}
+	tool := Chain(st, WithSchemaValidation())
+	_, err := tool.Execute(context.Background(), `{not json}`)
+	if err == nil || !containsStr(err.Error(), "malformed JSON") {
+		t.Fatalf("expected malformed-JSON error, got: %v", err)
+	}
+}
+
+func TestWithSchemaValidation_TypeMismatch(t *testing.T) {
+	st := &schemaTool{
+		mockTool: mockTool{name: "search"},
+		schema:   schemaObj(nil, map[string]any{"q": map[string]any{"type": "string"}}),
+	}
+	tool := Chain(st, WithSchemaValidation())
+	_, err := tool.Execute(context.Background(), `{"q":123}`)
+	if err == nil || !containsStr(err.Error(), "expected string") {
+		t.Fatalf("expected type-mismatch error, got: %v", err)
+	}
+}
+
+func TestWithSchemaValidation_UnknownKeyAllowed(t *testing.T) {
+	st := &schemaTool{
+		mockTool: mockTool{name: "search"},
+		schema:   schemaObj([]string{"q"}, map[string]any{"q": map[string]any{"type": "string"}}),
+	}
+	tool := Chain(st, WithSchemaValidation())
+	_, err := tool.Execute(context.Background(), `{"q":"hi","extra":1}`)
+	if err != nil {
+		t.Fatalf("unknown keys should be allowed, got: %v", err)
+	}
+}
+
+func TestWithSchemaValidation_NoSchemaPassthrough(t *testing.T) {
+	st := &schemaTool{mockTool: mockTool{name: "free"}}
+	tool := Chain(st, WithSchemaValidation())
+	_, err := tool.Execute(context.Background(), `anything at all`)
+	if err != nil {
+		t.Fatalf("no-schema tools should passthrough, got: %v", err)
+	}
+}
+
+func TestWithSchemaValidation_CachesSchema(t *testing.T) {
+	st := &schemaTool{
+		mockTool: mockTool{name: "search"},
+		schema:   schemaObj([]string{"q"}, map[string]any{"q": map[string]any{"type": "string"}}),
+	}
+	tool := Chain(st, WithSchemaValidation())
+	for i := 0; i < 5; i++ {
+		if _, err := tool.Execute(context.Background(), `{"q":"hi"}`); err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+	}
+	if n := st.schemaCalls.Load(); n != 1 {
+		t.Fatalf("expected ParametersSchema called once, got %d", n)
+	}
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

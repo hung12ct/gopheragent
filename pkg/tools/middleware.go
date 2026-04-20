@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -123,5 +124,94 @@ func WithRateLimit(rps float64) Middleware {
 				return next.Execute(ctx, argsJSON)
 			},
 		}
+	}
+}
+
+// WithSchemaValidation validates argsJSON against the tool's ParametersSchema
+// before delegating to Execute. It implements a practical subset of JSON
+// Schema: JSON well-formedness, object-type check, required-property check,
+// and per-property primitive-type check (string / number / integer / boolean
+// / array / object). Unknown properties are accepted (draft-07 default).
+// No enum, pattern, minimum, additionalProperties, $ref, or nested property
+// recursion beyond the top level.
+//
+// Tools whose ParametersSchema() returns a zero value (no type, no
+// properties, no required) are passed through unchanged.
+//
+// The schema is captured once per wrap so ParametersSchema() is not re-read
+// on every call.
+func WithSchemaValidation() Middleware {
+	return func(next Tool) Tool {
+		schema := next.ParametersSchema()
+		empty := schema.Type == "" && len(schema.Properties) == 0 && len(schema.Required) == 0
+		return &wrappedTool{
+			Tool: next,
+			executeFn: func(ctx context.Context, argsJSON string) (string, error) {
+				if empty {
+					return next.Execute(ctx, argsJSON)
+				}
+				var raw any
+				if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
+					return "", fmt.Errorf("tools: schema validation failed for %s: malformed JSON: %w", next.Name(), err)
+				}
+				if schema.Type == "object" {
+					obj, ok := raw.(map[string]any)
+					if !ok {
+						return "", fmt.Errorf("tools: schema validation failed for %s: expected JSON object", next.Name())
+					}
+					for _, req := range schema.Required {
+						if _, present := obj[req]; !present {
+							return "", fmt.Errorf("tools: schema validation failed for %s: missing required property %q", next.Name(), req)
+						}
+					}
+					for name, def := range schema.Properties {
+						v, present := obj[name]
+						if !present {
+							continue
+						}
+						defMap, ok := def.(map[string]any)
+						if !ok {
+							continue
+						}
+						declared, ok := defMap["type"].(string)
+						if !ok || declared == "" {
+							continue
+						}
+						if !matchJSONType(declared, v) {
+							return "", fmt.Errorf("tools: schema validation failed for %s: property %q: expected %s, got %T", next.Name(), name, declared, v)
+						}
+					}
+				}
+				return next.Execute(ctx, argsJSON)
+			},
+		}
+	}
+}
+
+// matchJSONType reports whether v (as decoded by encoding/json into `any`)
+// matches the JSON Schema primitive type name. Numbers decode as float64;
+// "integer" accepts any float64 value (whole-number check deferred to the
+// tool itself). Unknown declared types return true (permissive).
+func matchJSONType(declared string, v any) bool {
+	switch declared {
+	case "string":
+		_, ok := v.(string)
+		return ok
+	case "number", "integer":
+		_, ok := v.(float64)
+		return ok
+	case "boolean":
+		_, ok := v.(bool)
+		return ok
+	case "array":
+		_, ok := v.([]any)
+		return ok
+	case "object":
+		_, ok := v.(map[string]any)
+		return ok
+	case "null":
+		return v == nil
+	default:
+		return true
 	}
 }
