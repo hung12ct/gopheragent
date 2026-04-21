@@ -161,10 +161,7 @@ All providers auto-discover API keys from environment variables when key is `""`
 | [`examples/demo`](./examples/demo) | Full chat UI — web research, memory sidebar, Python execution, live HITL, SSE streaming |
 | [`examples/creative_studio`](./examples/creative_studio) | AI Creative Director — DALL-E 3 images + Veo 2 video clips generated inline |
 | [`examples/media_chat`](./examples/media_chat) | Media Q&A — upload image/video/doc, native multimodal history, multi-turn references |
-| [`examples/sse_server`](./examples/sse_server) | Minimal streaming HTTP server using Server-Sent Events |
 | [`examples/hitl_server`](./examples/hitl_server) | Human-in-the-loop approvals over HTTP (async bridge) |
-| [`examples/dynamic_builder`](./examples/dynamic_builder) | Load an agent from YAML at runtime |
-| [`examples/multi_agent_data`](./examples/multi_agent_data) | SQL analytics hub with dynamic schema injection |
 | [`examples/yaml_agents`](./examples/yaml_agents) | Multiple YAML-defined agents sharing a catalog |
 
 ```bash
