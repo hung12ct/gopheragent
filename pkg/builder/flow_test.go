@@ -234,3 +234,73 @@ func hasIssue(ve *YAMLValidationError, keyword string) bool {
 	}
 	return false
 }
+
+func TestBuildFromYAMLBytes_ValidConfig(t *testing.T) {
+	catalog := NewGlobalCatalog()
+	catalog.Register(&dummyTool{name: "web_search"})
+
+	data := []byte(`
+agent:
+  name: "Bytes Agent"
+  system_prompt: "You are helpful."
+  tools_required:
+    - "web_search"
+`)
+
+	loop, sm, cfg, err := BuildFromYAMLBytes(data, "", catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loop == nil || sm == nil {
+		t.Fatal("expected non-nil loop and session manager")
+	}
+	if cfg.Agent.Name != "Bytes Agent" {
+		t.Errorf("expected name 'Bytes Agent', got %q", cfg.Agent.Name)
+	}
+}
+
+func TestBuildFromYAMLBytes_InvalidSyntax(t *testing.T) {
+	_, _, _, err := BuildFromYAMLBytes([]byte("not: valid: yaml: ["), "", NewGlobalCatalog(), nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+	if !strings.Contains(err.Error(), "invalid YAML syntax in embedded bytes") {
+		t.Errorf("expected embedded-bytes error message, got: %v", err)
+	}
+}
+
+func TestBuildFromConfig_ValidConfig(t *testing.T) {
+	catalog := NewGlobalCatalog()
+	catalog.Register(&dummyTool{name: "web_search"})
+
+	var cfg AgentConfig
+	cfg.Agent.Name = "Config Agent"
+	cfg.Agent.SystemPrompt = "You are helpful."
+	cfg.Agent.ToolsRequired = []string{"web_search"}
+
+	loop, sm, got, err := BuildFromConfig(cfg, "", catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loop == nil || sm == nil {
+		t.Fatal("expected non-nil loop and session manager")
+	}
+	if got.Agent.Name != "Config Agent" {
+		t.Errorf("expected name 'Config Agent', got %q", got.Agent.Name)
+	}
+}
+
+func TestBuildFromConfig_RelativeKBWithoutBaseDir(t *testing.T) {
+	var cfg AgentConfig
+	cfg.Agent.Name = "KB Agent"
+	cfg.Agent.SystemPrompt = "You are helpful."
+	cfg.Agent.KnowledgeBase = "./kb"
+
+	_, _, _, err := BuildFromConfig(cfg, "", NewGlobalCatalog(), nil, nil)
+	if err == nil {
+		t.Fatal("expected error when relative knowledge_base has no baseDir")
+	}
+	if !strings.Contains(err.Error(), "baseDir") {
+		t.Errorf("expected baseDir hint in error, got: %v", err)
+	}
+}
