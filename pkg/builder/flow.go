@@ -202,17 +202,41 @@ func ParseYAMLConfig(yamlPath string) (AgentConfig, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return config, fmt.Errorf("invalid YAML syntax in %q: %w", yamlPath, err)
 	}
-	if config.Agent.KnowledgeBase != "" {
-		kbDir := config.Agent.KnowledgeBase
-		if !filepath.IsAbs(kbDir) {
-			kbDir = filepath.Join(filepath.Dir(yamlPath), kbDir)
-		}
-		augmented, kbErr := WithKnowledgeBase(config.Agent.SystemPrompt, kbDir)
-		if kbErr != nil {
-			return config, kbErr
-		}
-		config.Agent.SystemPrompt = augmented
+	return resolveKnowledgeBase(config, filepath.Dir(yamlPath))
+}
+
+// ParseYAMLBytes is the bytes counterpart to ParseYAMLConfig. Use it when the
+// YAML document comes from //go:embed or any other in-memory source.
+//
+// baseDir, when non-empty, is used to resolve a relative knowledge_base path.
+// Pass "" when the YAML has no knowledge_base or when knowledge_base is absolute.
+func ParseYAMLBytes(data []byte, baseDir string) (AgentConfig, error) {
+	var config AgentConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return config, fmt.Errorf("invalid YAML syntax in embedded bytes: %w", err)
 	}
+	return resolveKnowledgeBase(config, baseDir)
+}
+
+// resolveKnowledgeBase applies knowledge_base augmentation to config.Agent.SystemPrompt.
+// Relative KB paths are resolved against baseDir; absolute paths pass through unchanged.
+// An empty baseDir with a relative KB path is an error.
+func resolveKnowledgeBase(config AgentConfig, baseDir string) (AgentConfig, error) {
+	if config.Agent.KnowledgeBase == "" {
+		return config, nil
+	}
+	kbDir := config.Agent.KnowledgeBase
+	if !filepath.IsAbs(kbDir) {
+		if baseDir == "" {
+			return config, fmt.Errorf("agent.knowledge_base %q is relative but no baseDir was provided — pass baseDir or use an absolute path", kbDir)
+		}
+		kbDir = filepath.Join(baseDir, kbDir)
+	}
+	augmented, err := WithKnowledgeBase(config.Agent.SystemPrompt, kbDir)
+	if err != nil {
+		return config, err
+	}
+	config.Agent.SystemPrompt = augmented
 	return config, nil
 }
 

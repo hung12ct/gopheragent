@@ -290,6 +290,47 @@ func TestBuildFromConfig_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestParseYAMLBytes_ValidConfig(t *testing.T) {
+	data := []byte(`
+agent:
+  name: "Bytes Parser"
+  system_prompt: "hello"
+`)
+	cfg, err := ParseYAMLBytes(data, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent.Name != "Bytes Parser" {
+		t.Errorf("expected name 'Bytes Parser', got %q", cfg.Agent.Name)
+	}
+}
+
+func TestParseYAMLBytes_InvalidSyntax(t *testing.T) {
+	_, err := ParseYAMLBytes([]byte("not: valid: yaml: ["), "")
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+	if !strings.Contains(err.Error(), "invalid YAML syntax in embedded bytes") {
+		t.Errorf("expected embedded-bytes error, got: %v", err)
+	}
+}
+
+func TestParseYAMLBytes_RelativeKBWithoutBaseDir(t *testing.T) {
+	data := []byte(`
+agent:
+  name: "KB Agent"
+  system_prompt: "hi"
+  knowledge_base: "./kb"
+`)
+	_, err := ParseYAMLBytes(data, "")
+	if err == nil {
+		t.Fatal("expected error when relative knowledge_base has no baseDir")
+	}
+	if !strings.Contains(err.Error(), "baseDir") {
+		t.Errorf("expected baseDir hint, got: %v", err)
+	}
+}
+
 func TestBuildFromConfig_RelativeKBWithoutBaseDir(t *testing.T) {
 	var cfg AgentConfig
 	cfg.Agent.Name = "KB Agent"
