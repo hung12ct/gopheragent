@@ -142,6 +142,50 @@ func BuildFromYAMLWithSession(yamlPath string, catalog *GlobalCatalog, llm agent
 	return buildFromYAML(yamlPath, catalog, llm, hook, sm)
 }
 
+// BuildFromYAMLBytes is like BuildFromYAML but reads the YAML document from an
+// in-memory byte slice. Use this with Go's //go:embed to ship a single binary
+// without an on-disk YAML file:
+//
+//	//go:embed agent.yaml
+//	var agentYAML []byte
+//
+//	loop, _, cfg, err := builder.BuildFromYAMLBytes(agentYAML, "", catalog, provider, nil)
+//
+// baseDir, when non-empty, is used to resolve a relative knowledge_base path.
+// Pass "" when the YAML has no knowledge_base or when knowledge_base is absolute.
+func BuildFromYAMLBytes(data []byte, baseDir string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook) (*agent.AgentLoop, *history.InMemSessionManager, AgentConfig, error) {
+	loop, sm, cfg, err := buildFromYAMLBytes(data, baseDir, catalog, llm, hook, nil)
+	if err != nil {
+		return nil, nil, cfg, err
+	}
+	inMem, _ := sm.(*history.InMemSessionManager)
+	return loop, inMem, cfg, nil
+}
+
+// BuildFromYAMLBytesWithSession is the session-aware variant of BuildFromYAMLBytes.
+func BuildFromYAMLBytesWithSession(data []byte, baseDir string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
+	return buildFromYAMLBytes(data, baseDir, catalog, llm, hook, sm)
+}
+
+// BuildFromConfig builds an agent from an already-parsed AgentConfig. Use this
+// when the config is produced programmatically (envvars, a UI, or a non-YAML
+// config format) and the YAML loader is not involved.
+//
+// baseDir behaves the same as in BuildFromYAMLBytes.
+func BuildFromConfig(config AgentConfig, baseDir string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook) (*agent.AgentLoop, *history.InMemSessionManager, AgentConfig, error) {
+	loop, sm, cfg, err := buildFromConfig(config, baseDir, "<config>", catalog, llm, hook, nil)
+	if err != nil {
+		return nil, nil, cfg, err
+	}
+	inMem, _ := sm.(*history.InMemSessionManager)
+	return loop, inMem, cfg, nil
+}
+
+// BuildFromConfigWithSession is the session-aware variant of BuildFromConfig.
+func BuildFromConfigWithSession(config AgentConfig, baseDir string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
+	return buildFromConfig(config, baseDir, "<config>", catalog, llm, hook, sm)
+}
+
 // ParseYAMLConfig reads and validates a YAML config file without building the agent.
 // Useful when you need the system prompt before constructing the session manager.
 //
@@ -172,30 +216,47 @@ func ParseYAMLConfig(yamlPath string) (AgentConfig, error) {
 	return config, nil
 }
 
-// buildFromYAML is the shared implementation.
+// buildFromYAML reads and parses a YAML file, then delegates to buildFromConfig.
 func buildFromYAML(yamlPath string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
 	var config AgentConfig
-
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return nil, nil, config, fmt.Errorf("cannot read %q: %w — check the file path", yamlPath, err)
 	}
-
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, nil, config, fmt.Errorf("invalid YAML syntax in %q: %w — check indentation and formatting", yamlPath, err)
 	}
+	return buildFromConfig(config, filepath.Dir(yamlPath), yamlPath, catalog, llm, hook, sm)
+}
 
-	if err := validateConfig(yamlPath, &config, catalog); err != nil {
+// buildFromYAMLBytes parses YAML from an in-memory buffer, then delegates to buildFromConfig.
+func buildFromYAMLBytes(data []byte, baseDir string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
+	var config AgentConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, nil, config, fmt.Errorf("invalid YAML syntax in embedded bytes: %w — check indentation and formatting", err)
+	}
+	return buildFromConfig(config, baseDir, "<bytes>", catalog, llm, hook, sm)
+}
+
+// buildFromConfig is the shared core: validate, resolve knowledge_base, register
+// tools, and wire the AgentLoop. sourceLabel is used only in error messages
+// (typically a file path, "<bytes>", or "<config>").
+func buildFromConfig(config AgentConfig, baseDir string, sourceLabel string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
+	if err := validateConfig(sourceLabel, &config, catalog); err != nil {
 		return nil, nil, config, err
 	}
 
-	// Resolve knowledge_base relative to the YAML file's directory so the
-	// config stays portable across working directories. Absolute paths
-	// pass through filepath.Join unchanged.
+	// Resolve knowledge_base relative to baseDir so the config stays portable
+	// across working directories. Absolute paths pass through filepath.Join
+	// unchanged. If baseDir is empty and the path is relative, error out
+	// rather than silently resolving against the current working directory.
 	if config.Agent.KnowledgeBase != "" {
 		kbDir := config.Agent.KnowledgeBase
 		if !filepath.IsAbs(kbDir) {
-			kbDir = filepath.Join(filepath.Dir(yamlPath), kbDir)
+			if baseDir == "" {
+				return nil, nil, config, fmt.Errorf("agent.knowledge_base %q is relative but no baseDir was provided — pass baseDir or use an absolute path", kbDir)
+			}
+			kbDir = filepath.Join(baseDir, kbDir)
 		}
 		augmented, kbErr := WithKnowledgeBase(config.Agent.SystemPrompt, kbDir)
 		if kbErr != nil {

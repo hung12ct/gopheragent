@@ -276,7 +276,7 @@ func (al *AgentLoop) emit(ctx context.Context, sessionKey string, streamChan cha
 // An event whose Source is empty originates from the receiving agent itself.
 type StreamEvent struct {
 	Type     string `json:"type"` // "content", "thought", "tool_call", "tool_progress", "action_required", "usage", "error", "done"
-	Content  string `json:"content"`
+	Content  string `json:"content,omitempty"`
 	Source   string `json:"source,omitempty"`
 	ParentID string `json:"parent_id,omitempty"`
 	Err      error  `json:"-"`

@@ -6,13 +6,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"sync"
 )
+
+// DefaultMySQLTableName is the table name used when no WithMySQLTableName
+// option is supplied to NewMySQLSessionManagerWithOptions.
+const DefaultMySQLTableName = "agent_sessions"
+
+// mysqlIdentRE validates MySQL identifiers passed as table names. Using a
+// whitelist prevents SQL injection since table names cannot use ? bindings.
+var mysqlIdentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// MySQLOption configures a MySQLSessionManager at construction time.
+type MySQLOption func(*mysqlOptions)
+
+type mysqlOptions struct {
+	tableName string
+}
+
+// WithMySQLTableName overrides the default "agent_sessions" table name.
+// Useful when multiple agents share a single database and need isolated
+// tables (e.g. "chatbot_sessions", "boa_sessions"). The name must match
+// the standard SQL identifier format: [A-Za-z_][A-Za-z0-9_]*.
+func WithMySQLTableName(name string) MySQLOption {
+	return func(o *mysqlOptions) { o.tableName = name }
+}
 
 // MySQLSessionManager implements SessionManager using MySQL for persistence.
 // History survives server restarts. Optionally supports background behavior summarization.
 type MySQLSessionManager struct {
 	db           *sql.DB
+	tableName    string
 	sessions     map[string]*Session
 	behaviors    map[string]string
 	lastSumLen   map[string]int
@@ -21,30 +46,52 @@ type MySQLSessionManager struct {
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 }
 
-// NewMySQLSessionManager creates a MySQL-backed session manager.
+// NewMySQLSessionManager creates a MySQL-backed session manager using the
+// default table name "agent_sessions". For multi-tenant deployments where
+// multiple agents share one database, use NewMySQLSessionManagerWithOptions
+// with WithMySQLTableName.
 // An optional systemPrompt can be provided; defaults to a generic assistant prompt.
 func NewMySQLSessionManager(db *sql.DB, systemPrompt ...string) (*MySQLSessionManager, error) {
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS agent_sessions (
+	sp := ""
+	if len(systemPrompt) > 0 {
+		sp = systemPrompt[0]
+	}
+	return NewMySQLSessionManagerWithOptions(db, sp)
+}
+
+// NewMySQLSessionManagerWithOptions creates a MySQL-backed session manager
+// with explicit configuration options. Pass WithMySQLTableName to override
+// the default table name.
+func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...MySQLOption) (*MySQLSessionManager, error) {
+	cfg := mysqlOptions{tableName: DefaultMySQLTableName}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if !mysqlIdentRE.MatchString(cfg.tableName) {
+		return nil, fmt.Errorf("history: invalid MySQL table name %q (must match [A-Za-z_][A-Za-z0-9_]*)", cfg.tableName)
+	}
+
+	createStmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 			session_key VARCHAR(255) PRIMARY KEY,
 			messages    JSON NOT NULL,
 			behavior    TEXT,
 			async_tasks JSON,
 			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-		)
-	`); err != nil {
+		)`, cfg.tableName)
+	if _, err := db.Exec(createStmt); err != nil {
 		return nil, fmt.Errorf("failed to create session table: %w", err)
 	}
 
 	// Add async_tasks column if it doesn't exist (backward compatibility filter)
-	db.Exec("ALTER TABLE agent_sessions ADD COLUMN async_tasks JSON")
+	db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN async_tasks JSON", cfg.tableName))
 
 	sp := "You are an AI assistant."
-	if len(systemPrompt) > 0 && systemPrompt[0] != "" {
-		sp = systemPrompt[0]
+	if systemPrompt != "" {
+		sp = systemPrompt
 	}
 	return &MySQLSessionManager{
 		db:           db,
+		tableName:    cfg.tableName,
 		sessions:     make(map[string]*Session),
 		behaviors:    make(map[string]string),
 		lastSumLen:   make(map[string]int),
@@ -76,7 +123,7 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 	var messagesJSON string
 	var behaviorSQL sql.NullString
 	err := sm.db.QueryRowContext(ctx,
-		"SELECT messages, behavior FROM agent_sessions WHERE session_key = ?", sessionKey,
+		fmt.Sprintf("SELECT messages, behavior FROM %s WHERE session_key = ?", sm.tableName), sessionKey,
 	).Scan(&messagesJSON, &behaviorSQL)
 
 	if err == sql.ErrNoRows {
@@ -141,7 +188,7 @@ func (sm *MySQLSessionManager) GetAsyncTasks(ctx context.Context, sessionKey str
 	}
 
 	var asyncTasksJSON sql.NullString
-	err := sm.db.QueryRowContext(ctx, "SELECT async_tasks FROM agent_sessions WHERE session_key = ?", sessionKey).Scan(&asyncTasksJSON)
+	err := sm.db.QueryRowContext(ctx, fmt.Sprintf("SELECT async_tasks FROM %s WHERE session_key = ?", sm.tableName), sessionKey).Scan(&asyncTasksJSON)
 	if err == nil && asyncTasksJSON.Valid && asyncTasksJSON.String != "" {
 		var tasks map[string]AsyncTask
 		if json.Unmarshal([]byte(asyncTasksJSON.String), &tasks) == nil {
@@ -237,7 +284,7 @@ func (sm *MySQLSessionManager) DeleteSession(ctx context.Context, sessionKey str
 	delete(sm.lastSumLen, sessionKey)
 	sm.mu.Unlock()
 
-	if _, err := sm.db.ExecContext(ctx, "DELETE FROM agent_sessions WHERE session_key = ?", sessionKey); err != nil {
+	if _, err := sm.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE session_key = ?", sm.tableName), sessionKey); err != nil {
 		return fmt.Errorf("history: delete session %q: %w", sessionKey, err)
 	}
 	return nil
@@ -284,11 +331,11 @@ func (sm *MySQLSessionManager) Save(ctx context.Context, sessionKey string) erro
 
 	asyncTasksBytes, _ := json.Marshal(session.AsyncTasks)
 
-	query := `
-		INSERT INTO agent_sessions (session_key, messages, behavior, async_tasks)
+	query := fmt.Sprintf(`
+		INSERT INTO %s (session_key, messages, behavior, async_tasks)
 		VALUES (?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE messages = VALUES(messages), behavior = VALUES(behavior), async_tasks = VALUES(async_tasks)
-	`
+	`, sm.tableName)
 	_, err = sm.db.ExecContext(ctx, query, sessionKey, string(msgsBytes), behavior, string(asyncTasksBytes))
 	return err
 }
