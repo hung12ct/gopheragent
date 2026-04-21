@@ -82,9 +82,6 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 		return nil, fmt.Errorf("failed to create session table: %w", err)
 	}
 
-	// Add async_tasks column if it doesn't exist (backward compatibility filter)
-	db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN async_tasks JSON", cfg.tableName))
-
 	sp := "You are an AI assistant."
 	if systemPrompt != "" {
 		sp = systemPrompt

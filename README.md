@@ -114,33 +114,32 @@ turn. See [`examples/media_chat`](./examples/media_chat).
 
 ## Production-Ready Features
 
-All of the below are documented with full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent):
+Full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent).
 
-- **Structured output / JSON mode** — `agent.WithStructuredOutput(ctx, agent.StructuredOutput{Schema: ...})` constrains the model to a JSON-Schema shape across all three providers: OpenAI `response_format`, Gemini `response_json_schema`, Anthropic via synthesized tool + forced `tool_choice`. One-shot helper `agent.GenerateJSON` / `GenerateJSONInto[T]` bypasses the ReAct loop for pure "LLM, give me JSON" calls.
-- **Permission DSL** — `agent.NewPermissionRuleSet().Allow("Bash(git status)", "WebFetch(*github.com*)").Deny("Bash(*rm -rf*)")` pattern-matches every tool call before HITL fires. Deny-over-allow-over-prompt precedence; unmatched calls fall through to the existing `RequiresConfirmation()` / `ConfirmHITL` flow unchanged. Turns "framework that needs a human every 30 seconds" into "framework you can leave running."
-- **Speculative tool execution** — set `loop.SpeculativeTools = true` and safe tools (non-HITL, no `<output_of:>` refs, not in plan mode) start executing the moment the provider emits `tool_call_ready` mid-stream, before the response finishes. Results are reused when the wave executor reaches the same call ID — typically overlaps hundreds of ms of tool latency with the tail of the LLM response.
-- **Knowledge base injection** — `builder.WithKnowledgeBase(basePrompt, "./kb/")` scans a directory of `.md`/`.txt`/`.rst`/`.markdown` files and appends them to the system prompt as a deterministic `<knowledge_base><file path="…">…</file></knowledge_base>` block. For in-memory sources (DB rows, uploads) use `WithKnowledgeBaseDocs(basePrompt, []KBDocument{...})` — byte-identical output, stable hash for Anthropic prompt-cache breakpoints. YAML builder also accepts `knowledge_base:` as a field on the agent config.
-- **Plan mode** — `loop.PlanMode = true` forces the model to produce a plan via the `exit_plan_mode` tool; `ConfirmPlanHITL` gates approval. Denial feeds feedback back for revision without side effects.
-- **Self-critique (Reflect)** — `loop.Reflect.Rounds = 2` runs N synthetic critique passes after the final answer, forwarding critique content tagged `Source="reflect:<round>"` and detecting early convergence. No history bloat — critique prompts are not persisted.
-- **Thinking budget** — `loop.ThinkingBudget = 4096` or `agent.WithThinkingBudget(ctx, n)` passes through to Anthropic extended-thinking and OpenAI reasoning-effort; ignored by providers without a reasoning knob so it's safe to enable globally.
-- **Anthropic prompt-cache hints** — `Message.CacheHint = true` stamps a cache breakpoint on the last block of that message; up to 4 breakpoints per request. Pair with stable system prompts and knowledge-base blocks to hit ~10% of normal input-token cost on repeat prefixes.
-- **Structured tool-error hints** — on tool failure the loop writes a `[TOOL_ERROR]` envelope back to the model with remediation scaffolding, materially improving first-retry recovery. Override via `loop.ToolErrorHint = func(name, err string) string {…}`.
-- **Tool RAG (dynamic tool selection)** — `tools.NewSelector(ctx, registry, embedder, topK)` embeds tool descriptors once at init, re-ranks per-turn by cosine similarity to the latest user message, and passes only the top-K to the LLM. Cuts prompt bloat when you have 50+ tools. OpenAI + Gemini embedders ship in `pkg/llm`.
-- **Dependency-aware parallel tool scheduling** — the LLM emits `<output_of:ID.path>` inside one call's args to reference another's output; the loop parses refs, topologically orders calls into execution waves, runs each wave in parallel, and substitutes upstream JSON before the dependent call fires. One LLM round-trip instead of N. See `pkg/agent/scheduler.go`.
-- **Auto-injected tool-chaining hint** — when 2+ tools are registered the loop prepends a short `<output_of:ID>` usage snippet into the system prompt at LLM-call time (never persisted). Opt out with `loop.DisableToolChainingHint = true`.
-- **First-class task tracking** — `create_task` / `update_task` / `list_tasks` built-ins give the LLM a structured planning scratchpad with enum-enforced status (`pending`/`in_progress`/`completed`). Per-session isolated; wire all three via `builtin.RegisterTaskTools(registry, builtin.NewInMemoryTaskStore())`.
-- **Multi-model routing** — `llm.RouterProvider` dispatches requests to different models per condition (token count, system prompt, keyword).
-- **Retry + structured errors** — `agent.DefaultRetryConfig()`; `errors.Is` / `errors.As` against `ErrMaxIterations`, `ErrLLMFailure`, `LLMFailureError`, ...
-- **Observability** — `loop.OnEvent(...)` for custom sinks; `telemetry.NewOTelHandler(tracer)` for OpenTelemetry; `BudgetTracker.MetricsHandler()` for Prometheus/Grafana.
-- **Per-session token budget** — `agent.NewBudgetTracker(cap)` enforces spend caps as a before-LLM hook.
-- **Session TTL + auto cleanup** — `sm.WithTTL(30*time.Minute).StartCleanup(ctx, 5*time.Minute)`.
-- **Tool middleware** — `tools.Chain(t, WithTimeout, WithRateLimit, WithLogging)`; one-line `registry.EnableDebug(nil)` for structured tool-call logs.
-- **Bounded async workers** — `agent.NewAsyncTaskManager(...).WithMaxConcurrent(8)`; 5 lifecycle tools (`start_async_task`, `check_async_task`, ...) for background work.
-- **Human-in-the-loop** — `RequiresConfirmation() == true` triggers `ConfirmHITL`. See [`examples/hitl_server`](./examples/hitl_server).
-- **Sub-agent streaming** — forwarded events tagged `Source="subagent:<name>"` + `ParentID`; parent UI renders nested activity timelines.
-- **Conversation forking** — `sm.Fork(ctx, key, atIndex)` and `agent.ForkAtLastUser(...)` branch history safely (boundary-snapped past dangling tool calls).
-- **Typed event payloads** — `ev.Payload()` returns a sealed `EventPayload` for exhaustive, compiler-checked type switches.
-- **SSRF-hardened HTTP tools** — post-DNS IP check defeats rebinding; `WithAllowedHosts(...)` for per-host allowlisting.
+**Runtime**
+- Streaming (SSE), HITL approvals, plan mode, self-critique (Reflect)
+- Dependency-aware parallel tool scheduling with `<output_of:ID>` refs
+- Sub-agent streaming, conversation forking, first-class task tracking
+
+**Cost & performance**
+- Structured output / JSON mode across OpenAI, Anthropic, Gemini
+- Anthropic prompt-cache hints, speculative tool execution
+- Per-session token budget, thinking budget, tool RAG (50+ tools)
+- Multi-model routing (`llm.RouterProvider`)
+
+**Reliability**
+- Exponential-backoff retry, structured errors (`errors.Is` / `errors.As`)
+- Structured tool-error hints for better LLM recovery
+- Session TTL + auto cleanup, SSRF-hardened HTTP tools
+
+**Ops**
+- OpenTelemetry tracing, Prometheus via `BudgetTracker.MetricsHandler()`
+- Custom event sinks (`OnEvent`), tool middleware chain
+
+**Extensibility**
+- YAML-driven agents (file or `//go:embed`) + knowledge base injection
+- Permission DSL (`Allow` / `Deny` glob patterns)
+- Typed event payloads, bounded async workers
 
 ## Supported Providers
 
