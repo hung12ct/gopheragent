@@ -136,6 +136,12 @@ type AgentLoop struct {
 	// ready-made implementation.
 	BeforeLLMHooks []BeforeLLMHook
 
+	// DynamicContext, when non-nil, is invoked before every GenerateStream
+	// call and its return value is appended to the system prompt for that
+	// call only (never persisted to session history). See DynamicContextFunc
+	// for the hot-path contract and prompt-cache interaction notes.
+	DynamicContext DynamicContextFunc
+
 	// ToolSelector, when non-nil, filters the tool list presented to the LLM
 	// each turn by semantic similarity between the latest user message and
 	// tool descriptions. Reduces prompt-token cost and improves tool-choice
@@ -522,7 +528,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					})
 				}
 			}
-			msgsForLLM := al.withPlanModeHint(al.withToolChainingHint(msgs))
+			msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(al.withToolChainingHint(msgs)))
 			llmCtx := ctx
 			if al.ThinkingBudget > 0 {
 				llmCtx = WithThinkingBudget(ctx, al.ThinkingBudget)
