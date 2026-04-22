@@ -5,28 +5,38 @@ import (
 	"fmt"
 )
 
+// StreamEventType tags the kind of event carried by StreamEvent. It is a
+// distinct string type so the compiler catches bare-string comparisons and
+// emits against non-constant strings — use the EventType* constants below
+// for every emit and match.
+//
+// Wire format is unchanged from earlier versions: StreamEventType marshals
+// as a plain JSON string, so existing consumers continue to parse events
+// byte-identically.
+type StreamEventType string
+
 // Event type constants. Use these instead of string literals when emitting or
 // matching events, so the compiler flags typos and renames stay consistent.
 const (
-	EventTypeContent        = "content"
-	EventTypeThought        = "thought"
-	EventTypeToolCall       = "tool_call"
-	EventTypeToolProgress   = "tool_progress"
-	EventTypeActionRequired = "action_required"
-	EventTypeUsage          = "usage"
-	EventTypeError          = "error"
-	EventTypeDone           = "done"
+	EventTypeContent        StreamEventType = "content"
+	EventTypeThought        StreamEventType = "thought"
+	EventTypeToolCall       StreamEventType = "tool_call"
+	EventTypeToolProgress   StreamEventType = "tool_progress"
+	EventTypeActionRequired StreamEventType = "action_required"
+	EventTypeUsage          StreamEventType = "usage"
+	EventTypeError          StreamEventType = "error"
+	EventTypeDone           StreamEventType = "done"
 	// EventTypeReflected carries the canonical answer produced by a
 	// self-critique round. Streaming consumers should treat it as a
 	// replacement for any prior Source="" content that fell in the same
 	// iteration; RunIteration does exactly this by resetting its buffer.
-	EventTypeReflected = "reflected"
+	EventTypeReflected StreamEventType = "reflected"
 	// EventTypeToolCallReady is emitted mid-stream by providers that
 	// surface a complete tool invocation before the overall response
 	// finishes streaming. It carries the fully-parsed {id,name,args} so
 	// the agent loop can start executing safe tools in parallel with the
 	// remaining stream, shaving one tail-latency round trip per tool.
-	EventTypeToolCallReady = "tool_call_ready"
+	EventTypeToolCallReady StreamEventType = "tool_call_ready"
 )
 
 // EventPayload is a sealed interface implemented by every typed event. Use it
@@ -142,7 +152,7 @@ type ToolCallReadyEvent struct {
 // events produced by a newer version of the framework.
 type UnknownEvent struct {
 	BaseEvent
-	Type    string
+	Type    StreamEventType
 	Content string
 }
 

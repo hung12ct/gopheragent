@@ -293,7 +293,7 @@ func (al *AgentLoop) emit(ctx context.Context, sessionKey string, streamChan cha
 //
 // An event whose Source is empty originates from the receiving agent itself.
 type StreamEvent struct {
-	Type     string `json:"type"` // "content", "thought", "tool_call", "tool_progress", "action_required", "usage", "error", "done"
+	Type     StreamEventType `json:"type"` // use the EventType* constants
 	Content  string `json:"content,omitempty"`
 	Source   string `json:"source,omitempty"`
 	ParentID string `json:"parent_id,omitempty"`
@@ -302,7 +302,7 @@ type StreamEvent struct {
 
 // errEvent is a convenience constructor for error StreamEvents with a typed error.
 func errEvent(err error) StreamEvent {
-	return StreamEvent{Type: "error", Content: err.Error(), Err: err}
+	return StreamEvent{Type: EventTypeError, Content: err.Error(), Err: err}
 }
 
 // RunIteration provides a fast, blocking response interface (non-streaming).
@@ -440,12 +440,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			thresh85 := int(float64(al.MaxTokenBudget) * 0.85)
 			
 			if estToks > thresh85 && estToks <= al.MaxTokenBudget {
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh85)})
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh85)})
 				msgs = TruncateToolArguments(msgs)
 			}
 			
 			if estimateTokens(msgs) > al.MaxTokenBudget {
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf(
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf(
 					"Token budget exceeded (~%d est. tokens). Applying emergency context pruning.", estimateTokens(msgs),
 				)})
 				msgs = PruneContextMessages(msgs, 1)
@@ -457,7 +457,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		}
 
 		if iteration == al.MaxIters-2 {
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "System: Nudging Agent for a soft landing before MaxIters limit is reached."})
+			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "System: Nudging Agent for a soft landing before MaxIters limit is reached."})
 			msgs = append(msgs, history.Message{
 				Role:    "system",
 				Content: "[System] You are approaching the iteration limit. Please wrap up and provide the final answer to the user immediately.",
@@ -566,7 +566,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			// Emit a usage event when the provider reported token accounting.
 			if err == nil && res.Usage.TotalTokens > 0 {
 				payload, _ := json.Marshal(res.Usage)
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "usage", Content: string(payload)})
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeUsage, Content: string(payload)})
 			}
 			return content, res, emitted, err
 		}
@@ -655,7 +655,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 			}
 
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "done"})
+			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeDone})
 			al.saveSession(ctx, sessionKey, msgs)
 			return
 		}
@@ -750,19 +750,19 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 							Plan string `json:"plan"`
 						}
 						_ = json.Unmarshal([]byte(tCall.ArgsJSON), &pa)
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Plan proposed — awaiting human approval."})
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan proposed — awaiting human approval."})
 						approved := false
 						if al.ConfirmPlan != nil {
 							approved = al.ConfirmPlan(ctx, pa.Plan)
 						} else {
 							payload, _ := json.Marshal(map[string]string{"tool": ExitPlanModeToolName, "plan": pa.Plan})
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeActionRequired, Content: string(payload)})
 						}
 						var result string
 						isErr := false
 						if approved {
 							al.PlanMode = false
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Plan approved — exiting plan mode."})
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan approved — exiting plan mode."})
 							result = `{"approved":true}`
 						} else {
 							result = `{"approved":false,"reason":"User rejected the plan. Revise based on their feedback and propose again via exit_plan_mode."}`
@@ -805,11 +805,11 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					if permDecision == PermissionAllow && tool.RequiresConfirmation() {
 						// Make it visible in the transcript that a HITL-gated
 						// tool was auto-approved by policy rather than a human.
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Permission policy auto-approved %s (bypassing HITL).", tCall.Name)})
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy auto-approved %s (bypassing HITL).", tCall.Name)})
 					}
 					if permDecision == PermissionDeny {
 						deniedErr := &PermissionDeniedError{ToolName: tCall.Name}
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)})
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)})
 						completedMu.Lock()
 						toolMsgs[tCall.ID] = history.Message{
 							Role:       "tool",
@@ -826,14 +826,14 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 							hitlMu.Lock()
 							defer hitlMu.Unlock()
 
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "CRITICAL: Tool requires human confirmation."})
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "CRITICAL: Tool requires human confirmation."})
 
 							appr := false
 							if al.ConfirmHITL != nil {
 								appr = al.ConfirmHITL(ctx, tCall.Name, tCall.ArgsJSON)
 							} else {
 								payload, _ := json.Marshal(map[string]string{"tool": tCall.Name, "args": tCall.ArgsJSON})
-								al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "action_required", Content: string(payload)})
+								al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeActionRequired, Content: string(payload)})
 							}
 							return appr
 						}()
@@ -850,7 +850,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 							completedMu.Unlock()
 							return
 						}
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "Human APPROVED tool execution."})
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Human APPROVED tool execution."})
 					}
 
 					cacheKey := toolCacheKey(tCall.Name, tCall.ArgsJSON)
@@ -862,7 +862,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					}
 					if cacheOK {
 						if cached, hit := al.Cache.Get(cacheKey); hit {
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
 							completedMu.Lock()
 							toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}
 							resultsByID[tCall.ID] = cached
@@ -871,10 +871,10 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						}
 					}
 
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "tool_call", Content: fmt.Sprintf("Executing: %s", tCall.Name)})
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeToolCall, Content: fmt.Sprintf("Executing: %s", tCall.Name)})
 
 					toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
-						ev := StreamEvent{Type: "tool_progress", Content: msg}
+						ev := StreamEvent{Type: EventTypeToolProgress, Content: msg}
 						select {
 						case streamChan <- ev:
 							for _, h := range al.EventHandlers {
@@ -903,7 +903,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					var toolResult string
 					var execErr error
 					if speculated {
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)})
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)})
 						toolResult, execErr = awaitSpeculative(toolCtx, sm)
 					} else {
 						toolResult, execErr = tool.Execute(toolCtx, tCall.ArgsJSON)
@@ -916,7 +916,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 
 					if !isToolErr {
 						if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "content", Content: "\n\n" + content + "\n\n"})
+							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeContent, Content: "\n\n" + content + "\n\n"})
 						}
 					}
 
@@ -936,7 +936,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					}
 					if warnMessage != "" {
 						content += "\n\n" + warnMessage
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: "thought", Content: "System inserted an anti-loop warning into context window."})
+						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "System inserted an anti-loop warning into context window."})
 					}
 
 					completedMu.Lock()

@@ -35,7 +35,7 @@ func (m *MockProvider) GenerateStream(ctx context.Context, memory []history.Mess
 
 	// Direct chat
 	if strings.Contains(strings.ToLower(lastUserInput), "hello") || strings.Contains(strings.ToLower(lastUserInput), "chào") {
-		streamChan <- StreamEvent{Type: "content", Content: "Hello! I am ready to process Data requests."}
+		streamChan <- StreamEvent{Type: EventTypeContent, Content: "Hello! I am ready to process Data requests."}
 		return LLMResult{Content: "Hello! I am ready to process Data requests."}, nil
 	}
 
@@ -55,7 +55,7 @@ func (m *MockProvider) GenerateStream(ctx context.Context, memory []history.Mess
 			argsJSON = `{"sql_query": "SELECT * FROM mock_db LIMIT 10"}`
 		}
 
-		streamChan <- StreamEvent{Type: "thought", Content: "Analyzing request constraints..."}
+		streamChan <- StreamEvent{Type: EventTypeThought, Content: "Analyzing request constraints..."}
 		time.Sleep(300 * time.Millisecond)
 
 		return LLMResult{
@@ -67,6 +67,6 @@ func (m *MockProvider) GenerateStream(ctx context.Context, memory []history.Mess
 
 	// Second turn: finalize response after tool returned data
 	finalOutput := "Here is the summarized result based on the database extraction perfectly charting your parameters."
-	streamChan <- StreamEvent{Type: "content", Content: finalOutput}
+	streamChan <- StreamEvent{Type: EventTypeContent, Content: finalOutput}
 	return LLMResult{Content: finalOutput}, nil
 }

@@ -198,11 +198,11 @@ func TestRunIterationStream_EventTypes(t *testing.T) {
 	ch := make(chan StreamEvent, 100)
 	loop.RunIterationStream(context.Background(), "s1", "hi", ch)
 
-	types := map[string]bool{}
+	types := map[StreamEventType]bool{}
 	for ev := range ch {
 		types[ev.Type] = true
 	}
-	for _, want := range []string{"tool_call", "content", "done"} {
+	for _, want := range []StreamEventType{EventTypeToolCall, EventTypeContent, EventTypeDone} {
 		if !types[want] {
 			t.Errorf("expected event type %q in stream, got types: %v", want, types)
 		}
@@ -359,7 +359,7 @@ func TestRunIteration_EventHandler(t *testing.T) {
 	}}
 	loop, _ := setup(provider, &echoTool{name: "echo"})
 
-	var seen []string
+	var seen []StreamEventType
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
 		seen = append(seen, ev.Type)
 	})
@@ -368,7 +368,7 @@ func TestRunIteration_EventHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	wantTypes := map[string]bool{"tool_call": false, "content": false, "done": false}
+	wantTypes := map[StreamEventType]bool{EventTypeToolCall: false, EventTypeContent: false, EventTypeDone: false}
 	for _, typ := range seen {
 		wantTypes[typ] = true
 	}
