@@ -66,6 +66,7 @@ func (t *MediaAnalyzeTool) ParametersSchema() tools.ToolSchema {
 // RequiresConfirmation is false — analysis is read-only.
 func (t *MediaAnalyzeTool) RequiresConfirmation() bool { return false }
 
+func (t *MediaAnalyzeTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *MediaAnalyzeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args mediaAnalyzeArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {

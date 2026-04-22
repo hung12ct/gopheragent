@@ -79,6 +79,7 @@ func (t *GenerateImageTool) InlineResult() bool                 { return true }
 
 // Execute generates the image, downloads it, saves it to SaveDir, and returns
 // a markdown image tag pointing at URLBase/<filename>.
+func (t *GenerateImageTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args generateImageArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {

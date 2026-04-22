@@ -72,6 +72,7 @@ func (t *FileReadTool) ParametersSchema() tools.ToolSchema {
 // RequiresConfirmation is false — reads are non-destructive.
 func (t *FileReadTool) RequiresConfirmation() bool { return false }
 
+func (t *FileReadTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args fileReadArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {

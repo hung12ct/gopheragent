@@ -60,6 +60,7 @@ func (t *ReadURLTool) RequiresConfirmation() bool {
 	return false
 }
 
+func (t *ReadURLTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *ReadURLTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args readURLArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {

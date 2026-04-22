@@ -45,6 +45,7 @@ func (t *ShowMediaTool) ParametersSchema() tools.ToolSchema {
 func (t *ShowMediaTool) RequiresConfirmation() bool { return false }
 func (t *ShowMediaTool) InlineResult() bool          { return true }
 
+func (t *ShowMediaTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *ShowMediaTool) Execute(_ context.Context, argsJSON string) (string, error) {
 	var args showMediaArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {

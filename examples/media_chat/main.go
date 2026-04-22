@@ -130,6 +130,7 @@ func (t *DescribeFileTool) ParametersSchema() tools.ToolSchema {
 }
 func (t *DescribeFileTool) RequiresConfirmation() bool { return false }
 
+func (t *DescribeFileTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		Prompt string `json:"prompt"`

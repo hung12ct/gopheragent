@@ -18,6 +18,11 @@ type ToolSchema struct {
 }
 
 // Tool defines the interface for all agent tools.
+//
+// Display returns UI-facing metadata (friendly label, description,
+// category, icon hint) consumed by chat clients rendering tool calls.
+// Tools with no special UI treatment can return
+// tools.DefaultDisplay(t.Name(), t.Description()) as a one-liner.
 type Tool interface {
 	// Name returns the unique identifier for this tool.
 	Name() string
@@ -27,6 +32,9 @@ type Tool interface {
 	ParametersSchema() ToolSchema
 	// RequiresConfirmation returns true if the tool needs human approval before execution.
 	RequiresConfirmation() bool
+	// Display returns UI-facing metadata (label, description, category,
+	// icon hint). See DefaultDisplay for a one-liner fallback.
+	Display() ToolDisplay
 	// Execute runs the tool with the given JSON arguments and returns the result.
 	Execute(ctx context.Context, argsJSON string) (string, error)
 }

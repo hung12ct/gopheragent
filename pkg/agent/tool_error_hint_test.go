@@ -57,6 +57,7 @@ func (t *failingTool) Name() string                    { return "doomed" }
 func (t *failingTool) Description() string             { return "always fails" }
 func (t *failingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
 func (t *failingTool) RequiresConfirmation() bool      { return false }
+func (t *failingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *failingTool) Execute(_ context.Context, _ string) (string, error) {
 	t.mu.Lock()
 	t.nCalls++

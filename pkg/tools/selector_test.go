@@ -18,6 +18,7 @@ func (t *describedTool) Name() string                                    { retur
 func (t *describedTool) Description() string                             { return t.desc }
 func (t *describedTool) ParametersSchema() ToolSchema                    { return ToolSchema{} }
 func (t *describedTool) RequiresConfirmation() bool                      { return false }
+func (t *describedTool) Display() ToolDisplay { return DefaultDisplay(t.Name(), t.Description()) }
 func (t *describedTool) Execute(_ context.Context, _ string) (string, error) { return "", nil }
 
 // keywordEmbedder produces 3-dim vectors keyed by hand-picked keywords. Gives

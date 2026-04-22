@@ -87,6 +87,7 @@ func (t *GenerateVideoTool) InlineResult() bool                 { return true }
 
 // Execute starts a Veo 2 generation job, polls until complete, saves the video,
 // and returns an HTML <video> embed pointing at URLBase/<filename>.
+func (t *GenerateVideoTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args generateVideoArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {

@@ -51,6 +51,7 @@ func (t *StartAsyncTaskTool) ParametersSchema() tools.ToolSchema {
 	}
 }
 func (t *StartAsyncTaskTool) RequiresConfirmation() bool { return false }
+func (t *StartAsyncTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *StartAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (string, error) {
 	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
 	if !ok {
@@ -81,6 +82,7 @@ func (t *CheckAsyncTaskTool) Description() string {
 }
 func (t *CheckAsyncTaskTool) ParametersSchema() tools.ToolSchema { return asyncTaskIDSchema() }
 func (t *CheckAsyncTaskTool) RequiresConfirmation() bool         { return false }
+func (t *CheckAsyncTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *CheckAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (string, error) {
 	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
 	if !ok {
@@ -114,6 +116,7 @@ func (t *CancelAsyncTaskTool) Name() string                        { return "can
 func (t *CancelAsyncTaskTool) Description() string                 { return "Cancels a running background task." }
 func (t *CancelAsyncTaskTool) ParametersSchema() tools.ToolSchema  { return asyncTaskIDSchema() }
 func (t *CancelAsyncTaskTool) RequiresConfirmation() bool          { return false }
+func (t *CancelAsyncTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *CancelAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (string, error) {
 	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
 	if !ok {
@@ -158,6 +161,7 @@ func (t *UpdateAsyncTaskTool) ParametersSchema() tools.ToolSchema {
 	}
 }
 func (t *UpdateAsyncTaskTool) RequiresConfirmation() bool { return false }
+func (t *UpdateAsyncTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *UpdateAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (string, error) {
 	var input struct {
 		TaskID      string `json:"task_id"`
@@ -184,6 +188,7 @@ func (t *ListAsyncTasksTool) ParametersSchema() tools.ToolSchema {
 	return tools.ToolSchema{Type: "object", Properties: map[string]any{}}
 }
 func (t *ListAsyncTasksTool) RequiresConfirmation() bool { return false }
+func (t *ListAsyncTasksTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *ListAsyncTasksTool) Execute(ctx context.Context, inputJSON string) (string, error) {
 	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
 	if !ok {

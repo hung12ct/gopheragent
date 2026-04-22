@@ -174,6 +174,7 @@ func (t *slowCountingTool) Name() string                        { return t.name 
 func (t *slowCountingTool) Description() string                 { return "slow counting tool" }
 func (t *slowCountingTool) ParametersSchema() tools.ToolSchema  { return tools.ToolSchema{} }
 func (t *slowCountingTool) RequiresConfirmation() bool          { return false }
+func (t *slowCountingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *slowCountingTool) Execute(ctx context.Context, args string) (string, error) {
 	atomic.AddInt64(t.counter, 1)
 	select {

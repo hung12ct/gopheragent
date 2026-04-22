@@ -100,6 +100,12 @@ func (t *Tool) ParametersSchema() tools.ToolSchema { return t.schema }
 // RequiresConfirmation implements tools.Tool.
 func (t *Tool) RequiresConfirmation() bool { return t.confirm }
 
+// Display implements tools.Tool. Returns a DefaultDisplay derived from the
+// configured Name and Description.
+func (t *Tool) Display() tools.ToolDisplay {
+	return tools.DefaultDisplay(t.name, t.description)
+}
+
 // Execute implements tools.Tool. Records the args, returns the configured
 // Result/Err (or ResultFn's output when set).
 func (t *Tool) Execute(_ context.Context, argsJSON string) (string, error) {

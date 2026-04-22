@@ -24,6 +24,7 @@ func (t *echoTool) Name() string                          { return t.name }
 func (t *echoTool) Description() string                   { return "echoes input" }
 func (t *echoTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
 func (t *echoTool) RequiresConfirmation() bool             { return t.confirm }
+func (t *echoTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *echoTool) Execute(_ context.Context, args string) (string, error) {
 	return "echo:" + args, nil
 }
@@ -560,6 +561,7 @@ func (t *countingEchoTool) Name() string                              { return t
 func (t *countingEchoTool) Description() string                       { return "counting echo" }
 func (t *countingEchoTool) ParametersSchema() tools.ToolSchema  { return tools.ToolSchema{} }
 func (t *countingEchoTool) RequiresConfirmation() bool                { return false }
+func (t *countingEchoTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *countingEchoTool) Execute(_ context.Context, args string) (string, error) {
 	*t.counter++
 	return "echo:" + args, nil

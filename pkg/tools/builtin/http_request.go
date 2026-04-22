@@ -124,6 +124,7 @@ func (t *HTTPRequestTool) ParametersSchema() tools.ToolSchema {
 // GET-only usage can override by wrapping the tool in middleware.
 func (t *HTTPRequestTool) RequiresConfirmation() bool { return true }
 
+func (t *HTTPRequestTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		URL     string            `json:"url"`
