@@ -235,18 +235,30 @@ type AgentLoop struct {
 	// dropped with a synthesized tool-error message so the model can see why
 	// they did not execute. A "thought" event announces the truncation.
 	MaxToolCallsPerTurn int
+
+	// AutoCacheSystem, when true, stamps Message.CacheHint=true on the first
+	// system message of every LLM call. On Anthropic this promotes the
+	// entire system prompt into the prompt-cache prefix, typically cutting
+	// input-token cost on that block to ~10% of normal for repeat turns
+	// within a 5-minute window. Ignored by providers that don't honor
+	// CacheHint (OpenAI, Gemini). Idempotent.
+	//
+	// NewAgentLoop defaults this to true — struct-literal construction
+	// (&AgentLoop{...}) gets zero-value false and must opt in explicitly.
+	AutoCacheSystem bool
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
 // Optional hooks run before each iteration for security/policy enforcement.
 func NewAgentLoop(sessions SessionManager, registry *tools.Registry, llm LLMProvider, hooks ...Hook) *AgentLoop {
 	return &AgentLoop{
-		Sessions:     sessions,
-		Tools:        registry,
-		LLM:          llm,
-		MaxIters:     15,
-		EmitThoughts: true,
-		BeforeHooks:  hooks,
+		Sessions:        sessions,
+		Tools:           registry,
+		LLM:             llm,
+		MaxIters:        15,
+		EmitThoughts:    true,
+		BeforeHooks:     hooks,
+		AutoCacheSystem: true,
 	}
 }
 
@@ -529,6 +541,17 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 			}
 			msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(al.withToolChainingHint(msgs)))
+			if al.AutoCacheSystem && len(msgsForLLM) > 0 && msgsForLLM[0].Role == "system" && !msgsForLLM[0].CacheHint {
+				// Copy before stamping: msgsForLLM can alias the input slice
+				// when no upstream hint needed a fresh allocation (DynamicContext
+				// nil + plan-mode off + tool-chaining hint inactive). Mutating
+				// the alias would leak CacheHint into the caller's session-
+				// loaded slice.
+				stamped := make([]history.Message, len(msgsForLLM))
+				copy(stamped, msgsForLLM)
+				stamped[0].CacheHint = true
+				msgsForLLM = stamped
+			}
 			llmCtx := ctx
 			if al.ThinkingBudget > 0 {
 				llmCtx = WithThinkingBudget(ctx, al.ThinkingBudget)
