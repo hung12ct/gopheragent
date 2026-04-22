@@ -21,6 +21,7 @@ func (m *mockTool) Name() string                    { return m.name }
 func (m *mockTool) Description() string             { return "mock" }
 func (m *mockTool) ParametersSchema() ToolSchema    { return ToolSchema{} }
 func (m *mockTool) RequiresConfirmation() bool       { return false }
+func (m *mockTool) Display() ToolDisplay { return DefaultDisplay(m.Name(), m.Description()) }
 func (m *mockTool) Execute(ctx context.Context, args string) (string, error) {
 	if m.latency > 0 {
 		select {

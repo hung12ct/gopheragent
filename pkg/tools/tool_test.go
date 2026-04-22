@@ -11,6 +11,7 @@ func (s *stubTool) Name() string                          { return s.name }
 func (s *stubTool) Description() string                   { return "stub" }
 func (s *stubTool) ParametersSchema() ToolSchema { return ToolSchema{} }
 func (s *stubTool) RequiresConfirmation() bool             { return false }
+func (s *stubTool) Display() ToolDisplay { return DefaultDisplay(s.Name(), s.Description()) }
 func (s *stubTool) Execute(_ context.Context, _ string) (string, error) { return "", nil }
 
 func TestRegistry_RegisterAndGet(t *testing.T) {

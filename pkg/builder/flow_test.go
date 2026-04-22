@@ -16,6 +16,7 @@ func (d *dummyTool) Name() string                                              {
 func (d *dummyTool) Description() string                                       { return "test" }
 func (d *dummyTool) ParametersSchema() tools.ToolSchema                        { return tools.ToolSchema{} }
 func (d *dummyTool) RequiresConfirmation() bool                                { return false }
+func (d *dummyTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(d.Name(), d.Description()) }
 func (d *dummyTool) Execute(_ context.Context, _ string) (string, error)       { return "", nil }
 
 func writeYAML(t *testing.T, content string) string {

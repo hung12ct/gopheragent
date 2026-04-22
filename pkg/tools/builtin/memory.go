@@ -125,6 +125,7 @@ func (t *MemorySetTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[memorySetArgs]()
 }
 func (t *MemorySetTool) RequiresConfirmation() bool { return false }
+func (t *MemorySetTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *MemorySetTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {
@@ -169,6 +170,7 @@ func (t *MemoryGetTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[memoryGetArgs]()
 }
 func (t *MemoryGetTool) RequiresConfirmation() bool { return false }
+func (t *MemoryGetTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *MemoryGetTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {
@@ -223,6 +225,7 @@ func (t *MemoryDeleteTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[memoryDeleteArgs]()
 }
 func (t *MemoryDeleteTool) RequiresConfirmation() bool { return false }
+func (t *MemoryDeleteTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *MemoryDeleteTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {
@@ -263,6 +266,7 @@ func (t *MemoryListTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[struct{}]()
 }
 func (t *MemoryListTool) RequiresConfirmation() bool { return false }
+func (t *MemoryListTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *MemoryListTool) Execute(ctx context.Context, _ string) (string, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {

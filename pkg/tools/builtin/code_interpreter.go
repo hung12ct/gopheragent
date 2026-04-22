@@ -119,6 +119,7 @@ func (t *CodeInterpreterTool) ParametersSchema() tools.ToolSchema {
 // side-effecting and should never run without a human / policy gate.
 func (t *CodeInterpreterTool) RequiresConfirmation() bool { return true }
 
+func (t *CodeInterpreterTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *CodeInterpreterTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		Language string `json:"language"`

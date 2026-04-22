@@ -167,6 +167,7 @@ type createTaskArgs struct {
 
 func (t *CreateTaskTool) ParametersSchema() tools.ToolSchema { return tools.SchemaFor[createTaskArgs]() }
 func (t *CreateTaskTool) RequiresConfirmation() bool         { return false }
+func (t *CreateTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *CreateTaskTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	sk, err := taskSessionKey(ctx)
 	if err != nil {
@@ -208,6 +209,7 @@ type updateTaskArgs struct {
 
 func (t *UpdateTaskTool) ParametersSchema() tools.ToolSchema { return tools.SchemaFor[updateTaskArgs]() }
 func (t *UpdateTaskTool) RequiresConfirmation() bool         { return false }
+func (t *UpdateTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *UpdateTaskTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	sk, err := taskSessionKey(ctx)
 	if err != nil {
@@ -245,6 +247,7 @@ type listTasksArgs struct{}
 
 func (t *ListTasksTool) ParametersSchema() tools.ToolSchema { return tools.SchemaFor[listTasksArgs]() }
 func (t *ListTasksTool) RequiresConfirmation() bool         { return false }
+func (t *ListTasksTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *ListTasksTool) Execute(ctx context.Context, _ string) (string, error) {
 	sk, err := taskSessionKey(ctx)
 	if err != nil {

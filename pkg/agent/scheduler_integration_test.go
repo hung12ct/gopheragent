@@ -25,6 +25,7 @@ func (t *recordingTool) Name() string                   { return t.name }
 func (t *recordingTool) Description() string            { return "records invocations" }
 func (t *recordingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
 func (t *recordingTool) RequiresConfirmation() bool     { return false }
+func (t *recordingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *recordingTool) Execute(_ context.Context, args string) (string, error) {
 	t.mu.Lock()
 	t.seen = append(t.seen, args)

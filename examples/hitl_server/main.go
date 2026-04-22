@@ -147,6 +147,7 @@ func (shellTool) ParametersSchema() tools.ToolSchema {
 	}
 }
 func (shellTool) RequiresConfirmation() bool { return true }
+func (_t shellTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(_t.Name(), _t.Description()) }
 func (shellTool) Execute(_ context.Context, argsJSON string) (string, error) {
 	return fmt.Sprintf("(simulated) executed: %s", argsJSON), nil
 }

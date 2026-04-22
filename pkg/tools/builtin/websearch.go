@@ -52,6 +52,7 @@ func (t *WebSearchTool) RequiresConfirmation() bool {
 	return false
 }
 
+func (t *WebSearchTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *WebSearchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args webSearchArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {

@@ -20,6 +20,7 @@ func (c *countingTool) Name() string                       { return c.name }
 func (c *countingTool) Description() string                { return "counts calls" }
 func (c *countingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
 func (c *countingTool) RequiresConfirmation() bool         { return false }
+func (c *countingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(c.Name(), c.Description()) }
 func (c *countingTool) Execute(_ context.Context, args string) (string, error) {
 	c.calls.Add(1)
 	return "ok:" + args, nil

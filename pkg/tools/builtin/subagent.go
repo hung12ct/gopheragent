@@ -68,6 +68,7 @@ func (t *CallSubAgentTool) RequiresConfirmation() bool { return false }
 // while the sub-agent works, and gives UIs enough metadata to render a nested
 // activity timeline. When no emitter is present (e.g. tests calling Execute
 // directly), Execute falls back to the original non-streaming path.
+func (t *CallSubAgentTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (string, error) {
 	var input SubAgentInput
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {

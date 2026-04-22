@@ -47,6 +47,7 @@ func (t *planModeTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[planModeToolArgs]()
 }
 func (t *planModeTool) RequiresConfirmation() bool { return false }
+func (t *planModeTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *planModeTool) Execute(_ context.Context, _ string) (string, error) {
 	return `{"approved":true}`, nil
 }

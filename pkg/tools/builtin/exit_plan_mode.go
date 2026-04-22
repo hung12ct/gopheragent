@@ -33,6 +33,7 @@ func (t *ExitPlanModeTool) ParametersSchema() tools.ToolSchema {
 
 func (t *ExitPlanModeTool) RequiresConfirmation() bool { return false }
 
+func (t *ExitPlanModeTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *ExitPlanModeTool) Execute(_ context.Context, _ string) (string, error) {
 	return `{"approved":true,"note":"plan mode was not active; proceed with the plan."}`, nil
 }

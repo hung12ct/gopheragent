@@ -22,6 +22,7 @@ func (g *gateTool) Name() string                       { return g.name }
 func (g *gateTool) Description() string                { return "gate tool" }
 func (g *gateTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
 func (g *gateTool) RequiresConfirmation() bool         { return false }
+func (g *gateTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(g.Name(), g.Description()) }
 func (g *gateTool) Execute(_ context.Context, args string) (string, error) {
 	g.calls.Add(1)
 	return "gate:" + args, nil

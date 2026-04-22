@@ -106,4 +106,5 @@ func (t *descTool) Name() string                                        { return
 func (t *descTool) Description() string                                 { return t.desc }
 func (t *descTool) ParametersSchema() tools.ToolSchema                  { return tools.ToolSchema{} }
 func (t *descTool) RequiresConfirmation() bool                          { return false }
+func (t *descTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *descTool) Execute(_ context.Context, _ string) (string, error) { return "", nil }

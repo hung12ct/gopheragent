@@ -185,6 +185,7 @@ func (t *SQLAgentTool) RequiresConfirmation() bool {
 // When WithSelfConsistency(n) with n > 1 is configured, n independent sub-
 // agents run in parallel and their execution results are clustered by hash;
 // the answer from the winning cluster is returned.
+func (t *SQLAgentTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *SQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args sqlAgentArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -370,6 +371,7 @@ func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
 
 func (t *executeSQLTool) RequiresConfirmation() bool { return false }
 
+func (t *executeSQLTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args executeSQLArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
