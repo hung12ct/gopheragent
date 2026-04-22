@@ -152,7 +152,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(b)
 	}
 
-	streamChan <- agent.StreamEvent{Type: "thought", Content: fmt.Sprintf("Analyzing with Claude (%s)...", p.model)}
+	streamChan <- agent.StreamEvent{Type: agent.EventTypeThought, Content: fmt.Sprintf("Analyzing with Claude (%s)...", p.model)}
 
 	stream := p.client.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
@@ -169,7 +169,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 			switch delta := variant.Delta.AsAny().(type) {
 			case anthropic.TextDelta:
 				if delta.Text != "" {
-					streamChan <- agent.StreamEvent{Type: "content", Content: delta.Text}
+					streamChan <- agent.StreamEvent{Type: agent.EventTypeContent, Content: delta.Text}
 				}
 			}
 		case anthropic.ContentBlockStopEvent:
