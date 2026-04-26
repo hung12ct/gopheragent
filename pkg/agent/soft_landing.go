@@ -15,7 +15,7 @@ const softLandingHint = softLandingSentinel +
 // on the final two iterations of a run. Returned only — never persisted —
 // so saved session history stays clean across turns. Idempotent.
 func withSoftLandingHint(iteration, maxIters int, msgs []history.Message) []history.Message {
-	if maxIters <= 0 || iteration < maxIters-2 {
+	if maxIters <= 0 || iteration < maxIters-softLandingMargin {
 		return msgs
 	}
 	for _, m := range msgs {
