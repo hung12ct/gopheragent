@@ -82,7 +82,7 @@ func PruneContextMessages(msgs []history.Message, protectedEnds int) []history.M
 				tail := runeSlice(msg.Content, runeLen-RetentionTail, runeLen)
 				omitted := runeLen - RetentionHead - RetentionTail
 
-				msg.Content = fmt.Sprintf("%s\n\n... [... %d chars omitted by GopherAgent Pruning ...] ...\n\n%s", head, omitted, tail)
+				msg.Content = fmt.Sprintf("%s\n\n... [%d chars truncated] ...\n\n%s", head, omitted, tail)
 			}
 		}
 		result = append(result, msg)
