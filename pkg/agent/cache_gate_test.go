@@ -97,6 +97,34 @@ func TestCacheGate_CacheableTrue_Caches(t *testing.T) {
 	}
 }
 
+func TestCacheGate_CacheableTrue_EmitsToolCallOnHit(t *testing.T) {
+	g := &cacheableGateTool{gateTool: gateTool{name: "gate", cacheable: true}}
+	loop, _ := setup(twoCallScript(), g)
+	loop.Cache = cache.NewSearchCache(10, time.Minute)
+
+	var toolCalls, hits int
+	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+		switch {
+		case ev.Type == EventTypeToolCall && strings.Contains(ev.Content, "gate"):
+			toolCalls++
+		case ev.Type == "thought" && strings.Contains(ev.Content, "Cache hit for gate"):
+			hits++
+		}
+	})
+
+	runTwice(t, loop)
+
+	if toolCalls != 2 {
+		t.Fatalf("expected 2 EventTypeToolCall events (one per scheduled call), got %d", toolCalls)
+	}
+	if hits != 1 {
+		t.Fatalf("expected 1 cache-hit thought, got %d", hits)
+	}
+	if n := g.calls.Load(); n != 1 {
+		t.Fatalf("tool should have executed once, got %d", n)
+	}
+}
+
 func TestCacheGate_NilCache_NoOp(t *testing.T) {
 	g := &cacheableGateTool{gateTool: gateTool{name: "gate", cacheable: true}}
 	loop, _ := setup(twoCallScript(), g)
