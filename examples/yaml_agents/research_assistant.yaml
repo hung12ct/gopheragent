@@ -129,6 +129,13 @@ agent:
        benchmark data", "Read top-3 sources", "Render comparison table"). Flip each task to
        `in_progress` via `update_task` when you start it and `completed` immediately when
        done. The user sees the live checklist with strikethrough on completed items.
+    6. **When plan mode is active and your plan is approved**: your bullet list is automatically
+       registered as tasks `t1`, `t2`, ... in the order you wrote them — do **not** call
+       `create_task` again or you will produce duplicates. Instead, immediately call
+       `update_task("t1", "in_progress")` when you begin the first step, and
+       `update_task("t1", "completed")` the moment it finishes. Repeat for `t2`, `t3`, etc.
+       Calling `update_task` is what flips the UI checkmark and crosses the item out — skipping
+       it leaves the checklist looking permanently incomplete.
 
     ## Rules
 
