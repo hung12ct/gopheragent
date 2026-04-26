@@ -376,7 +376,7 @@ func errEvent(err error) StreamEvent {
 // RunIteration provides a fast, blocking response interface (non-streaming).
 // Thoughts are always suppressed — only final content and errors are returned.
 func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userInput string) (string, error) {
-	streamChan := make(chan StreamEvent, 100)
+	streamChan := make(chan StreamEvent, runIterationBuffer)
 
 	go al.runLogicLoop(ctx, sessionKey, userInput, streamChan)
 
@@ -414,7 +414,7 @@ func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userIn
 // RunIterationStream is a streaming version of the LLM loop that pushes data to a channel.
 // It supports SSE by streaming thoughts and response chunks.
 func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, userInput string, streamChan chan<- StreamEvent) {
-	internalChan := make(chan StreamEvent, 50)
+	internalChan := make(chan StreamEvent, runIterationStreamBuffer)
 	emitThoughts := al.EmitThoughts
 
 	go func() {
@@ -505,7 +505,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		// Token budget enforcement
 		if al.MaxTokenBudget > 0 {
 			estToks := estimateTokens(msgs)
-			thresh85 := int(float64(al.MaxTokenBudget) * 0.85)
+			thresh85 := int(float64(al.MaxTokenBudget) * budgetWarnRatio)
 			
 			if estToks > thresh85 && estToks <= al.MaxTokenBudget {
 				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh85)})
@@ -524,7 +524,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			msgs = PruneContextMessages(msgs, 3)
 		}
 
-		if iteration == al.MaxIters-2 {
+		if iteration == al.MaxIters-softLandingMargin {
 			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "System: Nudging Agent for a soft landing before MaxIters limit is reached."})
 		}
 
@@ -558,7 +558,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 			}
 
-			pChan := make(chan StreamEvent, 50)
+			pChan := make(chan StreamEvent, llmProviderBuffer)
 			var buf strings.Builder
 			var emitted bool
 			done := make(chan struct{})
@@ -806,9 +806,8 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 							return false
 						}
 						if tCall.Name != ExitPlanModeToolName {
-							msg := fmt.Sprintf(`{"error":"tool %q is blocked in plan mode. Present your full plan via exit_plan_mode first and wait for user approval."}`, tCall.Name)
 							completedMu.Lock()
-							toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: msg, ToolCallID: tCall.ID, IsError: true}
+							toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: planGateBlockedMessage(tCall.Name), ToolCallID: tCall.ID, IsError: true}
 							completedMu.Unlock()
 							return true
 						}
@@ -829,9 +828,9 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						if approved {
 							al.SetPlanMode(sessionKey, false)
 							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan approved — exiting plan mode."})
-							result = `{"approved":true}`
+							result = planApprovedJSON()
 						} else {
-							result = `{"approved":false,"reason":"User rejected the plan. Revise based on their feedback and propose again via exit_plan_mode."}`
+							result = planDeniedJSON()
 							isErr = true
 						}
 						completedMu.Lock()
