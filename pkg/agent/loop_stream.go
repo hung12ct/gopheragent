@@ -909,6 +909,17 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 							cacheOK = true
 						}
 					}
+
+					// Announce the tool call before any fast-path return.
+					// Cache hits and speculative reuses are still scheduled
+					// calls from a consumer's perspective — they need a
+					// matching tool_call event so observers (UI counters,
+					// telemetry spans, MaxToolCallsPerTurn analytics) see
+					// every call exactly once. Subsequent thought events
+					// disambiguate the source ("Cache hit", "Reusing
+					// speculative result").
+					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeToolCall, Content: fmt.Sprintf("Executing: %s", tCall.Name)})
+
 					if cacheOK {
 						if cached, hit := al.Cache.Get(cacheKey); hit {
 							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
@@ -919,8 +930,6 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 							return
 						}
 					}
-
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeToolCall, Content: fmt.Sprintf("Executing: %s", tCall.Name)})
 
 					toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
 						ev := StreamEvent{Type: EventTypeToolProgress, Content: msg}

@@ -97,6 +97,41 @@ func TestCacheGate_CacheableTrue_Caches(t *testing.T) {
 	}
 }
 
+// TestCacheGate_CacheableTrue_EmitsToolCallOnHit pins that a cache hit emits
+// EventTypeToolCall just like a normal execution. Prior to this contract,
+// the fast-path return skipped the emit and downstream consumers (UI tool
+// counters, telemetry spans) silently undercounted cached calls.
+func TestCacheGate_CacheableTrue_EmitsToolCallOnHit(t *testing.T) {
+	g := &cacheableGateTool{gateTool: gateTool{name: "gate", cacheable: true}}
+	loop, _ := setup(twoCallScript(), g)
+	loop.Cache = cache.NewSearchCache(10, time.Minute)
+
+	var toolCalls, hits int
+	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+		switch {
+		case ev.Type == EventTypeToolCall && strings.Contains(ev.Content, "gate"):
+			toolCalls++
+		case ev.Type == "thought" && strings.Contains(ev.Content, "Cache hit for gate"):
+			hits++
+		}
+	})
+
+	runTwice(t, loop)
+
+	// Two calls scheduled: first executes, second hits cache. Both must
+	// emit EventTypeToolCall — without that contract the second call is
+	// invisible to observers.
+	if toolCalls != 2 {
+		t.Fatalf("expected 2 EventTypeToolCall events (one per scheduled call), got %d", toolCalls)
+	}
+	if hits != 1 {
+		t.Fatalf("expected 1 cache-hit thought, got %d", hits)
+	}
+	if n := g.calls.Load(); n != 1 {
+		t.Fatalf("tool should have executed once, got %d", n)
+	}
+}
+
 func TestCacheGate_NilCache_NoOp(t *testing.T) {
 	g := &cacheableGateTool{gateTool: gateTool{name: "gate", cacheable: true}}
 	loop, _ := setup(twoCallScript(), g)
