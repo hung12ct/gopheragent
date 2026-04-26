@@ -134,7 +134,10 @@ var (
 
 // buildConfirmPlan returns a ConfirmPlanFunc that emits an action_required
 // event with the proposed plan over SSE and blocks until the user approves
-// or denies via POST /api/approve.
+// or denies via POST /api/approve. On approval, the plan's bullet list is
+// converted into pending entries in taskStore so the Task Plan panel
+// renders the checklist immediately — without this, plan mode would leave
+// the panel empty because every tool except exit_plan_mode is gated.
 func buildConfirmPlan() agent.ConfirmPlanFunc {
 	return func(ctx context.Context, plan string) bool {
 		approvalID := fmt.Sprintf("%d", uniqueID())
@@ -164,10 +167,110 @@ func buildConfirmPlan() agent.ConfirmPlanFunc {
 		select {
 		case approved := <-ch:
 			log.Printf("[PLAN] approval_id=%s approved=%v", approvalID, approved)
+			if approved {
+				populateTasksFromPlan(ctx, sessionKey, plan)
+			}
 			return approved
 		case <-ctx.Done():
 			return false
 		}
+	}
+}
+
+// extractPlanBullets pulls top-level markdown bullets from plan text. A
+// bullet is a line whose first non-whitespace characters are "- ", "* ",
+// or "N. " (numbered). Sub-bullets (lines indented further than the first
+// bullet seen) are folded into the parent's notes so the Task Plan panel
+// stays readable. Returns titles + notes pairs in document order.
+func extractPlanBullets(plan string) []struct{ Title, Notes string } {
+	type entry struct{ Title, Notes string }
+	var out []entry
+	lines := strings.Split(plan, "\n")
+
+	parentIndent := -1
+	for _, raw := range lines {
+		trimmed := strings.TrimLeft(raw, " \t")
+		if trimmed == "" {
+			continue
+		}
+		indent := len(raw) - len(trimmed)
+		title, ok := stripBulletPrefix(trimmed)
+		if !ok {
+			continue
+		}
+		if parentIndent < 0 || indent <= parentIndent {
+			parentIndent = indent
+			out = append(out, entry{Title: title})
+			continue
+		}
+		// Indented bullet — append as a note line on the most recent parent.
+		if len(out) > 0 {
+			if out[len(out)-1].Notes == "" {
+				out[len(out)-1].Notes = "• " + title
+			} else {
+				out[len(out)-1].Notes += "\n• " + title
+			}
+		}
+	}
+	// Convert the local entry slice to the anonymous-struct return shape.
+	res := make([]struct{ Title, Notes string }, len(out))
+	for i, e := range out {
+		res[i] = struct{ Title, Notes string }{Title: e.Title, Notes: e.Notes}
+	}
+	return res
+}
+
+// stripBulletPrefix returns the line content past a "- ", "* ", or "N. "
+// prefix, and whether such a prefix was found.
+func stripBulletPrefix(line string) (string, bool) {
+	for _, p := range []string{"- ", "* ", "• "} {
+		if strings.HasPrefix(line, p) {
+			return strings.TrimSpace(line[len(p):]), true
+		}
+	}
+	// Numbered list: skip the leading digits, expect ". " next.
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i > 0 && i+1 < len(line) && line[i] == '.' && line[i+1] == ' ' {
+		return strings.TrimSpace(line[i+2:]), true
+	}
+	return "", false
+}
+
+// populateTasksFromPlan parses plan bullets into pending task entries and
+// pushes a single task_list SSE event so the Task Plan panel renders the
+// checklist before the model resumes execution.
+func populateTasksFromPlan(ctx context.Context, sessionKey, plan string) {
+	bullets := extractPlanBullets(plan)
+	if len(bullets) == 0 {
+		return
+	}
+	for _, b := range bullets {
+		if _, err := taskStore.Create(ctx, sessionKey, b.Title, b.Notes); err != nil {
+			log.Printf("[PLAN] task create failed: %v", err)
+		}
+	}
+	tasks, err := taskStore.List(ctx, sessionKey)
+	if err != nil {
+		return
+	}
+	items := make([]agent.TaskListItem, 0, len(tasks))
+	for _, t := range tasks {
+		items = append(items, agent.TaskListItem{
+			ID:     t.ID,
+			Title:  t.Title,
+			Status: string(t.Status),
+			Notes:  t.Notes,
+		})
+	}
+	body, err := json.Marshal(items)
+	if err != nil {
+		return
+	}
+	if sseStream := getStream(sessionKey); sseStream != nil {
+		sseStream <- agent.StreamEvent{Type: agent.EventTypeTaskList, Content: string(body)}
 	}
 }
 

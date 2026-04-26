@@ -18,8 +18,14 @@ const ExitPlanModeToolName = "exit_plan_mode"
 const planModeSentinel = "PLAN MODE:"
 
 // planModeHint is injected into the system prompt while PlanMode is true.
+//
+// Format discipline matters: the plan text the model returns drives the
+// downstream UI (e.g. demo's Task Plan panel parses bullets into a
+// checklist). A loose "produce a plan" prompt tends to yield 10+ items of
+// varying granularity; the explicit budget below keeps plans actionable.
 const planModeHint = planModeSentinel + " Do not call any tool except exit_plan_mode. " +
-	"Think through the user's request and produce a concrete plan (goals, ordered steps, tools you will call, acceptance criteria). " +
+	"Produce a tight checklist of 3-7 top-level markdown bullets, each one a single concrete action in imperative form (e.g. \"- Search for benchmark data\", not \"- Investigate the topic\"). " +
+	"Avoid sub-bullets unless one parent step has 2-4 essential sub-actions. No prose preamble, no closing summary — just the bullet list. " +
 	"When the plan is complete, call exit_plan_mode with the plan as the `plan` argument. " +
 	"The user must approve the plan before any tool runs; if they deny, you will receive their feedback and must revise."
 
