@@ -150,3 +150,52 @@ func TestAgentLoop_CyclicToolCalls_FallbackDoesNotDeadlock(t *testing.T) {
 		t.Fatalf("expected loop to recover and return 'recovered', got %q", resp)
 	}
 }
+
+// TestAgentLoop_SubstitutionFailureSkipsExecution pins the fail-fast
+// contract: when a wave's <output_of:...> reference cannot be resolved
+// (e.g. dangling ID), the loop synthesizes a tool-error result and does
+// not execute the tool with the literal placeholder string.
+func TestAgentLoop_SubstitutionFailureSkipsExecution(t *testing.T) {
+	a := &recordingTool{name: "a", result: `"never-reached"`}
+
+	provider := &scriptProvider{turns: []LLMResult{
+		// Turn 1: single tool call referencing a non-existent ID.
+		{ToolCalls: []PendingToolCall{
+			{ID: "t1", Name: "a", ArgsJSON: `{"x": <output_of:ghost>}`},
+		}},
+		{Content: "ack"},
+	}}
+
+	sm := history.NewInMemSessionManager("sys")
+	reg := tools.NewRegistry()
+	reg.Register(a)
+	loop := NewAgentLoop(sm, reg, provider)
+
+	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+
+	// Tool must NOT have been called with the unresolved placeholder.
+	if got := len(a.receivedArgs()); got != 0 {
+		t.Fatalf("tool ran %d times despite substitution failure; expected 0", got)
+	}
+
+	// History must contain a tool-error result for t1.
+	hist := sm.GetHistory(context.Background(), "s1")
+	var toolMsg history.Message
+	for _, m := range hist {
+		if m.Role == "tool" && m.ToolCallID == "t1" {
+			toolMsg = m
+			break
+		}
+	}
+	if toolMsg.Role == "" {
+		t.Fatal("expected synthesized tool result for t1")
+	}
+	if !toolMsg.IsError {
+		t.Fatalf("tool result should be flagged as error: %+v", toolMsg)
+	}
+	if !strings.Contains(toolMsg.Content, "tool scheduler") {
+		t.Fatalf("expected scheduler error message, got %q", toolMsg.Content)
+	}
+}

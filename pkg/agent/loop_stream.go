@@ -762,9 +762,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		for _, wave := range waves {
 			// Substitute <output_of:...> tokens in this wave's args using
 			// results from earlier waves. Resolver reads under the lock to
-			// stay race-free against any residual goroutine writes.
-			substitutedWave := make([]PendingToolCall, len(wave))
-			for i, tc := range wave {
+			// stay race-free against any residual goroutine writes. Calls
+			// whose substitution fails are short-circuited with a synthesized
+			// tool-error result so the model sees a clear scheduler message
+			// instead of a confusing downstream tool error.
+			substitutedWave := make([]PendingToolCall, 0, len(wave))
+			for _, tc := range wave {
 				completedMu.Lock()
 				resolver := func(id string) (string, bool) {
 					r, ok := resultsByID[id]
@@ -772,15 +775,23 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 				newArgs, subErr := Substitute(tc.ArgsJSON, resolver)
 				completedMu.Unlock()
-				if subErr == nil {
-					tc.ArgsJSON = newArgs
-				} else {
+				if subErr != nil {
+					completedMu.Lock()
+					toolMsgs[tc.ID] = history.Message{
+						Role:       "tool",
+						Content:    substitutionFailedMessage(tc.Name, subErr),
+						ToolCallID: tc.ID,
+						IsError:    true,
+					}
+					completedMu.Unlock()
 					al.emit(ctx, sessionKey, streamChan, StreamEvent{
 						Type:    "thought",
-						Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v", tc.Name, subErr),
+						Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", tc.Name, subErr),
 					})
+					continue
 				}
-				substitutedWave[i] = tc
+				tc.ArgsJSON = newArgs
+				substitutedWave = append(substitutedWave, tc)
 			}
 
 			var wg sync.WaitGroup
