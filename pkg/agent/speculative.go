@@ -13,12 +13,17 @@ import (
 // when execution returns; readers receive the cached (result, err) pair
 // without racing the writer goroutine.
 //
+// cancel aborts the running tool — used on retry-reset so an orphaned
+// speculation from a failed attempt does not run to completion using
+// resources no one will read.
+//
 // A single instance is created per tool call ID. Entries are inserted by
 // the stream drainer (single writer) and read by the wave executor only
 // after the drainer signals completion — no concurrent map access.
 type speculativeExec struct {
 	id     string
 	doneCh chan struct{}
+	cancel context.CancelFunc
 	result string
 	err    error
 }
@@ -85,14 +90,17 @@ func (al *AgentLoop) spawnSpeculative(
 	mu *sync.Mutex,
 	store map[string]*speculativeExec,
 ) {
+	specCtx, cancel := context.WithCancel(ctx)
 	sm := &speculativeExec{
 		id:     id,
 		doneCh: make(chan struct{}),
+		cancel: cancel,
 	}
 	mu.Lock()
 	if _, exists := store[id]; exists {
 		// Duplicate ready-event for the same call (shouldn't happen, but
 		// cheap to guard against) — skip silently.
+		cancel()
 		mu.Unlock()
 		return
 	}
@@ -103,18 +111,18 @@ func (al *AgentLoop) spawnSpeculative(
 	if !ok {
 		sm.err = &ToolNotFoundError{ToolName: name}
 		close(sm.doneCh)
+		cancel()
 		return
 	}
 
 	go func() {
+		defer cancel()
 		defer close(sm.doneCh)
-		// Run with a bare ctx — no progress reporter, no sub-agent
-		// emitter. The wave executor owns user-visible emissions for this
-		// call when it processes the result.
-		toolCtx := ctx
-		// Cast through tools.Tool interface to avoid importing internals.
+		// Run with the speculation-scoped ctx — no progress reporter, no
+		// sub-agent emitter. The wave executor owns user-visible emissions
+		// for this call when it processes the result.
 		var t tools.Tool = tool
-		result, err := t.Execute(toolCtx, argsJSON)
+		result, err := t.Execute(specCtx, argsJSON)
 		sm.result = result
 		sm.err = err
 	}()
