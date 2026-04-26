@@ -540,8 +540,11 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		callLLM := func() (string, LLMResult, bool, error) {
 			// Reset speculation state at the start of each attempt so a
 			// retry's map never mixes with prior-attempt speculations.
+			// Cancel each orphaned ctx so its tool can abort early instead
+			// of running to completion with results no one will read.
 			specMu.Lock()
-			for k := range specMap {
+			for k, sm := range specMap {
+				sm.cancel()
 				delete(specMap, k)
 			}
 			specMu.Unlock()

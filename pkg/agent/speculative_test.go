@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -97,6 +98,54 @@ func TestSpawnSpeculative_CachesResult(t *testing.T) {
 	if result != `echo:"hi"` {
 		t.Fatalf("expected echo result, got %q", result)
 	}
+}
+
+// TestSpawnSpeculative_CancelAbortsTool pins the retry-orphan fix:
+// calling sm.cancel() must propagate ctx cancellation to the running
+// tool so it can abort early instead of completing with an unread
+// result. Uses a tool that blocks on ctx.Done.
+func TestSpawnSpeculative_CancelAbortsTool(t *testing.T) {
+	tool := &ctxBlockingTool{name: "blocker", started: make(chan struct{})}
+	loop, _ := setup(&scriptProvider{}, tool)
+	loop.SpeculativeTools = true
+
+	store := newSpeculativeMap()
+	var mu sync.Mutex
+
+	loop.spawnSpeculative(context.Background(), "c1", "blocker", `{}`, &mu, store)
+
+	mu.Lock()
+	sm := store["c1"]
+	mu.Unlock()
+
+	// Wait for the tool to start so we know it's actually blocked on ctx.
+	<-tool.started
+
+	// Simulate retry-reset: cancel the speculation while the tool is mid-run.
+	sm.cancel()
+
+	// Tool must abort with ctx.Canceled rather than completing.
+	_, err := awaitSpeculative(context.Background(), sm)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected ctx.Canceled after sm.cancel(), got %v", err)
+	}
+}
+
+// ctxBlockingTool blocks until ctx cancels, then returns ctx.Err().
+type ctxBlockingTool struct {
+	name    string
+	started chan struct{}
+}
+
+func (t *ctxBlockingTool) Name() string                       { return t.name }
+func (t *ctxBlockingTool) Description() string                { return "blocks until ctx cancels" }
+func (t *ctxBlockingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
+func (t *ctxBlockingTool) RequiresConfirmation() bool         { return false }
+func (t *ctxBlockingTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay(t.Name(), t.Description()) }
+func (t *ctxBlockingTool) Execute(ctx context.Context, _ string) (string, error) {
+	close(t.started)
+	<-ctx.Done()
+	return "", ctx.Err()
 }
 
 func TestSpawnSpeculative_MissingToolSurfacesError(t *testing.T) {
