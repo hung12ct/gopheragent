@@ -12,7 +12,10 @@ import (
 )
 
 func TestDefaultToolErrorHint_IncludesToolAndError(t *testing.T) {
-	out := defaultToolErrorHint("search_events", "ERR_INVALID_DATE_FORMAT: expected ISO 8601")
+	out := defaultToolErrorHint(ToolErrorContext{
+		ToolName: "search_events",
+		Cause:    errors.New("ERR_INVALID_DATE_FORMAT: expected ISO 8601"),
+	})
 	if !strings.Contains(out, "search_events") {
 		t.Fatalf("hint missing tool name: %q", out)
 	}
@@ -26,11 +29,14 @@ func TestDefaultToolErrorHint_IncludesToolAndError(t *testing.T) {
 
 func TestFormatToolError_UsesCustomFormatterWhenSet(t *testing.T) {
 	al := &AgentLoop{
-		ToolErrorHintFormatter: func(tool, msg string) string {
-			return "CUSTOM|" + tool + "|" + msg
+		ToolErrorHintFormatter: func(c ToolErrorContext) string {
+			return "CUSTOM|" + c.ToolName + "|" + c.Cause.Error()
 		},
 	}
-	got := al.formatToolError("sql_exec", "syntax error near SELECT")
+	got := al.formatToolError(ToolErrorContext{
+		ToolName: "sql_exec",
+		Cause:    errors.New("syntax error near SELECT"),
+	})
 	want := "CUSTOM|sql_exec|syntax error near SELECT"
 	if got != want {
 		t.Fatalf("custom formatter not applied.\n got: %q\nwant: %q", got, want)
@@ -39,9 +45,47 @@ func TestFormatToolError_UsesCustomFormatterWhenSet(t *testing.T) {
 
 func TestFormatToolError_FallsBackToDefault(t *testing.T) {
 	al := &AgentLoop{} // no formatter set
-	got := al.formatToolError("web_search", "rate limited")
+	got := al.formatToolError(ToolErrorContext{
+		ToolName: "web_search",
+		Cause:    errors.New("rate limited"),
+	})
 	if !strings.Contains(got, "web_search") || !strings.Contains(got, "rate limited") {
 		t.Fatalf("default formatter should carry tool name + error: %q", got)
+	}
+}
+
+// TestFormatToolError_ContextCarriesArgsAndIteration pins the new
+// fields: a custom formatter must see the args the tool was called with
+// and the iteration number, so it can produce arg-aware messages.
+func TestFormatToolError_ContextCarriesArgsAndIteration(t *testing.T) {
+	provider := &scriptProvider{turns: []LLMResult{
+		{ToolCalls: []PendingToolCall{{ID: "c1", Name: "doomed", ArgsJSON: `{"q":"2024-13-01"}`}}},
+		{Content: "stop"},
+	}}
+	sm := history.NewInMemSessionManager("sys")
+	reg := tools.NewRegistry()
+	reg.Register(&failingTool{})
+	loop := NewAgentLoop(sm, reg, provider)
+	var captured ToolErrorContext
+	loop.ToolErrorHintFormatter = func(c ToolErrorContext) string {
+		captured = c
+		return "ok"
+	}
+
+	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	if captured.ToolName != "doomed" {
+		t.Fatalf("ToolName = %q, want doomed", captured.ToolName)
+	}
+	if captured.ArgsJSON != `{"q":"2024-13-01"}` {
+		t.Fatalf("ArgsJSON = %q, want the original args", captured.ArgsJSON)
+	}
+	if captured.Iteration != 0 {
+		t.Fatalf("Iteration = %d, want 0 (first turn)", captured.Iteration)
+	}
+	if captured.Cause == nil {
+		t.Fatal("Cause was nil; expected wrapped tool error")
 	}
 }
 
@@ -111,8 +155,8 @@ func TestToolError_CustomFormatterRoundTrips(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(&failingTool{})
 	loop := NewAgentLoop(sm, reg, provider)
-	loop.ToolErrorHintFormatter = func(tool, msg string) string {
-		return "RETRY_WITH_ISO8601: " + tool + " says " + msg
+	loop.ToolErrorHintFormatter = func(c ToolErrorContext) string {
+		return "RETRY_WITH_ISO8601: " + c.ToolName + " says " + c.Cause.Error()
 	}
 
 	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {

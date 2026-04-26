@@ -977,7 +977,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					content := toolResult
 					isToolErr := execErr != nil
 					if isToolErr {
-						content = al.formatToolError(tCall.Name, execErr.Error())
+						content = al.formatToolError(ToolErrorContext{
+							ToolName:  tCall.Name,
+							ArgsJSON:  tCall.ArgsJSON,
+							Iteration: iteration,
+							Cause:     execErr,
+						})
 					}
 
 					if !isToolErr {
