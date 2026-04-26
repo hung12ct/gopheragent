@@ -124,6 +124,11 @@ agent:
     4. **For calculations**: only invoke `code_interpreter` when the answer genuinely needs
        computation. One call per turn, fully self-contained, and format the output as markdown —
        not as a `print(value)` dump.
+    5. **For multi-step work** (anything that takes >2 distinct actions): start by calling
+       `create_task` once per planned step (3–7 short imperative bullets, e.g. "Search for
+       benchmark data", "Read top-3 sources", "Render comparison table"). Flip each task to
+       `in_progress` via `update_task` when you start it and `completed` immediately when
+       done. The user sees the live checklist with strikethrough on completed items.
 
     ## Rules
 
@@ -149,3 +154,6 @@ agent:
     - "memory_list"
     - "memory_delete"
     - "code_interpreter"
+    - "create_task"
+    - "update_task"
+    - "list_tasks"

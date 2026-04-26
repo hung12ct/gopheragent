@@ -147,6 +147,34 @@ func taskSessionKey(ctx context.Context) (string, error) {
 	return sk, nil
 }
 
+// emitTaskList pushes the current task list as a EventTypeTaskList event onto
+// the parent agent's stream, so UIs can re-render. No-op when no emitter is
+// installed (tool running outside an agent loop) or when listing fails.
+func emitTaskList(ctx context.Context, store TaskStore, sessionKey string) {
+	emit := agent.SubAgentEmitterFromContext(ctx)
+	if emit == nil {
+		return
+	}
+	tasks, err := store.List(ctx, sessionKey)
+	if err != nil {
+		return
+	}
+	items := make([]agent.TaskListItem, 0, len(tasks))
+	for _, t := range tasks {
+		items = append(items, agent.TaskListItem{
+			ID:     t.ID,
+			Title:  t.Title,
+			Status: string(t.Status),
+			Notes:  t.Notes,
+		})
+	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return
+	}
+	emit(agent.StreamEvent{Type: agent.EventTypeTaskList, Content: string(payload)})
+}
+
 // ---- CreateTaskTool ----
 
 // CreateTaskTool lets the LLM register a new pending task in the session
@@ -184,6 +212,7 @@ func (t *CreateTaskTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if err != nil {
 		return "", err
 	}
+	emitTaskList(ctx, t.Store, sk)
 	return marshalOrError(task)
 }
 
@@ -226,6 +255,7 @@ func (t *UpdateTaskTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if err != nil {
 		return "", err
 	}
+	emitTaskList(ctx, t.Store, sk)
 	return marshalOrError(task)
 }
 
@@ -260,6 +290,7 @@ func (t *ListTasksTool) Execute(ctx context.Context, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	emitTaskList(ctx, t.Store, sk)
 	return marshalOrError(map[string]any{"tasks": tasks, "count": len(tasks)})
 }
 
