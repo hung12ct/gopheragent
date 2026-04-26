@@ -65,8 +65,8 @@ func TestPruneContextMessages_SoftTrim(t *testing.T) {
 	if len(pruned[1].Content) >= len(longContent) {
 		t.Fatal("expected soft trimmed content to be shorter")
 	}
-	if !strings.Contains(pruned[1].Content, "omitted by GopherAgent Pruning") {
-		t.Fatal("expected pruning marker in trimmed content")
+	if !strings.Contains(pruned[1].Content, "chars truncated") {
+		t.Fatal("expected truncation marker in trimmed content")
 	}
 }
 
