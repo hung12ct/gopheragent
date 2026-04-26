@@ -255,6 +255,53 @@ func TestRegisterTaskTools_RegistersAllThree(t *testing.T) {
 	}
 }
 
+func TestTaskTools_EmitsTaskListOnMutation(t *testing.T) {
+	store := NewInMemoryTaskStore()
+	create := NewCreateTaskTool(store)
+	update := NewUpdateTaskTool(store)
+
+	var emitted []agent.StreamEvent
+	ctx := agent.WithSubAgentEmitter(taskCtx("s1"), func(ev agent.StreamEvent) {
+		emitted = append(emitted, ev)
+	})
+
+	if _, err := create.Execute(ctx, `{"title":"plan"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := update.Execute(ctx, `{"id":"t1","status":"completed"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	// One event per successful mutation, both EventTypeTaskList.
+	if len(emitted) != 2 {
+		t.Fatalf("expected 2 task_list events, got %d", len(emitted))
+	}
+	for i, ev := range emitted {
+		if ev.Type != agent.EventTypeTaskList {
+			t.Fatalf("event %d type = %q; want task_list", i, ev.Type)
+		}
+	}
+
+	// The second event must reflect the completed status — this is the
+	// state the frontend will render with strikethrough.
+	var items []agent.TaskListItem
+	if err := json.Unmarshal([]byte(emitted[1].Content), &items); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(items) != 1 || items[0].Status != string(TaskCompleted) {
+		t.Fatalf("expected single completed task, got %+v", items)
+	}
+}
+
+func TestTaskTools_NoEmitterIsSafe(t *testing.T) {
+	// No emitter installed on ctx — tools must succeed without panicking.
+	store := NewInMemoryTaskStore()
+	create := NewCreateTaskTool(store)
+	if _, err := create.Execute(taskCtx("s1"), `{"title":"x"}`); err != nil {
+		t.Fatalf("create without emitter: %v", err)
+	}
+}
+
 func TestTaskTools_SessionsAreIsolatedViaContext(t *testing.T) {
 	store := NewInMemoryTaskStore()
 	create := NewCreateTaskTool(store)

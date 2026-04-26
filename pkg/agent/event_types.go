@@ -37,6 +37,11 @@ const (
 	// the agent loop can start executing safe tools in parallel with the
 	// remaining stream, shaving one tail-latency round trip per tool.
 	EventTypeToolCallReady StreamEventType = "tool_call_ready"
+	// EventTypeTaskList carries the current per-session task list as JSON
+	// (e.g. produced by builtin task tools). Consumers re-render the full
+	// list on every event — there is no diff format. Content is the JSON
+	// serialisation of TaskListEvent.Tasks.
+	EventTypeTaskList StreamEventType = "task_list"
 )
 
 // EventPayload is a sealed interface implemented by every typed event. Use it
@@ -147,6 +152,25 @@ type ToolCallReadyEvent struct {
 	ArgsJSON string
 }
 
+// TaskListItem is the wire shape of a single task entry inside a
+// TaskListEvent. Mirrors builtin.Task minus timestamps so consumers do not
+// need to import the builtin package to render the list.
+type TaskListItem struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"` // pending | in_progress | completed
+	Notes  string `json:"notes,omitempty"`
+}
+
+// TaskListEvent is a snapshot of the session's task list emitted whenever
+// a task tool mutates the list. The frontend re-renders the full list on
+// every event; there is no diff format.
+type TaskListEvent struct {
+	BaseEvent
+	Tasks   []TaskListItem
+	RawJSON string
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -166,6 +190,7 @@ func (ErrorEvent) isEventPayload()          {}
 func (DoneEvent) isEventPayload()           {}
 func (ReflectedEvent) isEventPayload()      {}
 func (ToolCallReadyEvent) isEventPayload()  {}
+func (TaskListEvent) isEventPayload()       {}
 func (UnknownEvent) isEventPayload()        {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
@@ -233,6 +258,10 @@ func (ev StreamEvent) Payload() EventPayload {
 		out.Name = decoded.Name
 		out.ArgsJSON = decoded.Args
 		return out
+	case EventTypeTaskList:
+		out := TaskListEvent{BaseEvent: base, RawJSON: ev.Content}
+		_ = json.Unmarshal([]byte(ev.Content), &out.Tasks) // empty slice on failure
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -256,6 +285,7 @@ type EventVisitor interface {
 	VisitDone(DoneEvent)
 	VisitReflected(ReflectedEvent)
 	VisitToolCallReady(ToolCallReadyEvent)
+	VisitTaskList(TaskListEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -284,6 +314,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitReflected(p)
 	case ToolCallReadyEvent:
 		v.VisitToolCallReady(p)
+	case TaskListEvent:
+		v.VisitTaskList(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}

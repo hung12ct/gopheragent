@@ -37,6 +37,12 @@ var agentInfo AgentInfo
 // memoryStore is shared across all sessions and keyed internally by sessionKey.
 var memoryStore = builtin.NewInMemoryStore()
 
+// taskStore powers the create_task / update_task / list_tasks tools and is
+// shared across sessions (each call carries a sessionKey for isolation).
+// Mutations stream task_list events to the frontend so the planner panel
+// re-renders with strikethrough on completed entries.
+var taskStore = builtin.NewInMemoryTaskStore()
+
 // planModeDefault is read once from PLAN_MODE env var at startup.
 // When true, every request runs in plan mode regardless of the UI toggle.
 var planModeDefault bool
@@ -260,6 +266,13 @@ func initApp() {
 	catalog.Register(builtin.NewMemoryGetTool(memoryStore))
 	catalog.Register(builtin.NewMemoryDeleteTool(memoryStore))
 	catalog.Register(builtin.NewMemoryListTool(memoryStore))
+
+	// Task tools — drive the planner panel in the frontend. Each create/
+	// update emits a task_list StreamEvent that the UI renders with
+	// strikethrough on completed entries.
+	catalog.Register(builtin.NewCreateTaskTool(taskStore))
+	catalog.Register(builtin.NewUpdateTaskTool(taskStore))
+	catalog.Register(builtin.NewListTasksTool(taskStore))
 
 	// Code interpreter
 	catalog.Register(builtin.NewCodeInterpreterTool())
