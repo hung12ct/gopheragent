@@ -222,6 +222,121 @@ func TestPlanMode_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+// sessionRoutingProviderPM dispatches scripted turns by sessionKey extracted
+// from ctx, so a single AgentLoop can serve multiple sessions in one test.
+type sessionRoutingProviderPM struct {
+	mu      sync.Mutex
+	routes  map[string][]LLMResult
+	cursors map[string]int
+}
+
+func (p *sessionRoutingProviderPM) GenerateStream(ctx context.Context, _ []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
+	sessionKey, _ := ctx.Value(SessionKeyCtx("sessionKey")).(string)
+	p.mu.Lock()
+	turns := p.routes[sessionKey]
+	idx := p.cursors[sessionKey]
+	p.cursors[sessionKey]++
+	p.mu.Unlock()
+	if idx >= len(turns) {
+		return LLMResult{Content: "done"}, nil
+	}
+	r := turns[idx]
+	if len(r.ToolCalls) == 0 {
+		ch <- StreamEvent{Type: "content", Content: r.Content}
+	}
+	return r, nil
+}
+
+// TestPlanMode_MultiSessionLoopIsolatesApproval is the end-to-end proof that
+// the wiring through RunIterationStream uses session-keyed reads. With the
+// pre-fix global flag, Alice's approval would clear plan mode for everyone;
+// Bob's subsequent do_work would slip through unblocked. The assertions
+// here would both fail under the old design.
+func TestPlanMode_MultiSessionLoopIsolatesApproval(t *testing.T) {
+	tool := &recordingTool{name: "do_work", result: `"ok"`}
+	provider := &sessionRoutingProviderPM{
+		routes: map[string][]LLMResult{
+			"alice": {
+				{ToolCalls: []PendingToolCall{{ID: "tp", Name: ExitPlanModeToolName, ArgsJSON: `{"plan":"alice"}`}}},
+				{ToolCalls: []PendingToolCall{{ID: "ta", Name: "do_work", ArgsJSON: `{"who":"alice"}`}}},
+				{Content: "alice done"},
+			},
+			"bob": {
+				{ToolCalls: []PendingToolCall{{ID: "tb", Name: "do_work", ArgsJSON: `{"who":"bob"}`}}},
+				{Content: "bob retried"},
+			},
+		},
+		cursors: map[string]int{},
+	}
+
+	sm := history.NewInMemSessionManager("sys")
+	reg := tools.NewRegistry()
+	reg.Register(tool)
+	loop := NewAgentLoop(sm, reg, provider)
+	loop.SetPlanMode("alice", true)
+	loop.SetPlanMode("bob", true)
+	loop.ConfirmPlan = func(_ context.Context, _ string) bool { return true }
+
+	// Alice runs to completion first — approves plan, then runs do_work.
+	if _, err := loop.RunIteration(context.Background(), "alice", "go"); err != nil {
+		t.Fatalf("alice: %v", err)
+	}
+	// Bob runs after Alice's approval. With the old global flag, Alice's
+	// approval would have cleared plan mode for Bob too, letting his
+	// do_work through. With per-session state, Bob's flag survives.
+	if _, err := loop.RunIteration(context.Background(), "bob", "go"); err != nil {
+		t.Fatalf("bob: %v", err)
+	}
+
+	// Alice's tool ran exactly once with her own args.
+	got := tool.receivedArgs()
+	if len(got) != 1 || !strings.Contains(got[0], "alice") {
+		t.Fatalf("expected exactly one alice tool run, got %v", got)
+	}
+	// Bob's tool call must have been blocked — no invocation with "bob" args.
+	for _, a := range got {
+		if strings.Contains(a, "bob") {
+			t.Fatalf("bob's do_work ran despite plan mode — cross-session leak: %q", a)
+		}
+	}
+	// Bob's blocked tool call must have produced an error tool result.
+	bobHist := sm.GetHistory(context.Background(), "bob")
+	var blocked history.Message
+	for _, m := range bobHist {
+		if m.Role == "tool" && m.ToolCallID == "tb" {
+			blocked = m
+			break
+		}
+	}
+	if blocked.Role == "" || !blocked.IsError || !strings.Contains(blocked.Content, "blocked in plan mode") {
+		t.Fatalf("expected bob's tb to be blocked in plan mode, got: %+v", blocked)
+	}
+	// Plan-mode flags must reflect per-session state post-approval.
+	if loop.IsPlanMode("alice") {
+		t.Fatal("alice should have exited plan mode after approval")
+	}
+	if !loop.IsPlanMode("bob") {
+		t.Fatal("bob's plan mode was cleared by alice's approval — per-session isolation broken")
+	}
+}
+
+// TestClearSession_RemovesPlanMode verifies the cleanup hook for abandoned
+// plan-mode sessions (the leak gap noted in the original review).
+func TestClearSession_RemovesPlanMode(t *testing.T) {
+	al := &AgentLoop{}
+	al.SetPlanMode("ghost", true)
+	if !al.IsPlanMode("ghost") {
+		t.Fatal("setup: ghost should be in plan mode")
+	}
+	al.ClearSession("ghost")
+	if al.IsPlanMode("ghost") {
+		t.Fatal("ClearSession should have wiped ghost's plan-mode entry")
+	}
+	// Idempotent.
+	al.ClearSession("ghost")
+	al.ClearSession("never-existed")
+}
+
 // TestPlanMode_PerSessionIsolation pins the architectural guarantee that
 // plan mode is per-session: approving one session's plan must not leak
 // into another. This is the regression that motivated moving from a

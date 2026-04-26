@@ -157,19 +157,19 @@ type AgentLoop struct {
 	// the syntax yourself or explicitly want to opt out of scheduling.
 	DisableToolChainingHint bool
 
-	// sessionPlanMode tracks per-session plan-mode state. A session whose
-	// entry is absent (or false) is in normal mode; presence with true
-	// means plan mode is active for that session only. Keyed by sessionKey.
+	// sessionPlanMode tracks per-session plan-mode state, keyed by
+	// sessionKey, value bool (true = plan mode active for that session).
+	// Sessions with no entry are in normal mode.
 	//
 	// Per-session storage matters: a single AgentLoop instance is the
 	// canonical pattern for serving N concurrent HTTP sessions, and plan
 	// mode is a property of the user's conversation, not of the loop.
 	// Approving Alice's plan must not exit plan mode for Bob.
 	//
-	// sync.Map is chosen over a mutex+map because writes are rare (one per
-	// session entering/leaving plan mode) and reads are hot (every LLM
-	// iteration and every speculation eligibility check). Use IsPlanMode /
-	// SetPlanMode — never touch the map directly.
+	// sync.Map fits the access pattern: reads are hot (every LLM iteration
+	// and every speculation eligibility check), writes are rare (entering
+	// or leaving plan mode), and keys are disjoint across sessions. The
+	// public surface is IsPlanMode / SetPlanMode / ClearSession.
 	sessionPlanMode sync.Map
 
 	// ConfirmPlan runs when the model calls exit_plan_mode while PlanMode is
@@ -280,9 +280,18 @@ func (al *AgentLoop) OnEvent(h EventHandler) *AgentLoop {
 // IsPlanMode reports whether plan mode is active for sessionKey. Sessions
 // with no entry are treated as normal mode (false). Safe to call
 // concurrently with SetPlanMode and with an in-flight RunIterationStream.
+//
+// Lifecycle: an entry exists from SetPlanMode(key, true) until either
+// SetPlanMode(key, false) or ClearSession(key). Callers that delete a
+// session (e.g. on HTTP disconnect or sub-agent finish) should call
+// ClearSession to avoid orphaning entries for abandoned plan-mode sessions.
 func (al *AgentLoop) IsPlanMode(sessionKey string) bool {
 	v, ok := al.sessionPlanMode.Load(sessionKey)
-	return ok && v.(bool)
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
 }
 
 // SetPlanMode toggles plan mode for sessionKey. Setting false removes the
@@ -296,6 +305,18 @@ func (al *AgentLoop) SetPlanMode(sessionKey string, v bool) {
 	} else {
 		al.sessionPlanMode.Delete(sessionKey)
 	}
+}
+
+// ClearSession removes any per-session state the AgentLoop holds for
+// sessionKey. Today this is just plan-mode state; future per-session fields
+// added to AgentLoop should be cleaned up here too. Idempotent — safe to
+// call on sessions that never entered plan mode.
+//
+// Call this when you delete a session (e.g. SessionManager.DeleteSession,
+// HTTP disconnect, sub-agent finish) so abandoned plan-mode sessions do
+// not orphan map entries.
+func (al *AgentLoop) ClearSession(sessionKey string) {
+	al.sessionPlanMode.Delete(sessionKey)
 }
 
 // emit sends ev to streamChan and fires all registered EventHandlers.
