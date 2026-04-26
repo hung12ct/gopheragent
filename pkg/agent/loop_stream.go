@@ -321,11 +321,30 @@ func (al *AgentLoop) ClearSession(sessionKey string) {
 
 // emit sends ev to streamChan and fires all registered EventHandlers.
 // It must only be called from within the runLogicLoop goroutine.
+//
+// The streamChan send is bare (no ctx select) on purpose: terminal
+// events (errors, done) must reach the consumer for it to know the loop
+// finished. The call-path patterns guarantee a reader — RunIterationStream
+// installs a proxy goroutine that drains internalChan on ctx.Done, and
+// RunIteration drains synchronously — so the bare send never blocks
+// indefinitely.
 func (al *AgentLoop) emit(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, ev StreamEvent) {
 	streamChan <- ev
 	for _, h := range al.EventHandlers {
-		h(ctx, sessionKey, ev)
+		safeCallHandler(h, ctx, sessionKey, ev)
 	}
+}
+
+// safeCallHandler invokes h with panic recovery so a buggy event handler
+// can never take down the agent loop. Recovered panics are logged to
+// stderr and the next handler runs unaffected.
+func safeCallHandler(h EventHandler, ctx context.Context, sessionKey string, ev StreamEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[gopheragent] event handler panicked: %v (session=%q event=%q)", r, sessionKey, ev.Type)
+		}
+	}()
+	h(ctx, sessionKey, ev)
 }
 
 // StreamEvent represents a chunk of data sent via SSE.
@@ -560,7 +579,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					select {
 					case streamChan <- ev:
 						for _, h := range al.EventHandlers {
-							h(ctx, sessionKey, ev)
+							safeCallHandler(h, ctx, sessionKey, ev)
 						}
 					case <-ctx.Done():
 						for range pChan {
@@ -923,7 +942,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						select {
 						case streamChan <- ev:
 							for _, h := range al.EventHandlers {
-								h(ctx, sessionKey, ev)
+								safeCallHandler(h, ctx, sessionKey, ev)
 							}
 						default:
 						}
@@ -932,7 +951,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						select {
 						case streamChan <- ev:
 							for _, h := range al.EventHandlers {
-								h(ctx, sessionKey, ev)
+								safeCallHandler(h, ctx, sessionKey, ev)
 							}
 						default:
 						}
