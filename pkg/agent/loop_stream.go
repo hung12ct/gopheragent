@@ -507,11 +507,6 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 
 		if iteration == al.MaxIters-2 {
 			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "System: Nudging Agent for a soft landing before MaxIters limit is reached."})
-			msgs = append(msgs, history.Message{
-				Role:    "system",
-				Content: "[System] You are approaching the iteration limit. Please wrap up and provide the final answer to the user immediately.",
-			})
-			al.Sessions.SetHistory(ctx, sessionKey, msgs)
 		}
 
 		// speculativeMap carries results for tool calls the drainer kicked
@@ -589,7 +584,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					})
 				}
 			}
-			msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(sessionKey, al.withToolChainingHint(msgs)))
+			msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(sessionKey, al.withToolChainingHint(withSoftLandingHint(iteration, al.MaxIters, msgs))))
 			if al.AutoCacheSystem && len(msgsForLLM) > 0 && msgsForLLM[0].Role == "system" && !msgsForLLM[0].CacheHint {
 				// Copy before stamping: msgsForLLM can alias the input slice
 				// when no upstream hint needed a fresh allocation (DynamicContext
