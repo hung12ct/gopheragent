@@ -380,7 +380,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	if sessionKey == "" {
 		sessionKey = r.RemoteAddr
 	}
-	myAgentApp.PlanMode = planModeDefault || r.URL.Query().Get("plan_mode") == "true"
+	myAgentApp.SetPlanMode(sessionKey, planModeDefault || r.URL.Query().Get("plan_mode") == "true")
 	streamChan := make(chan agent.StreamEvent, 32)
 	registerStream(sessionKey, streamChan)
 	defer unregisterStream(sessionKey)

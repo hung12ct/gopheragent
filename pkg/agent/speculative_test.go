@@ -18,7 +18,7 @@ import (
 func TestShouldSpeculate_DisabledByDefault(t *testing.T) {
 	loop, _ := setup(&scriptProvider{}, &echoTool{name: "echo"})
 	// SpeculativeTools defaults to false
-	if loop.shouldSpeculate("c1", "echo", `{"x":1}`) {
+	if loop.shouldSpeculate("s1", "c1", "echo", `{"x":1}`) {
 		t.Fatal("speculation must stay off until SpeculativeTools is opted in")
 	}
 }
@@ -26,7 +26,7 @@ func TestShouldSpeculate_DisabledByDefault(t *testing.T) {
 func TestShouldSpeculate_OptedIn(t *testing.T) {
 	loop, _ := setup(&scriptProvider{}, &echoTool{name: "echo"})
 	loop.SpeculativeTools = true
-	if !loop.shouldSpeculate("c1", "echo", `{"x":1}`) {
+	if !loop.shouldSpeculate("s1", "c1", "echo", `{"x":1}`) {
 		t.Fatal("expected eligibility for a safe tool with plain args")
 	}
 }
@@ -34,8 +34,8 @@ func TestShouldSpeculate_OptedIn(t *testing.T) {
 func TestShouldSpeculate_PlanModeBlocks(t *testing.T) {
 	loop, _ := setup(&scriptProvider{}, &echoTool{name: "echo"})
 	loop.SpeculativeTools = true
-	loop.PlanMode = true
-	if loop.shouldSpeculate("c1", "echo", `{}`) {
+	loop.SetPlanMode("s1", true)
+	if loop.shouldSpeculate("s1", "c1", "echo", `{}`) {
 		t.Fatal("plan mode must suppress speculation entirely")
 	}
 }
@@ -43,7 +43,7 @@ func TestShouldSpeculate_PlanModeBlocks(t *testing.T) {
 func TestShouldSpeculate_ExitPlanModeSentinel(t *testing.T) {
 	loop, _ := setup(&scriptProvider{})
 	loop.SpeculativeTools = true
-	if loop.shouldSpeculate("c1", ExitPlanModeToolName, `{}`) {
+	if loop.shouldSpeculate("s1", "c1", ExitPlanModeToolName, `{}`) {
 		t.Fatal("exit_plan_mode is a loop-level sentinel and must never be speculated")
 	}
 }
@@ -51,7 +51,7 @@ func TestShouldSpeculate_ExitPlanModeSentinel(t *testing.T) {
 func TestShouldSpeculate_HITLToolBlocks(t *testing.T) {
 	loop, _ := setup(&scriptProvider{}, &echoTool{name: "dangerous", confirm: true})
 	loop.SpeculativeTools = true
-	if loop.shouldSpeculate("c1", "dangerous", `{}`) {
+	if loop.shouldSpeculate("s1", "c1", "dangerous", `{}`) {
 		t.Fatal("HITL-gated tools require human approval before running — no speculation allowed")
 	}
 }
@@ -59,7 +59,7 @@ func TestShouldSpeculate_HITLToolBlocks(t *testing.T) {
 func TestShouldSpeculate_OutputOfReferenceBlocks(t *testing.T) {
 	loop, _ := setup(&scriptProvider{}, &echoTool{name: "echo"})
 	loop.SpeculativeTools = true
-	if loop.shouldSpeculate("c1", "echo", `{"prev":"<output_of:c0.result>"}`) {
+	if loop.shouldSpeculate("s1", "c1", "echo", `{"prev":"<output_of:c0.result>"}`) {
 		t.Fatal("args with <output_of:...> get substituted post-stream — speculating would use unresolved placeholders")
 	}
 }
@@ -67,7 +67,7 @@ func TestShouldSpeculate_OutputOfReferenceBlocks(t *testing.T) {
 func TestShouldSpeculate_UnknownToolBlocks(t *testing.T) {
 	loop, _ := setup(&scriptProvider{}) // no tools registered
 	loop.SpeculativeTools = true
-	if loop.shouldSpeculate("c1", "ghost", `{}`) {
+	if loop.shouldSpeculate("s1", "c1", "ghost", `{}`) {
 		t.Fatal("tools not in the registry cannot be speculated")
 	}
 }

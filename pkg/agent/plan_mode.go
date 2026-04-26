@@ -64,10 +64,10 @@ func withPlanModeTool(reg *tools.Registry) *tools.Registry {
 }
 
 // withPlanModeHint returns msgs augmented with the plan-mode instructions
-// when PlanMode is active. Input slice is never mutated; sentinel check
-// ensures idempotency across retries.
-func (al *AgentLoop) withPlanModeHint(msgs []history.Message) []history.Message {
-	if !al.PlanMode {
+// when sessionKey is in plan mode. Input slice is never mutated; sentinel
+// check ensures idempotency across retries.
+func (al *AgentLoop) withPlanModeHint(sessionKey string, msgs []history.Message) []history.Message {
+	if !al.IsPlanMode(sessionKey) {
 		return msgs
 	}
 	for _, m := range msgs {

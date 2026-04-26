@@ -157,13 +157,20 @@ type AgentLoop struct {
 	// the syntax yourself or explicitly want to opt out of scheduling.
 	DisableToolChainingHint bool
 
-	// PlanMode gates every tool except exit_plan_mode. When true, the loop
-	// injects a plan-mode system hint on each LLM call; any tool call other
-	// than exit_plan_mode is rejected with an error steering the model to
-	// present a plan first. Calling exit_plan_mode invokes ConfirmPlan (or
-	// emits an action_required event if unset); approval clears PlanMode
-	// and normal execution resumes on the next iteration.
-	PlanMode bool
+	// sessionPlanMode tracks per-session plan-mode state. A session whose
+	// entry is absent (or false) is in normal mode; presence with true
+	// means plan mode is active for that session only. Keyed by sessionKey.
+	//
+	// Per-session storage matters: a single AgentLoop instance is the
+	// canonical pattern for serving N concurrent HTTP sessions, and plan
+	// mode is a property of the user's conversation, not of the loop.
+	// Approving Alice's plan must not exit plan mode for Bob.
+	//
+	// sync.Map is chosen over a mutex+map because writes are rare (one per
+	// session entering/leaving plan mode) and reads are hot (every LLM
+	// iteration and every speculation eligibility check). Use IsPlanMode /
+	// SetPlanMode — never touch the map directly.
+	sessionPlanMode sync.Map
 
 	// ConfirmPlan runs when the model calls exit_plan_mode while PlanMode is
 	// true. Returning true approves the plan and clears PlanMode; false
@@ -268,6 +275,27 @@ func NewAgentLoop(sessions SessionManager, registry *tools.Registry, llm LLMProv
 func (al *AgentLoop) OnEvent(h EventHandler) *AgentLoop {
 	al.EventHandlers = append(al.EventHandlers, h)
 	return al
+}
+
+// IsPlanMode reports whether plan mode is active for sessionKey. Sessions
+// with no entry are treated as normal mode (false). Safe to call
+// concurrently with SetPlanMode and with an in-flight RunIterationStream.
+func (al *AgentLoop) IsPlanMode(sessionKey string) bool {
+	v, ok := al.sessionPlanMode.Load(sessionKey)
+	return ok && v.(bool)
+}
+
+// SetPlanMode toggles plan mode for sessionKey. Setting false removes the
+// session's entry, keeping the map small for the common no-plan-mode path
+// (most sessions never enter plan mode). Safe to call concurrently with
+// IsPlanMode and with an in-flight RunIterationStream — useful for UI
+// controls that flip plan mode mid-conversation.
+func (al *AgentLoop) SetPlanMode(sessionKey string, v bool) {
+	if v {
+		al.sessionPlanMode.Store(sessionKey, true)
+	} else {
+		al.sessionPlanMode.Delete(sessionKey)
+	}
 }
 
 // emit sends ev to streamChan and fires all registered EventHandlers.
@@ -508,7 +536,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					// the wave executor will run the tool the normal way.
 					if ev.Type == EventTypeToolCallReady {
 						if p, ok := ev.Payload().(ToolCallReadyEvent); ok {
-							if al.shouldSpeculate(p.ID, p.Name, p.ArgsJSON) {
+							if al.shouldSpeculate(sessionKey, p.ID, p.Name, p.ArgsJSON) {
 								al.spawnSpeculative(ctx, p.ID, p.Name, p.ArgsJSON, &specMu, specMap)
 							}
 						}
@@ -526,7 +554,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 			}()
 			toolsForCall := al.Tools
-			if al.PlanMode {
+			if al.IsPlanMode(sessionKey) {
 				toolsForCall = withPlanModeTool(toolsForCall)
 			}
 			if al.ToolSelector != nil {
@@ -540,7 +568,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					})
 				}
 			}
-			msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(al.withToolChainingHint(msgs)))
+			msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(sessionKey, al.withToolChainingHint(msgs)))
 			if al.AutoCacheSystem && len(msgsForLLM) > 0 && msgsForLLM[0].Role == "system" && !msgsForLLM[0].CacheHint {
 				// Copy before stamping: msgsForLLM can alias the input slice
 				// when no upstream hint needed a fresh allocation (DynamicContext
@@ -736,7 +764,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					if func() bool {
 						hitlMu.Lock()
 						defer hitlMu.Unlock()
-						if !al.PlanMode {
+						if !al.IsPlanMode(sessionKey) {
 							return false
 						}
 						if tCall.Name != ExitPlanModeToolName {
@@ -761,7 +789,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						var result string
 						isErr := false
 						if approved {
-							al.PlanMode = false
+							al.SetPlanMode(sessionKey, false)
 							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan approved — exiting plan mode."})
 							result = `{"approved":true}`
 						} else {

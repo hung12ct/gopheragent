@@ -37,11 +37,11 @@ func newSpeculativeMap() map[string]*speculativeExec {
 // output (via <output_of:...>), or running a tool at all while PlanMode is
 // waiting for user approval are all correctness bugs, not just efficiency
 // ones. When in doubt, skip — the wave executor will run it normally.
-func (al *AgentLoop) shouldSpeculate(id, name, argsJSON string) bool {
+func (al *AgentLoop) shouldSpeculate(sessionKey, id, name, argsJSON string) bool {
 	if !al.SpeculativeTools {
 		return false
 	}
-	if al.PlanMode {
+	if al.IsPlanMode(sessionKey) {
 		return false
 	}
 	if name == ExitPlanModeToolName {
