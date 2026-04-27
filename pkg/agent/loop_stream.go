@@ -787,22 +787,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					}
 
 					if tool.RequiresConfirmation() && permDecision != PermissionAllow {
-						approved := func() bool {
-							ws.hitlMu.Lock()
-							defer ws.hitlMu.Unlock()
-
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "CRITICAL: Tool requires human confirmation."})
-
-							appr := false
-							if al.ConfirmHITL != nil {
-								appr = al.ConfirmHITL(ctx, tCall.Name, tCall.ArgsJSON)
-							} else {
-								payload, _ := json.Marshal(map[string]string{"tool": tCall.Name, "args": tCall.ArgsJSON})
-								al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeActionRequired, Content: string(payload)})
-							}
-							return appr
-						}()
-
+						approved := al.runHITLGate(ctx, sessionKey, streamChan, ws, tCall)
 						if !approved {
 							deniedErr := &HITLDeniedError{ToolName: tCall.Name}
 							ws.recordToolMsg(tCall.ID, history.Message{
