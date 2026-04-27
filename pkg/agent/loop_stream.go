@@ -726,15 +726,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			return
 		}
 
-		assistantMsg := history.Message{Role: "assistant", Content: finalContent}
-		for _, tc := range result.ToolCalls {
-			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, history.ToolCall{
-				ID:        tc.ID,
-				Name:      tc.Name,
-				Arguments: tc.ArgsJSON,
-			})
-		}
-		msgs = append(msgs, assistantMsg)
+		msgs = appendAssistantToolCallMsg(msgs, finalContent, result.ToolCalls)
 		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
 		// Schedule tool calls into dependency waves. When the LLM emits
@@ -1050,23 +1042,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		// Synthesize tool-error results for calls dropped by the per-turn
 		// budget so the drain loop below emits them in their original
 		// position and the model reads a clear reason next turn.
-		for _, tc := range droppedCalls {
-			toolMsgs[tc.ID] = history.Message{
-				Role:       "tool",
-				Content:    fmt.Sprintf("tools: dropped by per-turn tool-call budget (max=%d); retry fewer calls next turn.", al.MaxToolCallsPerTurn),
-				ToolCallID: tc.ID,
-				IsError:    true,
-			}
-		}
+		synthesizeDroppedToolErrors(toolMsgs, droppedCalls, al.MaxToolCallsPerTurn)
 
 		// Append tool results in the LLM's original ToolCall order so the
 		// transcript matches what the model emitted, regardless of which
 		// scheduling wave each call ran in.
-		for _, tc := range result.ToolCalls {
-			if m, ok := toolMsgs[tc.ID]; ok && m.Role != "" {
-				msgs = append(msgs, m)
-			}
-		}
+		msgs = appendToolResultsInOrder(msgs, result.ToolCalls, toolMsgs)
 		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 	}
 

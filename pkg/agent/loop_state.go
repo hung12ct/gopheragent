@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -39,5 +40,48 @@ func newWaveState(capacity int) *waveState {
 	return &waveState{
 		toolMsgs:    make(map[string]history.Message, capacity),
 		resultsByID: make(map[string]string, capacity),
+	}
+}
+
+// appendAssistantToolCallMsg builds the assistant message that records
+// the LLM's tool-call request and appends it to msgs. Pure: the caller
+// supplies content and calls; the function performs no I/O.
+func appendAssistantToolCallMsg(msgs []history.Message, content string, calls []PendingToolCall) []history.Message {
+	m := history.Message{Role: "assistant", Content: content}
+	for _, tc := range calls {
+		m.ToolCalls = append(m.ToolCalls, history.ToolCall{
+			ID:        tc.ID,
+			Name:      tc.Name,
+			Arguments: tc.ArgsJSON,
+		})
+	}
+	return append(msgs, m)
+}
+
+// appendToolResultsInOrder drains toolMsgs in the original LLM call
+// order and appends present results to msgs. Calls with no matching
+// entry are skipped silently.
+func appendToolResultsInOrder(msgs []history.Message, calls []PendingToolCall, toolMsgs map[string]history.Message) []history.Message {
+	for _, tc := range calls {
+		if m, ok := toolMsgs[tc.ID]; ok && m.Role != "" {
+			msgs = append(msgs, m)
+		}
+	}
+	return msgs
+}
+
+// synthesizeDroppedToolErrors writes a tool-error message for each
+// dropped tool call so the drain loop emits them in their original
+// position and the model reads a clear reason next turn. Caller writes
+// directly into the per-wave map; no lock is needed because every wave
+// goroutine has returned by the time this runs.
+func synthesizeDroppedToolErrors(toolMsgs map[string]history.Message, dropped []PendingToolCall, max int) {
+	for _, tc := range dropped {
+		toolMsgs[tc.ID] = history.Message{
+			Role:       "tool",
+			Content:    fmt.Sprintf("tools: dropped by per-turn tool-call budget (max=%d); retry fewer calls next turn.", max),
+			ToolCallID: tc.ID,
+			IsError:    true,
+		}
 	}
 }
