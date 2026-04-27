@@ -3,10 +3,53 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
+
+// executeToolWaves runs the scheduled tool calls in dependency waves
+// using a fresh waveState. Substitution of <output_of:...> references
+// happens just-in-time at the start of each wave; failed substitutions
+// short-circuit with a synthesized tool-error result. A fatal error
+// recorded by any goroutine (e.g. anti-loop detector) breaks out of
+// the wave loop.
+func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, scheduled []PendingToolCall) *waveState {
+	waves, schedErr := ScheduleToolCalls(scheduled)
+	if schedErr != nil {
+		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
+			Type:    "thought",
+			Content: fmt.Sprintf("Tool scheduler: %v — running all calls in one wave.", schedErr),
+		})
+		waves = [][]PendingToolCall{scheduled}
+	}
+
+	ws := newWaveState(len(scheduled))
+	for _, wave := range waves {
+		substitutedWave := substituteWaveArgs(ws, wave, func(toolName string, subErr error) {
+			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
+				Type:    "thought",
+				Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", toolName, subErr),
+			})
+		})
+
+		var wg sync.WaitGroup
+		for _, tc := range substitutedWave {
+			wg.Add(1)
+			go func(tCall PendingToolCall) {
+				defer wg.Done()
+				al.executeToolCall(ctx, st, ws, tCall)
+			}(tc)
+		}
+		wg.Wait()
+
+		if ws.fatalErr != nil {
+			break
+		}
+	}
+	return ws
+}
 
 // executeToolCall is the per-tool goroutine body. The caller spawns it
 // with `go al.executeToolCall(...)`; every return path matches the

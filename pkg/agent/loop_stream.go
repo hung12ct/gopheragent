@@ -697,59 +697,15 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		msgs = appendAssistantToolCallMsg(msgs, finalContent, result.ToolCalls)
 		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
-		// Schedule tool calls into dependency waves. When the LLM emits
-		// <output_of:ID.path> references in ArgsJSON, calls are ordered so
-		// each wave depends only on completed waves; substitution happens
-		// right before a call runs. If scheduling fails (cycle, unknown ref)
-		// we fall back to the legacy behavior of running all calls in
-		// parallel, letting the tools themselves reject bad input.
-		waves, schedErr := ScheduleToolCalls(scheduled)
-		if schedErr != nil {
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{
-				Type:    "thought",
-				Content: fmt.Sprintf("Tool scheduler: %v — running all calls in one wave.", schedErr),
-			})
-			waves = [][]PendingToolCall{scheduled}
+		st := &iterationState{
+			sessionKey: sessionKey,
+			iteration:  iteration,
+			streamChan: streamChan,
+			specMap:    specMap,
+			specMu:     &specMu,
+			tracker:    loopTracker,
 		}
-
-		ws := newWaveState(len(result.ToolCalls))
-
-		for _, wave := range waves {
-			// Substitute <output_of:...> tokens in this wave's args using
-			// results from earlier waves. Resolver reads under the lock to
-			// stay race-free against any residual goroutine writes. Calls
-			// whose substitution fails are short-circuited with a synthesized
-			// tool-error result so the model sees a clear scheduler message
-			// instead of a confusing downstream tool error.
-			substitutedWave := substituteWaveArgs(ws, wave, func(toolName string, subErr error) {
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{
-					Type:    "thought",
-					Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", toolName, subErr),
-				})
-			})
-
-			st := &iterationState{
-				sessionKey: sessionKey,
-				iteration:  iteration,
-				streamChan: streamChan,
-				specMap:    specMap,
-				specMu:     &specMu,
-				tracker:    loopTracker,
-			}
-			var wg sync.WaitGroup
-			for _, tc := range substitutedWave {
-				wg.Add(1)
-				go func(tCall PendingToolCall) {
-					defer wg.Done()
-					al.executeToolCall(ctx, st, ws, tCall)
-				}(tc)
-			}
-			wg.Wait()
-
-			if ws.fatalErr != nil {
-				break
-			}
-		}
+		ws := al.executeToolWaves(ctx, st, scheduled)
 
 		if ws.fatalErr != nil {
 			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
