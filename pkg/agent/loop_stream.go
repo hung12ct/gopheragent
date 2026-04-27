@@ -744,41 +744,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					// Plan-mode gate runs before the tool-registry lookup so
 					// exit_plan_mode can be a loop-level sentinel even when
 					// the caller did not register a concrete tool for it.
-					if func() bool {
-						ws.hitlMu.Lock()
-						defer ws.hitlMu.Unlock()
-						if !al.IsPlanMode(sessionKey) {
-							return false
-						}
-						if tCall.Name != ExitPlanModeToolName {
-							ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: planGateBlockedMessage(tCall.Name), ToolCallID: tCall.ID, IsError: true}, false)
-							return true
-						}
-						var pa struct {
-							Plan string `json:"plan"`
-						}
-						_ = json.Unmarshal([]byte(tCall.ArgsJSON), &pa)
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan proposed — awaiting human approval."})
-						approved := false
-						if al.ConfirmPlan != nil {
-							approved = al.ConfirmPlan(ctx, pa.Plan)
-						} else {
-							payload, _ := json.Marshal(map[string]string{"tool": ExitPlanModeToolName, "plan": pa.Plan})
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeActionRequired, Content: string(payload)})
-						}
-						var result string
-						isErr := false
-						if approved {
-							al.SetPlanMode(sessionKey, false)
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan approved — exiting plan mode."})
-							result = planApprovedJSON()
-						} else {
-							result = planDeniedJSON()
-							isErr = true
-						}
-						ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: result, ToolCallID: tCall.ID, IsError: isErr}, !isErr)
-						return true
-					}() {
+					if al.runPlanModeGate(ctx, sessionKey, streamChan, ws, tCall) {
 						return
 					}
 
