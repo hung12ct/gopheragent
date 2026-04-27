@@ -502,31 +502,8 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			return
 		}
 
-		// Token budget enforcement
-		if al.MaxTokenBudget > 0 {
-			estToks := estimateTokens(msgs)
-			thresh85 := int(float64(al.MaxTokenBudget) * budgetWarnRatio)
-			
-			if estToks > thresh85 && estToks <= al.MaxTokenBudget {
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh85)})
-				msgs = TruncateToolArguments(msgs)
-			}
-			
-			if estimateTokens(msgs) > al.MaxTokenBudget {
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf(
-					"Token budget exceeded (~%d est. tokens). Applying emergency context pruning.", estimateTokens(msgs),
-				)})
-				msgs = PruneContextMessages(msgs, 1)
-			} else {
-				msgs = PruneContextMessages(msgs, 3)
-			}
-		} else {
-			msgs = PruneContextMessages(msgs, 3)
-		}
-
-		if iteration == al.MaxIters-softLandingMargin {
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "System: Nudging Agent for a soft landing before MaxIters limit is reached."})
-		}
+		msgs = al.enforceTokenBudget(ctx, sessionKey, streamChan, msgs)
+		al.emitSoftLandingNudge(ctx, sessionKey, streamChan, iteration)
 
 		// speculativeMap carries results for tool calls the drainer kicked
 		// off mid-stream. Allocated fresh per iteration so retries never
@@ -677,16 +654,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		// transcript matches what the model emitted, and each dropped call
 		// gets a synthesized error tool result below so the model learns
 		// why they did not run.
-		var droppedCalls []PendingToolCall
-		scheduled := result.ToolCalls
-		if al.MaxToolCallsPerTurn > 0 && len(result.ToolCalls) > al.MaxToolCallsPerTurn {
-			droppedCalls = result.ToolCalls[al.MaxToolCallsPerTurn:]
-			scheduled = result.ToolCalls[:al.MaxToolCallsPerTurn]
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{
-				Type:    "thought",
-				Content: fmt.Sprintf("Tool-call budget exceeded: executing first %d of %d; dropping %d.", al.MaxToolCallsPerTurn, len(result.ToolCalls), len(droppedCalls)),
-			})
-		}
+		scheduled, droppedCalls := al.applyToolCallBudget(ctx, sessionKey, streamChan, result.ToolCalls)
 
 		if len(result.ToolCalls) == 0 {
 			msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
