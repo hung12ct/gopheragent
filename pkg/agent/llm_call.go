@@ -4,10 +4,78 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
+
+// callLLMWithRetry runs callLLM and retries transient errors per the
+// configured RetryConfig. Retries are skipped once content has started
+// streaming (consumer has already seen partial output). Returns the
+// final content, result, and (possibly retry-exhausted) error.
+func (al *AgentLoop) callLLMWithRetry(ctx context.Context, st *iterationState, msgs []history.Message) (string, LLMResult, error) {
+	finalContent, result, _, err := al.callLLM(ctx, st, msgs)
+	if err == nil || al.Retry == nil || !isRetryable(err) {
+		return finalContent, result, err
+	}
+	for attempt := 0; attempt < al.Retry.MaxRetries; attempt++ {
+		delay := al.Retry.delay(attempt)
+		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
+			Type:    "thought",
+			Content: fmt.Sprintf("LLM error (%v). Retrying in %s (attempt %d/%d)...", err, delay, attempt+1, al.Retry.MaxRetries),
+		})
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return finalContent, result, ctx.Err()
+		}
+		var retryContent string
+		var contentEmitted bool
+		retryContent, result, contentEmitted, err = al.callLLM(ctx, st, msgs)
+		if retryContent != "" {
+			finalContent = retryContent
+		}
+		if err == nil || contentEmitted || !isRetryable(err) {
+			break
+		}
+	}
+	return finalContent, result, err
+}
+
+// handleFinalAnswer appends the assistant's final-answer message,
+// runs the optional Reflect rounds, emits Done, and persists session
+// history. Caller must return immediately after this.
+func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, msgs []history.Message, finalContent string) {
+	msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
+	if al.Reflect > 0 && finalContent != "" {
+		for r := 1; r <= al.Reflect; r++ {
+			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
+				Type:    "thought",
+				Content: fmt.Sprintf("Self-critique pass %d/%d...", r, al.Reflect),
+			})
+			revised, rerr := al.reflectOnce(ctx, st.sessionKey, msgs, r, st.streamChan)
+			if rerr != nil {
+				al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
+					Type:    "thought",
+					Content: fmt.Sprintf("Self-critique aborted: %v", rerr),
+				})
+				break
+			}
+			if revised == "" || revised == finalContent {
+				continue
+			}
+			finalContent = revised
+			msgs[len(msgs)-1].Content = finalContent
+			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
+				Type:    EventTypeReflected,
+				Content: reflectedEventContent(finalContent, r),
+			})
+		}
+	}
+	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeDone})
+	al.saveSession(ctx, st.sessionKey, msgs)
+}
 
 // callLLM runs one LLM stream attempt. Returns the accumulated content,
 // the structured LLMResult, whether any content event was emitted (used

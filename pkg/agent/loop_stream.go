@@ -7,7 +7,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/cache"
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -495,131 +494,9 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
 	for iteration := 0; iteration < al.MaxIters; iteration++ {
-		if ctx.Err() != nil {
-			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrContextCancelled, ctx.Err())))
-			al.saveSession(ctx, sessionKey, msgs)
+		if al.runIteration(ctx, sessionKey, streamChan, &msgs, iteration, loopTracker) {
 			return
 		}
-
-		msgs = al.enforceTokenBudget(ctx, sessionKey, streamChan, msgs)
-		al.emitSoftLandingNudge(ctx, sessionKey, streamChan, iteration)
-
-		// specMap carries results for tool calls the drainer kicked off
-		// mid-stream. Allocated fresh per iteration so retries never see
-		// stale entries from an earlier failed attempt.
-		specMap := newSpeculativeMap()
-		var specMu sync.Mutex
-
-		st := &iterationState{
-			sessionKey: sessionKey,
-			iteration:  iteration,
-			streamChan: streamChan,
-			specMap:    specMap,
-			specMu:     &specMu,
-			tracker:    loopTracker,
-		}
-
-		finalContent, result, _, err := al.callLLM(ctx, st, msgs)
-
-		// Retry on transient errors — only when no content has been streamed yet.
-		if err != nil && al.Retry != nil && isRetryable(err) {
-			for attempt := 0; attempt < al.Retry.MaxRetries; attempt++ {
-				delay := al.Retry.delay(attempt)
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{
-					Type:    "thought",
-					Content: fmt.Sprintf("LLM error (%v). Retrying in %s (attempt %d/%d)...", err, delay, attempt+1, al.Retry.MaxRetries),
-				})
-				select {
-				case <-time.After(delay):
-				case <-ctx.Done():
-					err = ctx.Err()
-					goto doneRetry
-				}
-				var retryContent string
-				var contentEmitted bool
-				retryContent, result, contentEmitted, err = al.callLLM(ctx, st, msgs)
-				if retryContent != "" {
-					finalContent = retryContent
-				}
-				if err == nil || contentEmitted || !isRetryable(err) {
-					break
-				}
-			}
-		}
-	doneRetry:
-
-		if err != nil {
-			al.emit(ctx, sessionKey, streamChan, errEvent(&LLMFailureError{Cause: err}))
-			al.saveSession(ctx, sessionKey, msgs)
-			return
-		}
-
-		// Per-turn tool-call budget. Truncate-and-inform: first N schedule
-		// normally, dropped IDs remain on the assistant message so the
-		// transcript matches what the model emitted, and each dropped call
-		// gets a synthesized error tool result below so the model learns
-		// why they did not run.
-		scheduled, droppedCalls := al.applyToolCallBudget(ctx, sessionKey, streamChan, result.ToolCalls)
-
-		if len(result.ToolCalls) == 0 {
-			msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
-
-			// Optional serial self-critique. Runs only on the terminal branch
-			// so we never reflect over partial states where the model still
-			// owes tool calls. Errors inside a round are surfaced as thought
-			// events and break out of the loop so the original answer stands.
-			if al.Reflect > 0 && finalContent != "" {
-				for r := 1; r <= al.Reflect; r++ {
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{
-						Type:    "thought",
-						Content: fmt.Sprintf("Self-critique pass %d/%d...", r, al.Reflect),
-					})
-					revised, rerr := al.reflectOnce(ctx, sessionKey, msgs, r, streamChan)
-					if rerr != nil {
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{
-							Type:    "thought",
-							Content: fmt.Sprintf("Self-critique aborted: %v", rerr),
-						})
-						break
-					}
-					if revised == "" || revised == finalContent {
-						continue
-					}
-					finalContent = revised
-					msgs[len(msgs)-1].Content = finalContent
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{
-						Type:    EventTypeReflected,
-						Content: reflectedEventContent(finalContent, r),
-					})
-				}
-			}
-
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeDone})
-			al.saveSession(ctx, sessionKey, msgs)
-			return
-		}
-
-		msgs = appendAssistantToolCallMsg(msgs, finalContent, result.ToolCalls)
-		al.Sessions.SetHistory(ctx, sessionKey, msgs)
-
-		ws := al.executeToolWaves(ctx, st, scheduled)
-
-		if ws.fatalErr != nil {
-			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
-			al.saveSession(ctx, sessionKey, msgs)
-			return
-		}
-
-		// Synthesize tool-error results for calls dropped by the per-turn
-		// budget so the drain loop below emits them in their original
-		// position and the model reads a clear reason next turn.
-		synthesizeDroppedToolErrors(ws.toolMsgs, droppedCalls, al.MaxToolCallsPerTurn)
-
-		// Append tool results in the LLM's original ToolCall order so the
-		// transcript matches what the model emitted, regardless of which
-		// scheduling wave each call ran in.
-		msgs = appendToolResultsInOrder(msgs, result.ToolCalls, ws.toolMsgs)
-		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 	}
 
 	al.emit(ctx, sessionKey, streamChan, errEvent(ErrMaxIterations))
