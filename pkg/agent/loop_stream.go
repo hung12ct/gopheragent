@@ -721,31 +721,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			// whose substitution fails are short-circuited with a synthesized
 			// tool-error result so the model sees a clear scheduler message
 			// instead of a confusing downstream tool error.
-			substitutedWave := make([]PendingToolCall, 0, len(wave))
-			for _, tc := range wave {
-				ws.completedMu.Lock()
-				resolver := func(id string) (string, bool) {
-					r, ok := ws.resultsByID[id]
-					return r, ok
-				}
-				newArgs, subErr := Substitute(tc.ArgsJSON, resolver)
-				ws.completedMu.Unlock()
-				if subErr != nil {
-					ws.recordToolMsg(tc.ID, history.Message{
-						Role:       "tool",
-						Content:    substitutionFailedMessage(tc.Name, subErr),
-						ToolCallID: tc.ID,
-						IsError:    true,
-					}, false)
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{
-						Type:    "thought",
-						Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", tc.Name, subErr),
-					})
-					continue
-				}
-				tc.ArgsJSON = newArgs
-				substitutedWave = append(substitutedWave, tc)
-			}
+			substitutedWave := substituteWaveArgs(ws, wave, func(toolName string, subErr error) {
+				al.emit(ctx, sessionKey, streamChan, StreamEvent{
+					Type:    "thought",
+					Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", toolName, subErr),
+				})
+			})
 
 			var wg sync.WaitGroup
 			for _, tc := range substitutedWave {

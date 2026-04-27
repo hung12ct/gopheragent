@@ -67,6 +67,37 @@ func (ws *waveState) setFatal(err error) {
 	ws.fatalMu.Unlock()
 }
 
+// substituteWaveArgs resolves <output_of:...> references in each call's
+// args using results from earlier waves. Calls whose substitution fails
+// are short-circuited with a synthesized tool-error result and excluded
+// from the returned slice. emitNote is a callback for the per-failure
+// thought event so this function stays decoupled from the agent loop.
+func substituteWaveArgs(ws *waveState, wave []PendingToolCall, emitNote func(toolName string, err error)) []PendingToolCall {
+	out := make([]PendingToolCall, 0, len(wave))
+	for _, tc := range wave {
+		ws.completedMu.Lock()
+		resolver := func(id string) (string, bool) {
+			r, ok := ws.resultsByID[id]
+			return r, ok
+		}
+		newArgs, subErr := Substitute(tc.ArgsJSON, resolver)
+		ws.completedMu.Unlock()
+		if subErr != nil {
+			ws.recordToolMsg(tc.ID, history.Message{
+				Role:       "tool",
+				Content:    substitutionFailedMessage(tc.Name, subErr),
+				ToolCallID: tc.ID,
+				IsError:    true,
+			}, false)
+			emitNote(tc.Name, subErr)
+			continue
+		}
+		tc.ArgsJSON = newArgs
+		out = append(out, tc)
+	}
+	return out
+}
+
 // appendAssistantToolCallMsg builds the assistant message that records
 // the LLM's tool-call request and appends it to msgs. Pure: the caller
 // supplies content and calls; the function performs no I/O.
