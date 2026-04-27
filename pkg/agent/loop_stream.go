@@ -3,7 +3,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -505,91 +504,22 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		msgs = al.enforceTokenBudget(ctx, sessionKey, streamChan, msgs)
 		al.emitSoftLandingNudge(ctx, sessionKey, streamChan, iteration)
 
-		// speculativeMap carries results for tool calls the drainer kicked
-		// off mid-stream. Allocated fresh per iteration so retries never
-		// see stale entries from an earlier failed attempt.
+		// specMap carries results for tool calls the drainer kicked off
+		// mid-stream. Allocated fresh per iteration so retries never see
+		// stale entries from an earlier failed attempt.
 		specMap := newSpeculativeMap()
 		var specMu sync.Mutex
 
-		// callLLM taps a fresh providerChan, forwards events to streamChan, and
-		// accumulates content. Returns (finalContent, result, contentWasEmitted, err).
-		// Retry is safe only when contentWasEmitted == false.
-		callLLM := func() (string, LLMResult, bool, error) {
-			// Reset speculation state at the start of each attempt so a
-			// retry's map never mixes with prior-attempt speculations.
-			// Cancel each orphaned ctx so its tool can abort early instead
-			// of running to completion with results no one will read.
-			specMu.Lock()
-			for k, sm := range specMap {
-				sm.cancel()
-				delete(specMap, k)
-			}
-			specMu.Unlock()
-			// BeforeLLMHooks: any non-nil error aborts this call (no retry).
-			for _, h := range al.BeforeLLMHooks {
-				if h == nil {
-					continue
-				}
-				if err := h(ctx, sessionKey, estimateTokens(msgs)); err != nil {
-					return "", LLMResult{}, false, err
-				}
-			}
-
-			pChan := make(chan StreamEvent, llmProviderBuffer)
-			var buf strings.Builder
-			var emitted bool
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				for ev := range pChan {
-					if ev.Type == "content" {
-						buf.WriteString(ev.Content)
-						emitted = true
-					}
-					// Kick off safe tool calls the moment the provider has a
-					// complete invocation. Errors in eligibility are silent —
-					// the wave executor will run the tool the normal way.
-					if ev.Type == EventTypeToolCallReady {
-						if p, ok := ev.Payload().(ToolCallReadyEvent); ok {
-							if al.shouldSpeculate(sessionKey, p.ID, p.Name, p.ArgsJSON) {
-								al.spawnSpeculative(ctx, p.ID, p.Name, p.ArgsJSON, &specMu, specMap)
-							}
-						}
-					}
-					select {
-					case streamChan <- ev:
-						for _, h := range al.EventHandlers {
-							safeCallHandler(h, ctx, sessionKey, ev)
-						}
-					case <-ctx.Done():
-						for range pChan {
-						}
-						return
-					}
-				}
-			}()
-			toolsForCall := al.selectToolsForCall(ctx, sessionKey, streamChan, msgs)
-			msgsForLLM := al.buildMsgsForLLM(ctx, sessionKey, iteration, msgs)
-			llmCtx := ctx
-			if al.ThinkingBudget > 0 {
-				llmCtx = WithThinkingBudget(ctx, al.ThinkingBudget)
-			}
-			res, err := al.LLM.GenerateStream(llmCtx, msgsForLLM, toolsForCall, pChan)
-			close(pChan)
-			<-done
-			content := buf.String()
-			if content == "" {
-				content = res.Content
-			}
-			// Emit a usage event when the provider reported token accounting.
-			if err == nil && res.Usage.TotalTokens > 0 {
-				payload, _ := json.Marshal(res.Usage)
-				al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeUsage, Content: string(payload)})
-			}
-			return content, res, emitted, err
+		st := &iterationState{
+			sessionKey: sessionKey,
+			iteration:  iteration,
+			streamChan: streamChan,
+			specMap:    specMap,
+			specMu:     &specMu,
+			tracker:    loopTracker,
 		}
 
-		finalContent, result, _, err := callLLM()
+		finalContent, result, _, err := al.callLLM(ctx, st, msgs)
 
 		// Retry on transient errors — only when no content has been streamed yet.
 		if err != nil && al.Retry != nil && isRetryable(err) {
@@ -607,7 +537,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				}
 				var retryContent string
 				var contentEmitted bool
-				retryContent, result, contentEmitted, err = callLLM()
+				retryContent, result, contentEmitted, err = al.callLLM(ctx, st, msgs)
 				if retryContent != "" {
 					finalContent = retryContent
 				}
@@ -672,14 +602,6 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		msgs = appendAssistantToolCallMsg(msgs, finalContent, result.ToolCalls)
 		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
-		st := &iterationState{
-			sessionKey: sessionKey,
-			iteration:  iteration,
-			streamChan: streamChan,
-			specMap:    specMap,
-			specMu:     &specMu,
-			tracker:    loopTracker,
-		}
 		ws := al.executeToolWaves(ctx, st, scheduled)
 
 		if ws.fatalErr != nil {
