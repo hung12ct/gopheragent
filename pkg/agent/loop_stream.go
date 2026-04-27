@@ -568,33 +568,8 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					}
 				}
 			}()
-			toolsForCall := al.Tools
-			if al.IsPlanMode(sessionKey) {
-				toolsForCall = withPlanModeTool(toolsForCall)
-			}
-			if al.ToolSelector != nil {
-				query := latestUserMessage(msgs)
-				if filtered, selErr := al.ToolSelector.SelectRegistry(ctx, query); selErr == nil && filtered != nil {
-					toolsForCall = filtered
-				} else if selErr != nil {
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{
-						Type:    "thought",
-						Content: fmt.Sprintf("Tool selector error, falling back to full registry: %v", selErr),
-					})
-				}
-			}
-			msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(sessionKey, al.withToolChainingHint(withSoftLandingHint(iteration, al.MaxIters, msgs))))
-			if al.AutoCacheSystem && len(msgsForLLM) > 0 && msgsForLLM[0].Role == "system" && !msgsForLLM[0].CacheHint {
-				// Copy before stamping: msgsForLLM can alias the input slice
-				// when no upstream hint needed a fresh allocation (DynamicContext
-				// nil + plan-mode off + tool-chaining hint inactive). Mutating
-				// the alias would leak CacheHint into the caller's session-
-				// loaded slice.
-				stamped := make([]history.Message, len(msgsForLLM))
-				copy(stamped, msgsForLLM)
-				stamped[0].CacheHint = true
-				msgsForLLM = stamped
-			}
+			toolsForCall := al.selectToolsForCall(ctx, sessionKey, streamChan, msgs)
+			msgsForLLM := al.buildMsgsForLLM(ctx, sessionKey, iteration, msgs)
 			llmCtx := ctx
 			if al.ThinkingBudget > 0 {
 				llmCtx = WithThinkingBudget(ctx, al.ThinkingBudget)
