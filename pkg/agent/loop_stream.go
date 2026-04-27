@@ -728,170 +728,20 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				})
 			})
 
+			st := &iterationState{
+				sessionKey: sessionKey,
+				iteration:  iteration,
+				streamChan: streamChan,
+				specMap:    specMap,
+				specMu:     &specMu,
+				tracker:    loopTracker,
+			}
 			var wg sync.WaitGroup
 			for _, tc := range substitutedWave {
 				wg.Add(1)
 				go func(tCall PendingToolCall) {
 					defer wg.Done()
-
-					ws.fatalMu.Lock()
-					hasFatal := ws.fatalErr != nil
-					ws.fatalMu.Unlock()
-					if hasFatal {
-						return
-					}
-
-					// Plan-mode gate runs before the tool-registry lookup so
-					// exit_plan_mode can be a loop-level sentinel even when
-					// the caller did not register a concrete tool for it.
-					if al.runPlanModeGate(ctx, sessionKey, streamChan, ws, tCall) {
-						return
-					}
-
-					tool, ok := al.Tools.Get(tCall.Name)
-					if !ok {
-						toolErr := &ToolNotFoundError{ToolName: tCall.Name}
-						al.emit(ctx, sessionKey, streamChan, errEvent(toolErr))
-						ws.recordToolMsg(tCall.ID, history.Message{
-							Role:       "tool",
-							Content:    toolErr.Error(),
-							ToolCallID: tCall.ID,
-							IsError:    true,
-						}, false)
-						return
-					}
-
-					// Consult the permission policy before HITL. Allow bypasses
-					// RequiresConfirmation(); Deny short-circuits even for tools
-					// that would otherwise run without a prompt; Prompt falls
-					// through to the existing HITL flow.
-					permDecision := PermissionPrompt
-					if al.Permissions != nil {
-						permDecision = al.Permissions.Check(ctx, tCall.Name, tCall.ArgsJSON)
-					}
-					if permDecision == PermissionAllow && tool.RequiresConfirmation() {
-						// Make it visible in the transcript that a HITL-gated
-						// tool was auto-approved by policy rather than a human.
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy auto-approved %s (bypassing HITL).", tCall.Name)})
-					}
-					if permDecision == PermissionDeny {
-						deniedErr := &PermissionDeniedError{ToolName: tCall.Name}
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)})
-						ws.recordToolMsg(tCall.ID, history.Message{
-							Role:       "tool",
-							Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
-							ToolCallID: tCall.ID,
-							IsError:    true,
-						}, false)
-						return
-					}
-
-					if tool.RequiresConfirmation() && permDecision != PermissionAllow {
-						approved := al.runHITLGate(ctx, sessionKey, streamChan, ws, tCall)
-						if !approved {
-							deniedErr := &HITLDeniedError{ToolName: tCall.Name}
-							ws.recordToolMsg(tCall.ID, history.Message{
-								Role:       "tool",
-								Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
-								ToolCallID: tCall.ID,
-								IsError:    true,
-							}, false)
-							return
-						}
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Human APPROVED tool execution."})
-					}
-
-					cacheKey := toolCacheKey(tCall.Name, tCall.ArgsJSON)
-					cacheOK := false
-					if al.Cache != nil {
-						if c, ok := tool.(tools.Cacheable); ok && c.Cacheable() {
-							cacheOK = true
-						}
-					}
-
-					al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeToolCall, Content: fmt.Sprintf("Executing: %s", tCall.Name)})
-
-					if cacheOK {
-						if cached, hit := al.Cache.Get(cacheKey); hit {
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
-							ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}, true)
-							return
-						}
-					}
-
-					toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
-						ev := StreamEvent{Type: EventTypeToolProgress, Content: msg}
-						select {
-						case streamChan <- ev:
-							for _, h := range al.EventHandlers {
-								safeCallHandler(h, ctx, sessionKey, ev)
-							}
-						default:
-						}
-					})
-					toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
-						select {
-						case streamChan <- ev:
-							for _, h := range al.EventHandlers {
-								safeCallHandler(h, ctx, sessionKey, ev)
-							}
-						default:
-						}
-					})
-					// If the drainer speculatively started this call mid-stream,
-					// block on its result rather than re-executing. The
-					// speculation is always for the exact argsJSON we have now
-					// because shouldSpeculate refuses to speculate anything
-					// that could later be rewritten (<output_of:...> refs).
-					specMu.Lock()
-					sm, speculated := specMap[tCall.ID]
-					specMu.Unlock()
-					var toolResult string
-					var execErr error
-					if speculated {
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)})
-						toolResult, execErr = awaitSpeculative(toolCtx, sm)
-					} else {
-						toolResult, execErr = tool.Execute(toolCtx, tCall.ArgsJSON)
-					}
-					content := toolResult
-					isToolErr := execErr != nil
-					if isToolErr {
-						content = al.formatToolError(ToolErrorContext{
-							ToolName:  tCall.Name,
-							ArgsJSON:  tCall.ArgsJSON,
-							Iteration: iteration,
-							Cause:     execErr,
-						})
-					}
-
-					if !isToolErr {
-						if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
-							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeContent, Content: "\n\n" + content + "\n\n"})
-						}
-					}
-
-					if cacheOK && !isToolErr {
-						al.Cache.Put(cacheKey, content)
-					}
-
-					loopTracker.AddCall(tCall.Name, tCall.ArgsJSON, content)
-					warnMessage, loopErr := loopTracker.Detect()
-					if loopErr != nil {
-						ws.setFatal(loopErr)
-						return
-					}
-					if warnMessage != "" {
-						content += "\n\n" + warnMessage
-						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "System inserted an anti-loop warning into context window."})
-					}
-
-					ws.recordToolMsg(tCall.ID, history.Message{
-						Role:       "tool",
-						Content:    content,
-						ToolCallID: tCall.ID,
-						IsError:    isToolErr,
-					}, !isToolErr)
+					al.executeToolCall(ctx, st, ws, tCall)
 				}(tc)
 			}
 			wg.Wait()
