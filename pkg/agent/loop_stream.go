@@ -712,12 +712,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			waves = [][]PendingToolCall{scheduled}
 		}
 
-		toolMsgs := make(map[string]history.Message, len(result.ToolCalls))
-		resultsByID := make(map[string]string, len(result.ToolCalls))
-		var completedMu sync.Mutex
-		var fatalErr error
-		var fatalMu sync.Mutex
-		var hitlMu sync.Mutex
+		ws := newWaveState(len(result.ToolCalls))
 
 		for _, wave := range waves {
 			// Substitute <output_of:...> tokens in this wave's args using
@@ -728,22 +723,20 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			// instead of a confusing downstream tool error.
 			substitutedWave := make([]PendingToolCall, 0, len(wave))
 			for _, tc := range wave {
-				completedMu.Lock()
+				ws.completedMu.Lock()
 				resolver := func(id string) (string, bool) {
-					r, ok := resultsByID[id]
+					r, ok := ws.resultsByID[id]
 					return r, ok
 				}
 				newArgs, subErr := Substitute(tc.ArgsJSON, resolver)
-				completedMu.Unlock()
+				ws.completedMu.Unlock()
 				if subErr != nil {
-					completedMu.Lock()
-					toolMsgs[tc.ID] = history.Message{
+					ws.recordToolMsg(tc.ID, history.Message{
 						Role:       "tool",
 						Content:    substitutionFailedMessage(tc.Name, subErr),
 						ToolCallID: tc.ID,
 						IsError:    true,
-					}
-					completedMu.Unlock()
+					}, false)
 					al.emit(ctx, sessionKey, streamChan, StreamEvent{
 						Type:    "thought",
 						Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", tc.Name, subErr),
@@ -760,9 +753,9 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 				go func(tCall PendingToolCall) {
 					defer wg.Done()
 
-					fatalMu.Lock()
-					hasFatal := fatalErr != nil
-					fatalMu.Unlock()
+					ws.fatalMu.Lock()
+					hasFatal := ws.fatalErr != nil
+					ws.fatalMu.Unlock()
 					if hasFatal {
 						return
 					}
@@ -771,15 +764,13 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					// exit_plan_mode can be a loop-level sentinel even when
 					// the caller did not register a concrete tool for it.
 					if func() bool {
-						hitlMu.Lock()
-						defer hitlMu.Unlock()
+						ws.hitlMu.Lock()
+						defer ws.hitlMu.Unlock()
 						if !al.IsPlanMode(sessionKey) {
 							return false
 						}
 						if tCall.Name != ExitPlanModeToolName {
-							completedMu.Lock()
-							toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: planGateBlockedMessage(tCall.Name), ToolCallID: tCall.ID, IsError: true}
-							completedMu.Unlock()
+							ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: planGateBlockedMessage(tCall.Name), ToolCallID: tCall.ID, IsError: true}, false)
 							return true
 						}
 						var pa struct {
@@ -804,12 +795,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 							result = planDeniedJSON()
 							isErr = true
 						}
-						completedMu.Lock()
-						toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: result, ToolCallID: tCall.ID, IsError: isErr}
-						if !isErr {
-							resultsByID[tCall.ID] = result
-						}
-						completedMu.Unlock()
+						ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: result, ToolCallID: tCall.ID, IsError: isErr}, !isErr)
 						return true
 					}() {
 						return
@@ -819,14 +805,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					if !ok {
 						toolErr := &ToolNotFoundError{ToolName: tCall.Name}
 						al.emit(ctx, sessionKey, streamChan, errEvent(toolErr))
-						completedMu.Lock()
-						toolMsgs[tCall.ID] = history.Message{
+						ws.recordToolMsg(tCall.ID, history.Message{
 							Role:       "tool",
 							Content:    toolErr.Error(),
 							ToolCallID: tCall.ID,
 							IsError:    true,
-						}
-						completedMu.Unlock()
+						}, false)
 						return
 					}
 
@@ -846,21 +830,19 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					if permDecision == PermissionDeny {
 						deniedErr := &PermissionDeniedError{ToolName: tCall.Name}
 						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)})
-						completedMu.Lock()
-						toolMsgs[tCall.ID] = history.Message{
+						ws.recordToolMsg(tCall.ID, history.Message{
 							Role:       "tool",
 							Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
 							ToolCallID: tCall.ID,
 							IsError:    true,
-						}
-						completedMu.Unlock()
+						}, false)
 						return
 					}
 
 					if tool.RequiresConfirmation() && permDecision != PermissionAllow {
 						approved := func() bool {
-							hitlMu.Lock()
-							defer hitlMu.Unlock()
+							ws.hitlMu.Lock()
+							defer ws.hitlMu.Unlock()
 
 							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "CRITICAL: Tool requires human confirmation."})
 
@@ -876,14 +858,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 
 						if !approved {
 							deniedErr := &HITLDeniedError{ToolName: tCall.Name}
-							completedMu.Lock()
-							toolMsgs[tCall.ID] = history.Message{
+							ws.recordToolMsg(tCall.ID, history.Message{
 								Role:       "tool",
 								Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
 								ToolCallID: tCall.ID,
 								IsError:    true,
-							}
-							completedMu.Unlock()
+							}, false)
 							return
 						}
 						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Human APPROVED tool execution."})
@@ -902,10 +882,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					if cacheOK {
 						if cached, hit := al.Cache.Get(cacheKey); hit {
 							al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
-							completedMu.Lock()
-							toolMsgs[tCall.ID] = history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}
-							resultsByID[tCall.ID] = cached
-							completedMu.Unlock()
+							ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}, true)
 							return
 						}
 					}
@@ -969,11 +946,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 					loopTracker.AddCall(tCall.Name, tCall.ArgsJSON, content)
 					warnMessage, loopErr := loopTracker.Detect()
 					if loopErr != nil {
-						fatalMu.Lock()
-						if fatalErr == nil {
-							fatalErr = loopErr
-						}
-						fatalMu.Unlock()
+						ws.setFatal(loopErr)
 						return
 					}
 					if warnMessage != "" {
@@ -981,28 +954,23 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 						al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "System inserted an anti-loop warning into context window."})
 					}
 
-					completedMu.Lock()
-					toolMsgs[tCall.ID] = history.Message{
+					ws.recordToolMsg(tCall.ID, history.Message{
 						Role:       "tool",
 						Content:    content,
 						ToolCallID: tCall.ID,
 						IsError:    isToolErr,
-					}
-					if !isToolErr {
-						resultsByID[tCall.ID] = content
-					}
-					completedMu.Unlock()
+					}, !isToolErr)
 				}(tc)
 			}
 			wg.Wait()
 
-			if fatalErr != nil {
+			if ws.fatalErr != nil {
 				break
 			}
 		}
 
-		if fatalErr != nil {
-			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, fatalErr)))
+		if ws.fatalErr != nil {
+			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
 			al.saveSession(ctx, sessionKey, msgs)
 			return
 		}
@@ -1010,12 +978,12 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		// Synthesize tool-error results for calls dropped by the per-turn
 		// budget so the drain loop below emits them in their original
 		// position and the model reads a clear reason next turn.
-		synthesizeDroppedToolErrors(toolMsgs, droppedCalls, al.MaxToolCallsPerTurn)
+		synthesizeDroppedToolErrors(ws.toolMsgs, droppedCalls, al.MaxToolCallsPerTurn)
 
 		// Append tool results in the LLM's original ToolCall order so the
 		// transcript matches what the model emitted, regardless of which
 		// scheduling wave each call ran in.
-		msgs = appendToolResultsInOrder(msgs, result.ToolCalls, toolMsgs)
+		msgs = appendToolResultsInOrder(msgs, result.ToolCalls, ws.toolMsgs)
 		al.Sessions.SetHistory(ctx, sessionKey, msgs)
 	}
 

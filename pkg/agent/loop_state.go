@@ -43,6 +43,30 @@ func newWaveState(capacity int) *waveState {
 	}
 }
 
+// recordToolMsg writes a tool result message under completedMu and,
+// when isResult is true, also publishes the content to resultsByID so
+// downstream <output_of:...> substitutions can find it. Centralising
+// this triple removes a class of "did I forget to update resultsByID"
+// bugs at the call sites.
+func (ws *waveState) recordToolMsg(id string, msg history.Message, isResult bool) {
+	ws.completedMu.Lock()
+	ws.toolMsgs[id] = msg
+	if isResult {
+		ws.resultsByID[id] = msg.Content
+	}
+	ws.completedMu.Unlock()
+}
+
+// setFatal records the first fatal error seen by any wave goroutine.
+// First-writer-wins: subsequent calls are no-ops.
+func (ws *waveState) setFatal(err error) {
+	ws.fatalMu.Lock()
+	if ws.fatalErr == nil {
+		ws.fatalErr = err
+	}
+	ws.fatalMu.Unlock()
+}
+
 // appendAssistantToolCallMsg builds the assistant message that records
 // the LLM's tool-call request and appends it to msgs. Pure: the caller
 // supplies content and calls; the function performs no I/O.
