@@ -234,57 +234,103 @@ func applyGeminiStructuredOutput(config *genai.GenerateContentConfig, so *agent.
 	config.ResponseJsonSchema = so.Schema
 }
 
+// mapRegistrySchemaToGeminiSchema converts a tool's JSON-Schema parameters
+// into Gemini's *genai.Schema. Gemini strict-validates the schema, so we must
+// forward array items, nested object properties / required, and enums — not
+// just type and description.
 func mapRegistrySchemaToGeminiSchema(s tools.ToolSchema) *genai.Schema {
 	if s.Type == "" {
 		return nil
 	}
-	
-	geminiType := genai.TypeObject
-	switch s.Type {
-	case "string":
-		geminiType = genai.TypeString
-	case "integer":
-		geminiType = genai.TypeInteger
-	case "number":
-		geminiType = genai.TypeNumber
-	case "boolean":
-		geminiType = genai.TypeBoolean
-	case "array":
-		geminiType = genai.TypeArray
-	case "object":
-		geminiType = genai.TypeObject
-	}
-
-	schema := &genai.Schema{
-		Type:        geminiType,
-	}
-
+	schema := &genai.Schema{Type: jsonTypeToGeminiType(s.Type)}
 	if len(s.Required) > 0 {
 		schema.Required = s.Required
 	}
-
 	if s.Properties != nil {
-		schema.Properties = make(map[string]*genai.Schema)
+		schema.Properties = make(map[string]*genai.Schema, len(s.Properties))
 		for k, v := range s.Properties {
 			vMap, ok := v.(map[string]any)
 			if !ok {
 				continue
 			}
-			
-			childSchema := tools.ToolSchema{} // fallback parsing
-			if t, ok := vMap["type"].(string); ok {
-				childSchema.Type = t
-			}
-			
-			childGeminiSchema := mapRegistrySchemaToGeminiSchema(childSchema)
-			if childGeminiSchema != nil {
-				if d, ok := vMap["description"].(string); ok {
-					childGeminiSchema.Description = d
-				}
-				schema.Properties[k] = childGeminiSchema
+			if child := propMapToGeminiSchema(vMap); child != nil {
+				schema.Properties[k] = child
 			}
 		}
 	}
-
 	return schema
+}
+
+// propMapToGeminiSchema recursively maps a single JSON-Schema property
+// fragment to *genai.Schema. Handles array items, nested object properties,
+// required lists, and enums in both []string and []any forms.
+func propMapToGeminiSchema(vMap map[string]any) *genai.Schema {
+	typeStr, _ := vMap["type"].(string)
+	if typeStr == "" {
+		return nil
+	}
+	out := &genai.Schema{Type: jsonTypeToGeminiType(typeStr)}
+	if d, ok := vMap["description"].(string); ok {
+		out.Description = d
+	}
+	if items, ok := vMap["items"].(map[string]any); ok {
+		out.Items = propMapToGeminiSchema(items)
+	}
+	if props, ok := vMap["properties"].(map[string]any); ok {
+		out.Properties = make(map[string]*genai.Schema, len(props))
+		for pk, pv := range props {
+			pvMap, ok := pv.(map[string]any)
+			if !ok {
+				continue
+			}
+			if child := propMapToGeminiSchema(pvMap); child != nil {
+				out.Properties[pk] = child
+			}
+		}
+	}
+	out.Required = stringSliceFromAny(vMap["required"])
+	out.Enum = stringSliceFromAny(vMap["enum"])
+	return out
+}
+
+func jsonTypeToGeminiType(t string) genai.Type {
+	switch t {
+	case "string":
+		return genai.TypeString
+	case "integer":
+		return genai.TypeInteger
+	case "number":
+		return genai.TypeNumber
+	case "boolean":
+		return genai.TypeBoolean
+	case "array":
+		return genai.TypeArray
+	case "object":
+		return genai.TypeObject
+	}
+	return genai.TypeObject
+}
+
+// stringSliceFromAny accepts []string (the canonical SchemaFor output) or
+// []any (hand-built schemas) and returns the strings; nil otherwise.
+func stringSliceFromAny(v any) []string {
+	switch x := v.(type) {
+	case []string:
+		if len(x) == 0 {
+			return nil
+		}
+		return x
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, e := range x {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	return nil
 }
