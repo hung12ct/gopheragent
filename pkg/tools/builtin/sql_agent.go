@@ -55,29 +55,37 @@ type SQLResult struct {
 // WithMaxRows, WithQueryTimeout) are chainable and safe to call in any
 // order; they mutate the receiver and return it.
 type SQLAgentTool struct {
-	db              *sql.DB
-	schemaRaw       string
-	schema          *Schema
-	examples        []SQLExample
-	businessRules   []string
-	maxRows         int
-	queryTimeout    time.Duration
-	selfConsistency int
-	sessionManager  agent.SessionManager
-	provider        agent.LLMProvider
-	onSQL           func(context.Context, SQLQueryEvent)
+	db                   *sql.DB
+	schemaRaw            string
+	schema               *Schema
+	examples             []SQLExample
+	businessRules        []string
+	maxRows              int
+	queryTimeout         time.Duration
+	selfConsistency      int
+	sessionManager       agent.SessionManager
+	provider             agent.LLMProvider
+	onSQL                func(context.Context, SQLQueryEvent)
+	name                 string
+	display              *tools.ToolDisplay
+	requiresConfirmation bool
 }
 
 // NewSQLAgentTool initializes a tool capable of querying databases. The
 // schemaContext string is used verbatim when no structured Schema is
 // registered via WithSchema — pass an empty string and call WithSchema to
 // use the structured path exclusively.
+//
+// Defaults: Name() = "call_sql_agent", RequiresConfirmation() = true. Use
+// WithName / WithDisplay / WithRequiresConfirmation to override when
+// registering multiple instances or running unsupervised.
 func NewSQLAgentTool(db *sql.DB, schemaContext string, sm agent.SessionManager, provider agent.LLMProvider) *SQLAgentTool {
 	return &SQLAgentTool{
-		db:             db,
-		schemaRaw:      schemaContext,
-		sessionManager: sm,
-		provider:       provider,
+		db:                   db,
+		schemaRaw:            schemaContext,
+		sessionManager:       sm,
+		provider:             provider,
+		requiresConfirmation: true,
 	}
 }
 
@@ -152,8 +160,38 @@ func (t *SQLAgentTool) WithSelfConsistency(n int) *SQLAgentTool {
 	return t
 }
 
+// WithName overrides the tool name reported to the LLM. Use this to register
+// multiple SQL-agent instances (e.g. one per tenant or datalake) in the same
+// registry without wrapping in a shim type. Empty string restores the default
+// "call_sql_agent".
+func (t *SQLAgentTool) WithName(name string) *SQLAgentTool {
+	t.name = name
+	return t
+}
+
+// WithDisplay overrides the tool display metadata (label, category) shown by
+// integrators in UI surfaces. Pass the zero value to fall back to the
+// auto-derived default.
+func (t *SQLAgentTool) WithDisplay(d tools.ToolDisplay) *SQLAgentTool {
+	t.display = &d
+	return t
+}
+
+// WithRequiresConfirmation overrides the HITL gate. The default is true so
+// that every SQL invocation flows through the confirmation hook in
+// human-supervised setups. Set to false for autonomous agents where the
+// caller has already vetted the SQL surface (typically read-only DBs paired
+// with WithMaxRows / WithQueryTimeout).
+func (t *SQLAgentTool) WithRequiresConfirmation(b bool) *SQLAgentTool {
+	t.requiresConfirmation = b
+	return t
+}
+
 // Name implements tools.Tool.
 func (t *SQLAgentTool) Name() string {
+	if t.name != "" {
+		return t.name
+	}
 	return "call_sql_agent"
 }
 
@@ -171,11 +209,11 @@ func (t *SQLAgentTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[sqlAgentArgs]()
 }
 
-// RequiresConfirmation returns true so that every SQL-agent invocation goes
-// through the HITL hook when one is wired up. Override via tool middleware
-// if you want unsupervised execution in trusted environments.
+// RequiresConfirmation reports whether each invocation must pass the HITL
+// gate. Defaults to true; override via WithRequiresConfirmation(false) for
+// autonomous agents.
 func (t *SQLAgentTool) RequiresConfirmation() bool {
-	return true
+	return t.requiresConfirmation
 }
 
 // Execute runs the sub-agent loop. The sub-agent sees the schema, examples,
@@ -185,7 +223,12 @@ func (t *SQLAgentTool) RequiresConfirmation() bool {
 // When WithSelfConsistency(n) with n > 1 is configured, n independent sub-
 // agents run in parallel and their execution results are clustered by hash;
 // the answer from the winning cluster is returned.
-func (t *SQLAgentTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
+func (t *SQLAgentTool) Display() tools.ToolDisplay {
+	if t.display != nil {
+		return *t.display
+	}
+	return tools.DefaultDisplay(t.Name(), t.Description())
+}
 func (t *SQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args sqlAgentArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
