@@ -100,7 +100,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)})
 		ws.recordToolMsg(tCall.ID, history.Message{
 			Role:       "tool",
-			Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
+			Content:    fmt.Sprintf("%v. This is a permission gate, not a tool failure — the policy denied the call deterministically; do not retry. Tell the user the requested action requires a permission they have not granted, and ask whether they have an alternative approach.", deniedErr),
 			ToolCallID: tCall.ID,
 			IsError:    true,
 		}, false)
@@ -113,7 +113,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 			deniedErr := &HITLDeniedError{ToolName: tCall.Name}
 			ws.recordToolMsg(tCall.ID, history.Message{
 				Role:       "tool",
-				Content:    fmt.Sprintf("%v. Do not attempt this action again. Find a workaround.", deniedErr),
+				Content:    fmt.Sprintf("%v. This is a permission gate, not a tool failure. If the user's task genuinely needs this tool, ask them explicitly to grant permission rather than silently using a workaround.", deniedErr),
 				ToolCallID: tCall.ID,
 				IsError:    true,
 			}, false)
