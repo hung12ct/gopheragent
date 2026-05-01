@@ -106,6 +106,32 @@ func (t *CheckInventoryTool) Execute(ctx context.Context, argsJSON string) (stri
 Supported tags: `json`, `description`, `enum`, `required`. See
 [`pkg/tools/schema.go`](./pkg/tools/schema.go) for the full type list.
 
+## Permission Flow
+
+When a tool returns `RequiresConfirmation() = true`, the loop denies the
+call **unless one of**:
+
+- A `loop.ConfirmHITL` hook returns `true` (human approves), or
+- A `loop.Permissions` rule returns `PermissionAllow` (policy auto-approves).
+
+With neither, the call is denied and the model receives a directive
+"permission gate" message telling it to ask the user for approval.
+
+For autonomous agents (no human reviewer), pre-approve trusted tools:
+
+```go
+loop.Permissions = agent.NewPermissionRuleSet().
+    Allow("call_sql_agent").     // bypass HITL for this tool
+    Deny("dangerous_tool")       // deny-over-allow ordering
+```
+
+Or opt the tool out of confirmation entirely at the source:
+
+```go
+sqlTool := builtin.NewSQLAgentTool(db, "", sm, provider).
+    WithRequiresConfirmation(false)
+```
+
 ## Native Multimodal Input
 
 Conversation history accepts typed `MediaPart`s — images go straight into
