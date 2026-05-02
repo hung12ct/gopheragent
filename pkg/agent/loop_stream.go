@@ -405,6 +405,17 @@ func errEvent(err error) StreamEvent {
 	return StreamEvent{Type: EventTypeError, Content: err.Error(), Err: err}
 }
 
+// isFreshSessionHistory reports whether the slice returned by
+// SessionManager.GetHistory looks like a never-before-seen session: empty,
+// or a single system message (every backend seeds new sessions that way).
+// Used to fire EventTypeSessionCreated as the first frame of a stream.
+func isFreshSessionHistory(msgs []history.Message) bool {
+	if len(msgs) == 0 {
+		return true
+	}
+	return len(msgs) == 1 && msgs[0].Role == "system"
+}
+
 // RunIteration provides a fast, blocking response interface (non-streaming).
 // Thoughts are always suppressed — only final content and errors are returned.
 func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userInput string) (string, error) {
@@ -523,7 +534,14 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		}
 	}
 
-	msgs := append(al.Sessions.GetHistory(ctx, sessionKey), history.Message{Role: "user", Content: userInput})
+	existing := al.Sessions.GetHistory(ctx, sessionKey)
+	if isFreshSessionHistory(existing) {
+		al.emit(ctx, sessionKey, streamChan, StreamEvent{
+			Type:    EventTypeSessionCreated,
+			Content: fmt.Sprintf(`{"session_key":%q}`, sessionKey),
+		})
+	}
+	msgs := append(existing, history.Message{Role: "user", Content: userInput})
 	msgs = PatchDanglingToolCalls(msgs)
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 

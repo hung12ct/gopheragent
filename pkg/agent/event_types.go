@@ -60,6 +60,12 @@ const (
 	// SSE consumers should prefer this typed signal to distinguish "hit
 	// the cap" from generic errors.
 	EventTypeMaxItersReached StreamEventType = "max_iters_reached"
+	// EventTypeSessionCreated is emitted as the first frame of a stream
+	// when the loop is starting a previously-unseen session (history is a
+	// single system message). One-shot work — auto-titling, welcome
+	// payloads, budget allocation, analytics — should hang off this event
+	// instead of racing on history-empty checks.
+	EventTypeSessionCreated StreamEventType = "session_created"
 )
 
 // EventPayload is a sealed interface implemented by every typed event. Use it
@@ -201,6 +207,16 @@ type MaxItersReachedEvent struct {
 	Limit int
 }
 
+// SessionCreatedEvent is the first frame of a stream when the loop is
+// running a never-before-seen session. Carries the session key so SSE
+// relays can forward the signal to the FE for sidebar pinning, and so
+// integrators can hang one-shot work (auto-title, welcome payload,
+// budget allocation) off the event without racing on history-emptiness.
+type SessionCreatedEvent struct {
+	BaseEvent
+	SessionKey string
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -222,6 +238,7 @@ func (ReflectedEvent) isEventPayload()      {}
 func (ToolCallReadyEvent) isEventPayload()  {}
 func (TaskListEvent) isEventPayload()        {}
 func (MaxItersReachedEvent) isEventPayload() {}
+func (SessionCreatedEvent) isEventPayload()  {}
 func (UnknownEvent) isEventPayload()         {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
@@ -305,6 +322,14 @@ func (ev StreamEvent) Payload() EventPayload {
 		_ = json.Unmarshal([]byte(ev.Content), &decoded) // zero on failure
 		out.Limit = decoded.Limit
 		return out
+	case EventTypeSessionCreated:
+		out := SessionCreatedEvent{BaseEvent: base}
+		var decoded struct {
+			SessionKey string `json:"session_key"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded)
+		out.SessionKey = decoded.SessionKey
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -330,6 +355,7 @@ type EventVisitor interface {
 	VisitToolCallReady(ToolCallReadyEvent)
 	VisitTaskList(TaskListEvent)
 	VisitMaxItersReached(MaxItersReachedEvent)
+	VisitSessionCreated(SessionCreatedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -362,6 +388,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitTaskList(p)
 	case MaxItersReachedEvent:
 		v.VisitMaxItersReached(p)
+	case SessionCreatedEvent:
+		v.VisitSessionCreated(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}
