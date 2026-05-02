@@ -130,7 +130,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		}
 	}
 
-	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeToolCall, Content: fmt.Sprintf("Executing: %s", tCall.Name)})
+	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeToolCall, Name: tCall.Name, Content: fmt.Sprintf("Executing: %s", tCall.Name)})
 
 	if cacheOK {
 		if cached, hit := al.Cache.Get(cacheKey); hit {

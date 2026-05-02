@@ -361,6 +361,9 @@ func safeCallHandler(h EventHandler, ctx context.Context, sessionKey string, ev 
 type StreamEvent struct {
 	Type     StreamEventType `json:"type"` // use the EventType* constants
 	Content  string `json:"content,omitempty"`
+	// Name is the bare tool name on EventTypeToolCall events. Consumers
+	// should prefer this over parsing Content. Empty for non-tool events.
+	Name     string `json:"name,omitempty"`
 	Source   string `json:"source,omitempty"`
 	ParentID string `json:"parent_id,omitempty"`
 	Err      error  `json:"-"`

@@ -3,7 +3,19 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
+
+// parseExecutingName recovers the tool name from the legacy
+// "Executing: <name>" Content shape used by older emitters. New emitters
+// populate StreamEvent.Name directly; this is the back-compat fallback for
+// events that were serialized before the Name field existed.
+func parseExecutingName(content string) string {
+	if rest, ok := strings.CutPrefix(content, "Executing: "); ok {
+		return strings.TrimSpace(rest)
+	}
+	return ""
+}
 
 // StreamEventType tags the kind of event carried by StreamEvent. It is a
 // distinct string type so the compiler catches bare-string comparisons and
@@ -85,9 +97,12 @@ type ThoughtEvent struct {
 }
 
 // ToolCallEvent announces that the agent is about to execute a tool.
-// Description is a human-readable summary (e.g. "Executing: web_search").
+// Name is the bare tool identifier (e.g. "web_search"). Description is a
+// human-readable summary (e.g. "Executing: web_search") kept for log
+// readers — programmatic consumers should use Name.
 type ToolCallEvent struct {
 	BaseEvent
+	Name        string
 	Description string
 }
 
@@ -205,7 +220,11 @@ func (ev StreamEvent) Payload() EventPayload {
 	case EventTypeThought:
 		return ThoughtEvent{BaseEvent: base, Message: ev.Content}
 	case EventTypeToolCall:
-		return ToolCallEvent{BaseEvent: base, Description: ev.Content}
+		name := ev.Name
+		if name == "" {
+			name = parseExecutingName(ev.Content)
+		}
+		return ToolCallEvent{BaseEvent: base, Name: name, Description: ev.Content}
 	case EventTypeToolProgress:
 		return ToolProgressEvent{BaseEvent: base, Message: ev.Content}
 	case EventTypeActionRequired:
