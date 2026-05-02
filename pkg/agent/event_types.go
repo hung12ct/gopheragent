@@ -54,6 +54,12 @@ const (
 	// list on every event — there is no diff format. Content is the JSON
 	// serialisation of TaskListEvent.Tasks.
 	EventTypeTaskList StreamEventType = "task_list"
+	// EventTypeMaxItersReached signals that the loop exhausted MaxIters
+	// without a final answer. Emitted right before the legacy error event
+	// carrying ErrMaxIterations so callers using errors.Is keep working;
+	// SSE consumers should prefer this typed signal to distinguish "hit
+	// the cap" from generic errors.
+	EventTypeMaxItersReached StreamEventType = "max_iters_reached"
 )
 
 // EventPayload is a sealed interface implemented by every typed event. Use it
@@ -186,6 +192,15 @@ type TaskListEvent struct {
 	RawJSON string
 }
 
+// MaxItersReachedEvent signals that the loop exhausted its iteration cap
+// without a final answer. Limit echoes AgentLoop.MaxIters at the time of
+// the failure so consumers can render "ran 15/15 iterations" without
+// reaching back into agent state.
+type MaxItersReachedEvent struct {
+	BaseEvent
+	Limit int
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -205,8 +220,9 @@ func (ErrorEvent) isEventPayload()          {}
 func (DoneEvent) isEventPayload()           {}
 func (ReflectedEvent) isEventPayload()      {}
 func (ToolCallReadyEvent) isEventPayload()  {}
-func (TaskListEvent) isEventPayload()       {}
-func (UnknownEvent) isEventPayload()        {}
+func (TaskListEvent) isEventPayload()        {}
+func (MaxItersReachedEvent) isEventPayload() {}
+func (UnknownEvent) isEventPayload()         {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
 // round-trip through UnknownEvent so callers can log or forward them without
@@ -281,6 +297,14 @@ func (ev StreamEvent) Payload() EventPayload {
 		out := TaskListEvent{BaseEvent: base, RawJSON: ev.Content}
 		_ = json.Unmarshal([]byte(ev.Content), &out.Tasks) // empty slice on failure
 		return out
+	case EventTypeMaxItersReached:
+		out := MaxItersReachedEvent{BaseEvent: base}
+		var decoded struct {
+			Limit int `json:"limit"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded) // zero on failure
+		out.Limit = decoded.Limit
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -305,6 +329,7 @@ type EventVisitor interface {
 	VisitReflected(ReflectedEvent)
 	VisitToolCallReady(ToolCallReadyEvent)
 	VisitTaskList(TaskListEvent)
+	VisitMaxItersReached(MaxItersReachedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -335,6 +360,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitToolCallReady(p)
 	case TaskListEvent:
 		v.VisitTaskList(p)
+	case MaxItersReachedEvent:
+		v.VisitMaxItersReached(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}

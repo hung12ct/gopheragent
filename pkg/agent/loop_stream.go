@@ -502,6 +502,10 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		}
 	}
 
+	al.emit(ctx, sessionKey, streamChan, StreamEvent{
+		Type:    EventTypeMaxItersReached,
+		Content: fmt.Sprintf(`{"limit":%d}`, al.MaxIters),
+	})
 	al.emit(ctx, sessionKey, streamChan, errEvent(ErrMaxIterations))
 	al.saveSession(ctx, sessionKey, msgs)
 }
