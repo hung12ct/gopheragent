@@ -20,6 +20,15 @@ type FileSessionManager struct {
 	mu           sync.RWMutex
 	SystemPrompt    string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
+	// PromptVersion: see InMemSessionManager.PromptVersion. Same semantics.
+	PromptVersion string
+}
+
+// WithPromptVersion sets the prompt version tag and returns the manager
+// for fluent chaining.
+func (sm *FileSessionManager) WithPromptVersion(version string) *FileSessionManager {
+	sm.PromptVersion = version
+	return sm
 }
 
 // NewFileSessionManager creates a file-backed session manager.
@@ -56,6 +65,7 @@ func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) [
 	if behavior != "" {
 		systemPrompt += "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + behavior
 	}
+	systemPrompt = stampPromptVersion(sm.PromptVersion, systemPrompt)
 
 	if ok {
 		result := make([]Message, len(session.Messages))
@@ -94,7 +104,8 @@ func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) [
 		sm.behaviors[sessionKey] = stored.Behavior
 		sm.mu.Unlock()
 		if stored.Behavior != "" {
-			systemPrompt = sm.SystemPrompt + "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + stored.Behavior
+			systemPrompt = stampPromptVersion(sm.PromptVersion,
+				sm.SystemPrompt+"\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: "+stored.Behavior)
 		}
 	}
 

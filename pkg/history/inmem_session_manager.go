@@ -20,6 +20,13 @@ type InMemSessionManager struct {
 	SystemPrompt    string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 
+	// PromptVersion, when non-empty, prepends a `<!-- prompt-version:V -->`
+	// marker to the system message returned by GetHistory. The marker is
+	// HTML-comment so LLMs ignore it; operators can grep storage to audit
+	// which prompt version each session is running. Bump the version when
+	// editing prompt rules to make the propagation auditable.
+	PromptVersion string
+
 	// TTL is the idle expiry duration per session (0 = never expire).
 	// A session is evicted when it has not been read or written for TTL duration.
 	// Call StartCleanup to activate background eviction.
@@ -77,6 +84,14 @@ func (m *InMemSessionManager) WithTTL(ttl time.Duration) *InMemSessionManager {
 	return m
 }
 
+// WithPromptVersion sets the prompt version tag and returns the manager
+// for fluent chaining. See InMemSessionManager.PromptVersion for the
+// observability contract.
+func (m *InMemSessionManager) WithPromptVersion(version string) *InMemSessionManager {
+	m.PromptVersion = version
+	return m
+}
+
 // evictExpired removes all sessions whose last access time exceeds TTL.
 func (m *InMemSessionManager) evictExpired() {
 	if m.TTL <= 0 {
@@ -116,6 +131,7 @@ func (m *InMemSessionManager) GetHistory(ctx context.Context, sessionKey string)
 	if behavior, ok := m.behaviors[sessionKey]; ok && behavior != "" {
 		systemPrompt += "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + behavior
 	}
+	systemPrompt = stampPromptVersion(m.PromptVersion, systemPrompt)
 
 	if history, ok := m.sessions[sessionKey]; ok {
 		// Copy FIRST, then mutate the copy — never write to the shared backing array under RLock
