@@ -85,6 +85,7 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 	workerLoop := agent.NewAgentLoop(t.Sessions, t.Tools, t.LLM)
 	workerLoop.MaxIters = 15
 	workerLoop.EmitThoughts = true // forward thoughts upstream when streaming; parent filters as needed
+	workerLoop.DynamicContext = agent.DynamicContextFuncFromContext(ctx)
 
 	instruction := fmt.Sprintf("[%s Sub-Agent Task]\n%s", input.AgentName, input.TaskDescription)
 

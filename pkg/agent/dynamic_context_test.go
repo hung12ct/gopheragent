@@ -181,3 +181,33 @@ func TestDynamicContext_NotPersisted(t *testing.T) {
 		t.Fatalf("system prompt in history contaminated: %q", stored[0].Content)
 	}
 }
+
+func TestDynamicContextFuncFromContext_NilWhenAbsent(t *testing.T) {
+	if fn := DynamicContextFuncFromContext(context.Background()); fn != nil {
+		t.Fatalf("expected nil DynamicContextFunc on bare ctx, got %v", fn)
+	}
+}
+
+func TestWithDynamicContextFunc_NilFuncIsZeroCost(t *testing.T) {
+	// Installing a nil func must return ctx unchanged so the parent loop
+	// pays nothing when DynamicContext is unset.
+	parent := context.Background()
+	out := WithDynamicContextFunc(parent, nil)
+	if out != parent {
+		t.Fatalf("expected nil-fn install to return original ctx, got derived")
+	}
+}
+
+func TestWithDynamicContextFunc_RoundTrip(t *testing.T) {
+	want := "today is 2026-05-02"
+	fn := DynamicContextFunc(func(_ context.Context, _ string) string { return want })
+	ctx := WithDynamicContextFunc(context.Background(), fn)
+
+	got := DynamicContextFuncFromContext(ctx)
+	if got == nil {
+		t.Fatal("DynamicContextFuncFromContext returned nil after install")
+	}
+	if got(ctx, "session-x") != want {
+		t.Fatalf("round-trip func returned wrong value")
+	}
+}

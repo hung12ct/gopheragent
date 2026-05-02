@@ -270,6 +270,7 @@ func (t *SQLAgentTool) runOnce(ctx context.Context, query string, idx int) sqlCa
 	sqlTools.Register(exec)
 
 	subAgent := agent.NewAgentLoop(t.sessionManager, sqlTools, t.provider)
+	subAgent.DynamicContext = agent.DynamicContextFuncFromContext(ctx)
 
 	t.sessionManager.SetHistory(ctx, subSessionKey, []history.Message{
 		{Role: "system", Content: t.buildSystemPrompt()},

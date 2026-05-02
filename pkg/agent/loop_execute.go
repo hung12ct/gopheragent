@@ -150,6 +150,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		default:
 		}
 	})
+	toolCtx = WithDynamicContextFunc(toolCtx, al.DynamicContext)
 	toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
 		select {
 		case st.streamChan <- ev:
