@@ -32,10 +32,40 @@ import (
 // tail itself is fresh on every call, which is the correct behavior — fresh
 // content was never going to be cached anyway.
 //
-// Sub-agent scope: DynamicContext is per-AgentLoop. Sub-agents do not
-// inherit it from the parent — set it on each sub-agent's loop if you want
-// the same context inside them.
+// Sub-agent scope: DynamicContext is per-AgentLoop, but the parent loop
+// installs its DynamicContext on the per-tool context.Context before each
+// tool invocation (see loop_execute.go). Sub-agent tools (SQLAgentTool,
+// CallSubAgentTool) read it via DynamicContextFuncFromContext and wire it
+// onto their worker loop, so time-sensitive context like "today is …"
+// flows down through agent hierarchies without requiring callers to set it
+// on every nested loop manually.
 type DynamicContextFunc func(ctx context.Context, sessionKey string) string
+
+// dynamicContextFuncKey is the unexported context key used to ferry a
+// DynamicContextFunc from a parent agent loop down to sub-agent tools.
+type dynamicContextFuncKey struct{}
+
+// WithDynamicContextFunc returns a derived ctx that carries fn so that any
+// downstream sub-agent tool can recover it via DynamicContextFuncFromContext
+// and install it on its worker loop. A nil fn returns ctx unchanged so this
+// is zero-cost when the parent loop has no DynamicContext configured.
+func WithDynamicContextFunc(ctx context.Context, fn DynamicContextFunc) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, dynamicContextFuncKey{}, fn)
+}
+
+// DynamicContextFuncFromContext returns the DynamicContextFunc stamped onto
+// ctx by the parent loop, or nil if none is present. Sub-agent tools call
+// this immediately after constructing their worker AgentLoop and assign the
+// result to workerLoop.DynamicContext.
+func DynamicContextFuncFromContext(ctx context.Context) DynamicContextFunc {
+	if v, ok := ctx.Value(dynamicContextFuncKey{}).(DynamicContextFunc); ok {
+		return v
+	}
+	return nil
+}
 
 // dynamicContextSentinel marks an already-injected block so we never
 // double-append on retries within the same iteration. The sentinel is an
