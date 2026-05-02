@@ -9,9 +9,11 @@ import (
 
 // enforceTokenBudget applies the configured MaxTokenBudget by trimming
 // tool arguments at the warn threshold and aggressively pruning context
-// when the absolute ceiling is exceeded. Returns the (possibly mutated)
-// msgs slice. When MaxTokenBudget is zero, falls back to the standard
-// PruneContextMessages with default depth.
+// when the absolute ceiling is exceeded. Returns a derived slice intended
+// for the immediate LLM call — callers must NOT persist the result via
+// SetHistory or saveSession; the input msgs slice is the source of truth
+// for what gets stored. When MaxTokenBudget is zero, falls back to the
+// standard PruneContextMessages with default depth.
 func (al *AgentLoop) enforceTokenBudget(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs []history.Message) []history.Message {
 	if al.MaxTokenBudget <= 0 {
 		return PruneContextMessages(msgs, 3)
