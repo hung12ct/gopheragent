@@ -18,8 +18,10 @@ package historyfake
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
 )
@@ -166,6 +168,43 @@ func (sm *SessionManager) DeleteSession(_ context.Context, sessionKey string) er
 	delete(sm.messages, sessionKey)
 	delete(sm.asyncMap, sessionKey)
 	return nil
+}
+
+// Query implements agent.SessionManager. Returns metadata for every fake
+// session whose key starts with prefix; intended for unit tests, so the
+// implementation is intentionally simple — no soft-delete tracking, no
+// ordering beyond opts.OrderBy.
+func (sm *SessionManager) Query(_ context.Context, prefix string, opts history.SessionQueryOpts) ([]history.SessionMeta, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	out := make([]history.SessionMeta, 0, len(sm.messages))
+	for key, msgs := range sm.messages {
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		out = append(out, history.SessionMeta{Key: key, MessageCount: len(msgs)})
+	}
+	if opts.Limit > 0 && opts.Limit < len(out) {
+		out = out[:opts.Limit]
+	}
+	return out, nil
+}
+
+// SoftDelete implements agent.SessionManager. The fake forwards to
+// DeleteSession — tests that need true soft-delete semantics should
+// implement their own SessionManager.
+func (sm *SessionManager) SoftDelete(ctx context.Context, sessionKey string) error {
+	return sm.DeleteSession(ctx, sessionKey)
+}
+
+// Restore implements agent.SessionManager. The fake has no tombstone state,
+// so this is always a no-op.
+func (sm *SessionManager) Restore(_ context.Context, _ string) error { return nil }
+
+// PurgeDeletedBefore implements agent.SessionManager. The fake has no
+// tombstone state, so this is always a no-op.
+func (sm *SessionManager) PurgeDeletedBefore(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
 }
 
 // Fork implements agent.SessionManager. Returns ForkErr if configured;
