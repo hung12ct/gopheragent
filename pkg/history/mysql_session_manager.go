@@ -26,6 +26,15 @@ type MySQLOption func(*mysqlOptions)
 type mysqlOptions struct {
 	tableName     string
 	promptVersion string
+	messageStore  MessageStore
+}
+
+// WithMySQLMessageStore plugs an alternate MessageStore into the manager.
+// When set, messages are persisted via the store (typically a
+// MySQLAppendOnlyMessageStore) instead of the JSON column. The session row
+// still carries behavior summary, async tasks, and timestamps.
+func WithMySQLMessageStore(store MessageStore) MySQLOption {
+	return func(o *mysqlOptions) { o.messageStore = store }
 }
 
 // WithMySQLTableName overrides the default "agent_sessions" table name.
@@ -39,16 +48,20 @@ func WithMySQLTableName(name string) MySQLOption {
 // MySQLSessionManager implements SessionManager using MySQL for persistence.
 // History survives server restarts. Optionally supports background behavior summarization.
 type MySQLSessionManager struct {
-	db           *sql.DB
-	tableName    string
-	sessions     map[string]*Session
-	behaviors    map[string]string
-	lastSumLen   map[string]int
-	mu           sync.RWMutex
-	SystemPrompt string
+	db              *sql.DB
+	tableName       string
+	sessions        map[string]*Session
+	behaviors       map[string]string
+	lastSumLen      map[string]int
+	persistedCount  map[string]int // messages already on disk via MessageStore (per-session hint)
+	mu              sync.RWMutex
+	SystemPrompt    string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 	// PromptVersion: see InMemSessionManager.PromptVersion. Same semantics.
 	PromptVersion string
+	// MessageStore, when non-nil, replaces the JSON-column message
+	// persistence path with per-row storage. See WithMySQLMessageStore.
+	MessageStore MessageStore
 }
 
 // WithMySQLPromptVersion is the option-style constructor variant for setting
@@ -119,13 +132,15 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 		sp = systemPrompt
 	}
 	return &MySQLSessionManager{
-		db:            db,
-		tableName:     cfg.tableName,
-		sessions:      make(map[string]*Session),
-		behaviors:     make(map[string]string),
-		lastSumLen:    make(map[string]int),
-		SystemPrompt:  sp,
-		PromptVersion: cfg.promptVersion,
+		db:             db,
+		tableName:      cfg.tableName,
+		sessions:       make(map[string]*Session),
+		behaviors:      make(map[string]string),
+		lastSumLen:     make(map[string]int),
+		persistedCount: make(map[string]int),
+		SystemPrompt:   sp,
+		PromptVersion:  cfg.promptVersion,
+		MessageStore:   cfg.messageStore,
 	}, nil
 }
 
@@ -150,7 +165,8 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 		return result
 	}
 
-	// Load from MySQL
+	// Load from MySQL — when MessageStore is set, messages live in a
+	// separate per-row table; the session row only carries metadata.
 	var messagesJSON string
 	var behaviorSQL sql.NullString
 	err := sm.db.QueryRowContext(ctx,
@@ -165,7 +181,17 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 	}
 
 	var msgs []Message
-	if err := json.Unmarshal([]byte(messagesJSON), &msgs); err != nil {
+	if sm.MessageStore != nil {
+		loaded, lerr := sm.MessageStore.Load(ctx, sessionKey)
+		if lerr != nil {
+			log.Printf("[MySQLSessionManager] MessageStore.Load %q: %v", sessionKey, lerr)
+			return []Message{{Role: "system", Content: systemPrompt}}
+		}
+		msgs = loaded
+		sm.mu.Lock()
+		sm.persistedCount[sessionKey] = len(msgs)
+		sm.mu.Unlock()
+	} else if err := json.Unmarshal([]byte(messagesJSON), &msgs); err != nil {
 		log.Printf("[MySQLSessionManager] unmarshal error for %q: %v", sessionKey, err)
 		return []Message{{Role: "system", Content: systemPrompt}}
 	}
@@ -307,14 +333,21 @@ func (sm *MySQLSessionManager) Fork(ctx context.Context, sessionKey string, atIn
 
 // DeleteSession removes the session from the in-memory cache and deletes the
 // corresponding row from the agent_sessions table. Deleting a non-existent
-// session is a no-op.
+// session is a no-op. When a MessageStore is plugged in, its rows are
+// dropped too so no orphan messages survive.
 func (sm *MySQLSessionManager) DeleteSession(ctx context.Context, sessionKey string) error {
 	sm.mu.Lock()
 	delete(sm.sessions, sessionKey)
 	delete(sm.behaviors, sessionKey)
 	delete(sm.lastSumLen, sessionKey)
+	delete(sm.persistedCount, sessionKey)
 	sm.mu.Unlock()
 
+	if sm.MessageStore != nil {
+		if err := sm.MessageStore.Delete(ctx, sessionKey); err != nil {
+			return fmt.Errorf("history: delete session %q via MessageStore: %w", sessionKey, err)
+		}
+	}
 	if _, err := sm.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE session_key = ?", sm.tableName), sessionKey); err != nil {
 		return fmt.Errorf("history: delete session %q: %w", sessionKey, err)
 	}
@@ -355,13 +388,36 @@ func (sm *MySQLSessionManager) Save(ctx context.Context, sessionKey string) erro
 		BackgroundBehaviorSummarizer(sessionKey, newMessages, prevSummary, sm.SummaryProvider, sm.UpdateBehaviorSummary)
 	}
 
+	asyncTasksBytes, _ := json.Marshal(session.AsyncTasks)
+
+	// When a MessageStore is plugged in, messages live outside the JSON
+	// column — write a placeholder and delegate. The persistedCount hint
+	// lets the store skip rewriting messages already on disk.
+	if sm.MessageStore != nil {
+		sm.mu.RLock()
+		known := sm.persistedCount[sessionKey]
+		sm.mu.RUnlock()
+		newCount, err := sm.MessageStore.Save(ctx, sessionKey, cp, known)
+		if err != nil {
+			return fmt.Errorf("history: MessageStore.Save: %w", err)
+		}
+		sm.mu.Lock()
+		sm.persistedCount[sessionKey] = newCount
+		sm.mu.Unlock()
+
+		query := fmt.Sprintf(`
+			INSERT INTO %s (session_key, messages, behavior, async_tasks)
+			VALUES (?, '[]', ?, ?)
+			ON DUPLICATE KEY UPDATE behavior = VALUES(behavior), async_tasks = VALUES(async_tasks)
+		`, sm.tableName)
+		_, err = sm.db.ExecContext(ctx, query, sessionKey, behavior, string(asyncTasksBytes))
+		return err
+	}
+
 	msgsBytes, err := json.Marshal(cp)
 	if err != nil {
 		return err
 	}
-
-	asyncTasksBytes, _ := json.Marshal(session.AsyncTasks)
-
 	query := fmt.Sprintf(`
 		INSERT INTO %s (session_key, messages, behavior, async_tasks)
 		VALUES (?, ?, ?, ?)
