@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -132,5 +133,49 @@ func TestMaxToolCallsPerTurn_ExactMatch(t *testing.T) {
 	}
 	if thoughtHits != 0 {
 		t.Fatalf("expected no budget event for exact-match, got %d", thoughtHits)
+	}
+}
+
+func TestMaxToolCallsPerSession_AbortsAcrossIterations(t *testing.T) {
+	// Three iterations, two tool calls each. Cap is 3 — execution must
+	// abort after iteration 2 (cumulative=4 ≥ 3) before iteration 3 runs.
+	ct := &countingTool{name: "counter"}
+	provider := &scriptProvider{turns: []LLMResult{
+		{ToolCalls: fanoutCalls(2)},
+		{ToolCalls: fanoutCalls(2)},
+		{ToolCalls: fanoutCalls(2)}, // should never run
+		{Content: "final"},
+	}}
+	loop, _ := setup(provider, ct)
+	loop.MaxToolCallsPerSession = 3
+
+	_, err := loop.RunIteration(context.Background(), "s1", "go")
+	if err == nil {
+		t.Fatalf("expected ErrMaxToolCallsPerSession, got nil")
+	}
+	if !errors.Is(err, ErrMaxToolCallsPerSession) {
+		t.Fatalf("expected ErrMaxToolCallsPerSession, got %v", err)
+	}
+	if n := ct.calls.Load(); n != 4 {
+		t.Fatalf("expected 4 executions before abort, got %d", n)
+	}
+}
+
+func TestMaxToolCallsPerSession_ZeroIsUnlimited(t *testing.T) {
+	ct := &countingTool{name: "counter"}
+	provider := &scriptProvider{turns: []LLMResult{
+		{ToolCalls: fanoutCalls(2)},
+		{ToolCalls: fanoutCalls(2)},
+		{ToolCalls: fanoutCalls(2)},
+		{Content: "final"},
+	}}
+	loop, _ := setup(provider, ct)
+	// MaxToolCallsPerSession default 0 = unlimited
+
+	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n := ct.calls.Load(); n != 6 {
+		t.Fatalf("expected all 6 executions, got %d", n)
 	}
 }
