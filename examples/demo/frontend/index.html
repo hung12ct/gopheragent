@@ -1890,7 +1890,7 @@ function handleStreamEvent(data, block, cursor) {
             }
             lastToolCallAt = now;
 
-            const toolName = extractToolName(data.content);
+            const toolName = data.name || extractToolName(data.content);
             stats.calls += 1;
             statCalls.textContent = stats.calls;
             graphCount.textContent = `${stats.calls} call${stats.calls === 1 ? '' : 's'}`;

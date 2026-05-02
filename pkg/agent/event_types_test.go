@@ -30,6 +30,32 @@ func TestPayload_EachTypeProducesCorrectConcreteType(t *testing.T) {
 	}
 }
 
+func TestPayload_ToolCallSurfacesNameDirectly(t *testing.T) {
+	// New emitters populate StreamEvent.Name; consumers should never have
+	// to parse the "Executing: ..." Content shape.
+	ev := StreamEvent{Type: EventTypeToolCall, Name: "web_search", Content: "Executing: web_search"}
+	tc, ok := ev.Payload().(ToolCallEvent)
+	if !ok {
+		t.Fatalf("expected ToolCallEvent, got %T", ev.Payload())
+	}
+	if tc.Name != "web_search" {
+		t.Fatalf("Name: got %q, want %q", tc.Name, "web_search")
+	}
+	if tc.Description != "Executing: web_search" {
+		t.Fatalf("Description: got %q, want %q", tc.Description, "Executing: web_search")
+	}
+}
+
+func TestPayload_ToolCallFallsBackToContentParse(t *testing.T) {
+	// Back-compat: events serialized by older versions only carry the
+	// magic-string Content. Payload() must still recover Name.
+	ev := StreamEvent{Type: EventTypeToolCall, Content: "Executing: web_search"}
+	tc := ev.Payload().(ToolCallEvent)
+	if tc.Name != "web_search" {
+		t.Fatalf("legacy Content fallback: got %q, want %q", tc.Name, "web_search")
+	}
+}
+
 func TestPayload_NeverReturnsNil(t *testing.T) {
 	// Empty Type must also map to UnknownEvent rather than nil.
 	if p := (StreamEvent{}).Payload(); p == nil {
