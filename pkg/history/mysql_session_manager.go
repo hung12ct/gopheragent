@@ -22,7 +22,8 @@ var mysqlIdentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 type MySQLOption func(*mysqlOptions)
 
 type mysqlOptions struct {
-	tableName string
+	tableName     string
+	promptVersion string
 }
 
 // WithMySQLTableName overrides the default "agent_sessions" table name.
@@ -44,6 +45,14 @@ type MySQLSessionManager struct {
 	mu           sync.RWMutex
 	SystemPrompt string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
+	// PromptVersion: see InMemSessionManager.PromptVersion. Same semantics.
+	PromptVersion string
+}
+
+// WithMySQLPromptVersion is the option-style constructor variant for setting
+// the prompt version tag at construction. Pass to NewMySQLSessionManagerWithOptions.
+func WithMySQLPromptVersion(version string) MySQLOption {
+	return func(o *mysqlOptions) { o.promptVersion = version }
 }
 
 // NewMySQLSessionManager creates a MySQL-backed session manager using the
@@ -87,12 +96,13 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 		sp = systemPrompt
 	}
 	return &MySQLSessionManager{
-		db:           db,
-		tableName:    cfg.tableName,
-		sessions:     make(map[string]*Session),
-		behaviors:    make(map[string]string),
-		lastSumLen:   make(map[string]int),
-		SystemPrompt: sp,
+		db:            db,
+		tableName:     cfg.tableName,
+		sessions:      make(map[string]*Session),
+		behaviors:     make(map[string]string),
+		lastSumLen:    make(map[string]int),
+		SystemPrompt:  sp,
+		PromptVersion: cfg.promptVersion,
 	}, nil
 }
 
@@ -106,6 +116,7 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 	if behavior != "" {
 		systemPrompt += "\n\n[USER BEHAVIORAL PROFILE & LONG-TERM MEMORY]: " + behavior
 	}
+	systemPrompt = stampPromptVersion(sm.PromptVersion, systemPrompt)
 
 	if ok {
 		result := make([]Message, len(session.Messages))
