@@ -175,6 +175,14 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	} else {
 		toolResult, execErr = tool.Execute(toolCtx, tCall.ArgsJSON)
 	}
+	if execErr == nil && al.OnToolResult != nil {
+		rewritten, hookErr := al.OnToolResult(toolCtx, tCall.Name, tCall.ArgsJSON, toolResult)
+		if hookErr != nil {
+			execErr = hookErr
+		} else {
+			toolResult = rewritten
+		}
+	}
 	content := toolResult
 	isToolErr := execErr != nil
 	if isToolErr {

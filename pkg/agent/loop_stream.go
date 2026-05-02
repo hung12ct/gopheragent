@@ -89,6 +89,21 @@ type LLMResult struct {
 // estimatedTokens is a rough (chars/4) pre-call estimate of the prompt size.
 type BeforeLLMHook func(ctx context.Context, sessionKey string, estimatedTokens int) error
 
+// ToolResultHook fires after a successful tool execution and before the
+// result is appended to the LLM context, the inline-render path runs, the
+// cache stores the value, or the anti-loop tracker records the call. The
+// returned string replaces the original result; a non-nil error converts
+// the call into a tool error (formatted via formatToolError, same as if
+// tool.Execute had returned the error).
+//
+// Typical uses: rewrite URLs (e.g. local -> CDN), redact secrets, normalize
+// formats, or veto a result that fails post-validation.
+//
+// The hook does NOT fire when tool.Execute itself returned an error — error
+// handling stays untouched. ctx is the per-tool ctx (carries WithProgressFunc
+// / WithSubAgentEmitter / WithDynamicContextFunc).
+type ToolResultHook func(ctx context.Context, toolName, argsJSON, result string) (string, error)
+
 // LLMProvider abstracts the model backend (OpenAI/Gemini/Claude).
 type LLMProvider interface {
 	GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- StreamEvent) (LLMResult, error)
@@ -139,6 +154,12 @@ type AgentLoop struct {
 	// call only (never persisted to session history). See DynamicContextFunc
 	// for the hot-path contract and prompt-cache interaction notes.
 	DynamicContext DynamicContextFunc
+
+	// OnToolResult, when non-nil, runs after every successful tool execution
+	// and may rewrite the result string (or veto it via a non-nil error)
+	// before it reaches the LLM context, the inline-render path, the cache,
+	// and the anti-loop tracker. See ToolResultHook for the contract.
+	OnToolResult ToolResultHook
 
 	// ToolSelector, when non-nil, filters the tool list presented to the LLM
 	// each turn by semantic similarity between the latest user message and
