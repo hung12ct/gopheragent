@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 )
 
 // FileSessionManager provides file-backed session persistence.
@@ -16,10 +18,22 @@ type FileSessionManager struct {
 	sessions     map[string]*Session
 	behaviors    map[string]string
 	lastSumLen   map[string]int
+	updatedAt    map[string]time.Time
+	deletedAt    map[string]time.Time
 	storage      string
 	mu           sync.RWMutex
 	SystemPrompt    string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
+}
+
+// fileSessionWrapper is the persisted JSON shape on disk. Behavior /
+// UpdatedAt / DeletedAt sit alongside the Session blob so they survive
+// process restarts without needing a Session struct change.
+type fileSessionWrapper struct {
+	Session   Session    `json:"session"`
+	Behavior  string     `json:"behavior,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at,omitempty"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // NewFileSessionManager creates a file-backed session manager.
@@ -39,6 +53,8 @@ func NewFileSessionManager(storagePath string, systemPrompt ...string) (*FileSes
 		sessions:   make(map[string]*Session),
 		behaviors:  make(map[string]string),
 		lastSumLen: make(map[string]int),
+		updatedAt:  make(map[string]time.Time),
+		deletedAt:  make(map[string]time.Time),
 		storage:    storagePath,
 		SystemPrompt: sp,
 	}, nil
@@ -75,10 +91,7 @@ func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) [
 		return []Message{{Role: "system", Content: systemPrompt}}
 	}
 
-	var stored struct {
-		Session  Session `json:"session"`
-		Behavior string  `json:"behavior"`
-	}
+	var stored fileSessionWrapper
 	if err := json.Unmarshal(data, &stored); err != nil {
 		// legacy format: try loading as plain Session
 		var legacy Session
@@ -107,6 +120,12 @@ func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) [
 
 	sm.mu.Lock()
 	sm.sessions[sessionKey] = &stored.Session
+	if !stored.UpdatedAt.IsZero() {
+		sm.updatedAt[sessionKey] = stored.UpdatedAt
+	}
+	if stored.DeletedAt != nil && !stored.DeletedAt.IsZero() {
+		sm.deletedAt[sessionKey] = *stored.DeletedAt
+	}
 	sm.mu.Unlock()
 
 	return result
@@ -125,6 +144,7 @@ func (sm *FileSessionManager) SetHistory(_ context.Context, sessionKey string, h
 	messages := make([]Message, len(history))
 	copy(messages, history)
 	session.Messages = messages
+	sm.updatedAt[sessionKey] = time.Now()
 }
 
 func (sm *FileSessionManager) GetAsyncTasks(ctx context.Context, sessionKey string) map[string]AsyncTask {
@@ -219,9 +239,7 @@ func (sm *FileSessionManager) Fork(ctx context.Context, sessionKey string, atInd
 // backing JSON file (if configured). Deleting a non-existent session is a no-op.
 func (sm *FileSessionManager) DeleteSession(_ context.Context, sessionKey string) error {
 	sm.mu.Lock()
-	delete(sm.sessions, sessionKey)
-	delete(sm.behaviors, sessionKey)
-	delete(sm.lastSumLen, sessionKey)
+	sm.purgeKeyLocked(sessionKey)
 	sm.mu.Unlock()
 
 	if sm.storage == "" {
@@ -232,6 +250,170 @@ func (sm *FileSessionManager) DeleteSession(_ context.Context, sessionKey string
 		return fmt.Errorf("history: delete session %q: %w", sessionKey, err)
 	}
 	return nil
+}
+
+// purgeKeyLocked drops every map entry tied to sessionKey. Caller holds sm.mu (write).
+func (sm *FileSessionManager) purgeKeyLocked(sessionKey string) {
+	delete(sm.sessions, sessionKey)
+	delete(sm.behaviors, sessionKey)
+	delete(sm.lastSumLen, sessionKey)
+	delete(sm.updatedAt, sessionKey)
+	delete(sm.deletedAt, sessionKey)
+}
+
+// Query lists sessions stored on disk under storagePath. Result includes
+// in-memory sessions that have not been persisted yet. See
+// SessionManager.Query for full semantics. Linear in session count — for
+// products with tens of thousands of sessions, prefer the MySQL backend.
+func (sm *FileSessionManager) Query(_ context.Context, prefix string, opts SessionQueryOpts) ([]SessionMeta, error) {
+	seen := make(map[string]bool)
+	out := make([]SessionMeta, 0, 16)
+
+	add := func(meta SessionMeta) {
+		if meta.DeletedAt != nil && !opts.IncludeDeleted {
+			return
+		}
+		out = append(out, meta)
+		seen[meta.Key] = true
+	}
+
+	sm.mu.RLock()
+	for key, sess := range sm.sessions {
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		var deleted *time.Time
+		if dt, ok := sm.deletedAt[key]; ok && !dt.IsZero() {
+			d := dt
+			deleted = &d
+		}
+		add(SessionMeta{
+			Key:          key,
+			UpdatedAt:    sm.updatedAt[key],
+			MessageCount: len(sess.Messages),
+			DeletedAt:    deleted,
+		})
+	}
+	sm.mu.RUnlock()
+
+	if sm.storage != "" {
+		entries, err := os.ReadDir(sm.storage)
+		if err != nil {
+			return nil, fmt.Errorf("history: query: read storage dir: %w", err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			key, ok := strings.CutSuffix(name, ".json")
+			if !ok {
+				continue
+			}
+			if seen[key] {
+				continue
+			}
+			if prefix != "" && !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			meta, err := sm.readMetaFromDisk(key)
+			if err != nil {
+				log.Printf("[FileSessionManager] query: skip %s: %v", key, err)
+				continue
+			}
+			add(meta)
+		}
+	}
+
+	sortSessionMeta(out, opts.OrderBy)
+	if opts.Offset > 0 {
+		if opts.Offset >= len(out) {
+			return []SessionMeta{}, nil
+		}
+		out = out[opts.Offset:]
+	}
+	if opts.Limit > 0 && opts.Limit < len(out) {
+		out = out[:opts.Limit]
+	}
+	return out, nil
+}
+
+// readMetaFromDisk parses a session file just enough to populate SessionMeta.
+func (sm *FileSessionManager) readMetaFromDisk(sessionKey string) (SessionMeta, error) {
+	data, err := os.ReadFile(filepath.Join(sm.storage, sessionKey+".json"))
+	if err != nil {
+		return SessionMeta{}, err
+	}
+	var stored fileSessionWrapper
+	if err := json.Unmarshal(data, &stored); err != nil {
+		// legacy plain-Session shape: only Messages count is recoverable.
+		var legacy Session
+		if err2 := json.Unmarshal(data, &legacy); err2 != nil {
+			return SessionMeta{}, err
+		}
+		stored.Session = legacy
+	}
+	meta := SessionMeta{
+		Key:          sessionKey,
+		UpdatedAt:    stored.UpdatedAt,
+		MessageCount: len(stored.Session.Messages),
+	}
+	if stored.DeletedAt != nil && !stored.DeletedAt.IsZero() {
+		dt := *stored.DeletedAt
+		meta.DeletedAt = &dt
+	}
+	return meta, nil
+}
+
+// SoftDelete tombstones the session in-memory and persists the wrapper.
+func (sm *FileSessionManager) SoftDelete(ctx context.Context, sessionKey string) error {
+	// Ensure cache is populated so Save has something to persist.
+	sm.GetHistory(ctx, sessionKey)
+	sm.mu.Lock()
+	if _, ok := sm.sessions[sessionKey]; !ok {
+		sm.mu.Unlock()
+		return nil
+	}
+	if !sm.deletedAt[sessionKey].IsZero() {
+		sm.mu.Unlock()
+		return nil
+	}
+	sm.deletedAt[sessionKey] = time.Now()
+	sm.mu.Unlock()
+	return sm.Save(ctx, sessionKey)
+}
+
+// Restore clears the tombstone in-memory and persists the wrapper.
+func (sm *FileSessionManager) Restore(ctx context.Context, sessionKey string) error {
+	sm.GetHistory(ctx, sessionKey)
+	sm.mu.Lock()
+	if _, ok := sm.sessions[sessionKey]; !ok {
+		sm.mu.Unlock()
+		return nil
+	}
+	delete(sm.deletedAt, sessionKey)
+	sm.mu.Unlock()
+	return sm.Save(ctx, sessionKey)
+}
+
+// PurgeDeletedBefore hard-deletes every soft-deleted session whose
+// DeletedAt is strictly older than `before`.
+func (sm *FileSessionManager) PurgeDeletedBefore(ctx context.Context, before time.Time) (int, error) {
+	metas, err := sm.Query(ctx, "", SessionQueryOpts{IncludeDeleted: true})
+	if err != nil {
+		return 0, err
+	}
+	purged := 0
+	for _, m := range metas {
+		if m.DeletedAt == nil || !m.DeletedAt.Before(before) {
+			continue
+		}
+		if err := sm.DeleteSession(ctx, m.Key); err != nil {
+			return purged, err
+		}
+		purged++
+	}
+	return purged, nil
 }
 
 // Save persists the session to disk and triggers background summarization if conditions met.
@@ -273,10 +455,18 @@ func (sm *FileSessionManager) Save(ctx context.Context, sessionKey string) error
 		return nil
 	}
 
-	stored := struct {
-		Session  Session `json:"session"`
-		Behavior string  `json:"behavior,omitempty"`
-	}{Session: snapshot, Behavior: behavior}
+	sm.mu.RLock()
+	updatedAt := sm.updatedAt[sessionKey]
+	deletedAt := sm.deletedAt[sessionKey]
+	sm.mu.RUnlock()
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	stored := fileSessionWrapper{Session: snapshot, Behavior: behavior, UpdatedAt: updatedAt}
+	if !deletedAt.IsZero() {
+		dt := deletedAt
+		stored.DeletedAt = &dt
+	}
 
 	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {

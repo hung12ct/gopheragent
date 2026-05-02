@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/cache"
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -30,9 +31,9 @@ type EventHandler func(ctx context.Context, sessionKey string, ev StreamEvent)
 
 // SessionManager interface abstracts history storage.
 //
-// Breaking-change note: DeleteSession and Fork were added for ephemeral worker
-// sessions and conversation branching respectively. Any external implementation
-// of this interface must provide them.
+// Breaking-change note: DeleteSession, Fork, Query, SoftDelete, Restore,
+// and PurgeDeletedBefore are required by the loop or by typical
+// integrations. External implementations must provide them all.
 type SessionManager interface {
 	GetHistory(ctx context.Context, sessionKey string) []history.Message
 	SetHistory(ctx context.Context, sessionKey string, messages []history.Message)
@@ -42,7 +43,8 @@ type SessionManager interface {
 	// DeleteSession removes all in-memory and persisted state for sessionKey.
 	// Used to clean up ephemeral sub-agent and async-worker sessions after they
 	// complete so they do not accumulate in storage. Deleting a non-existent
-	// session is a no-op (returns nil).
+	// session is a no-op (returns nil). For end-user "delete this conversation"
+	// flows that need undelete, prefer SoftDelete.
 	DeleteSession(ctx context.Context, sessionKey string) error
 	// Fork creates a new session whose message history is a copy of the first
 	// atIndex messages from sessionKey. atIndex is clamped to the source length
@@ -54,6 +56,24 @@ type SessionManager interface {
 	// Returns the generated new session key. Fails if sessionKey does not exist
 	// or atIndex is negative.
 	Fork(ctx context.Context, sessionKey string, atIndex int) (string, error)
+	// Query returns metadata for sessions whose key starts with prefix.
+	// Pass an empty prefix to list everything. Soft-deleted sessions are
+	// filtered out unless opts.IncludeDeleted is true. Result order honors
+	// opts.OrderBy (default: most recently updated first). Limit/Offset
+	// drive pagination.
+	Query(ctx context.Context, prefix string, opts history.SessionQueryOpts) ([]history.SessionMeta, error)
+	// SoftDelete marks sessionKey as deleted without removing data; reads
+	// (GetHistory / Query default) treat it as missing, but the row stays
+	// behind so Restore can undo the action. No-op if already deleted.
+	SoftDelete(ctx context.Context, sessionKey string) error
+	// Restore clears the deletion timestamp set by SoftDelete. No-op if
+	// the session is not soft-deleted.
+	Restore(ctx context.Context, sessionKey string) error
+	// PurgeDeletedBefore hard-deletes every soft-deleted session whose
+	// DeletedAt is strictly older than `before`. Returns the count purged.
+	// Pair with a periodic goroutine to bound storage growth from the
+	// soft-delete tail.
+	PurgeDeletedBefore(ctx context.Context, before time.Time) (int, error)
 }
 
 // PendingToolCall represents a single tool invocation requested by the LLM.

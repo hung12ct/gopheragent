@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +18,8 @@ type InMemSessionManager struct {
 	asyncTasks      map[string]map[string]AsyncTask
 	behaviors       map[string]string
 	lastSumLen      map[string]int
+	updatedAt       map[string]time.Time // last SetHistory wall-clock; used by Query
+	deletedAt       map[string]time.Time // soft-delete tombstone; zero = not deleted
 	SystemPrompt    string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 
@@ -39,6 +42,8 @@ func NewInMemSessionManager(systemPrompt ...string) *InMemSessionManager {
 		asyncTasks:   make(map[string]map[string]AsyncTask),
 		behaviors:    make(map[string]string),
 		lastSumLen:   make(map[string]int),
+		updatedAt:    make(map[string]time.Time),
+		deletedAt:    make(map[string]time.Time),
 		SystemPrompt: sp,
 	}
 }
@@ -145,6 +150,7 @@ func (m *InMemSessionManager) SetHistory(_ context.Context, sessionKey string, m
 	cp := make([]Message, len(messages))
 	copy(cp, messages)
 	m.sessions[sessionKey] = cp
+	m.updatedAt[sessionKey] = time.Now()
 	m.touch(sessionKey)
 }
 
@@ -214,12 +220,100 @@ func (m *InMemSessionManager) Fork(_ context.Context, sessionKey string, atIndex
 func (m *InMemSessionManager) DeleteSession(_ context.Context, sessionKey string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.purgeKeyLocked(sessionKey)
+	return nil
+}
+
+// purgeKeyLocked drops every map entry tied to sessionKey. Caller must hold m.mu (write).
+func (m *InMemSessionManager) purgeKeyLocked(sessionKey string) {
 	delete(m.sessions, sessionKey)
 	delete(m.asyncTasks, sessionKey)
 	delete(m.behaviors, sessionKey)
 	delete(m.lastSumLen, sessionKey)
+	delete(m.updatedAt, sessionKey)
+	delete(m.deletedAt, sessionKey)
 	m.lastUse.Delete(sessionKey)
+}
+
+// Query returns metadata for sessions whose key starts with prefix. See
+// SessionManager.Query for full semantics.
+func (m *InMemSessionManager) Query(_ context.Context, prefix string, opts SessionQueryOpts) ([]SessionMeta, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	out := make([]SessionMeta, 0, len(m.sessions))
+	for key, msgs := range m.sessions {
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		var deletedAt *time.Time
+		if dt, ok := m.deletedAt[key]; ok && !dt.IsZero() {
+			if !opts.IncludeDeleted {
+				continue
+			}
+			d := dt
+			deletedAt = &d
+		}
+		out = append(out, SessionMeta{
+			Key:          key,
+			UpdatedAt:    m.updatedAt[key],
+			MessageCount: len(msgs),
+			DeletedAt:    deletedAt,
+		})
+	}
+
+	sortSessionMeta(out, opts.OrderBy)
+
+	if opts.Offset > 0 {
+		if opts.Offset >= len(out) {
+			return []SessionMeta{}, nil
+		}
+		out = out[opts.Offset:]
+	}
+	if opts.Limit > 0 && opts.Limit < len(out) {
+		out = out[:opts.Limit]
+	}
+	return out, nil
+}
+
+// SoftDelete tombstones sessionKey. See SessionManager.SoftDelete.
+func (m *InMemSessionManager) SoftDelete(_ context.Context, sessionKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[sessionKey]; !ok {
+		return nil
+	}
+	if !m.deletedAt[sessionKey].IsZero() {
+		return nil // already soft-deleted
+	}
+	m.deletedAt[sessionKey] = time.Now()
 	return nil
+}
+
+// Restore clears the tombstone set by SoftDelete.
+func (m *InMemSessionManager) Restore(_ context.Context, sessionKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.deletedAt, sessionKey)
+	return nil
+}
+
+// PurgeDeletedBefore hard-deletes every soft-deleted session whose
+// DeletedAt is strictly older than `before`.
+func (m *InMemSessionManager) PurgeDeletedBefore(_ context.Context, before time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	purged := 0
+	for key, dt := range m.deletedAt {
+		if dt.IsZero() {
+			continue
+		}
+		if dt.Before(before) {
+			m.purgeKeyLocked(key)
+			purged++
+		}
+	}
+	return purged, nil
 }
 
 func (m *InMemSessionManager) Save(_ context.Context, sessionKey string) error {

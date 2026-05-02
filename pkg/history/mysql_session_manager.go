@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strings"
 	"sync"
+	"time"
 )
 
 // DefaultMySQLTableName is the table name used when no WithMySQLTableName
@@ -76,10 +78,23 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 			messages    JSON NOT NULL,
 			behavior    TEXT,
 			async_tasks JSON,
-			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			deleted_at  TIMESTAMP NULL DEFAULT NULL,
+			INDEX idx_deleted_at (deleted_at)
 		)`, cfg.tableName)
 	if _, err := db.Exec(createStmt); err != nil {
 		return nil, fmt.Errorf("failed to create session table: %w", err)
+	}
+	// Idempotent migration for tables created by older versions that
+	// predate the deleted_at column. Duplicate-column (1060) is benign.
+	addStmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL", cfg.tableName)
+	if _, err := db.Exec(addStmt); err != nil && !isMySQLDuplicateColumn(err) {
+		return nil, fmt.Errorf("failed to add deleted_at column: %w", err)
+	}
+	idxStmt := fmt.Sprintf("ALTER TABLE %s ADD INDEX idx_deleted_at (deleted_at)", cfg.tableName)
+	if _, err := db.Exec(idxStmt); err != nil && !isMySQLDuplicateKey(err) {
+		// Index may already exist on freshly-created tables — best-effort.
+		log.Printf("[MySQLSessionManager] add idx_deleted_at: %v", err)
 	}
 
 	sp := "You are an AI assistant."
@@ -335,4 +350,121 @@ func (sm *MySQLSessionManager) Save(ctx context.Context, sessionKey string) erro
 	`, sm.tableName)
 	_, err = sm.db.ExecContext(ctx, query, sessionKey, string(msgsBytes), behavior, string(asyncTasksBytes))
 	return err
+}
+
+// Query lists sessions whose key starts with prefix. See SessionManager.Query
+// for full semantics. Backed by `WHERE session_key LIKE ?` with the prefix
+// LIKE-escaped — `_` and `%` in the prefix are treated literally.
+func (sm *MySQLSessionManager) Query(ctx context.Context, prefix string, opts SessionQueryOpts) ([]SessionMeta, error) {
+	conds := []string{"session_key LIKE ?"}
+	args := []any{escapeLikePrefix(prefix) + "%"}
+	if !opts.IncludeDeleted {
+		conds = append(conds, "deleted_at IS NULL")
+	}
+	order := "updated_at DESC"
+	switch opts.OrderBy {
+	case SessionMetaOrderOldest:
+		order = "updated_at ASC"
+	case SessionMetaOrderKey:
+		order = "session_key ASC"
+	}
+	q := fmt.Sprintf(`
+		SELECT session_key, updated_at, deleted_at, JSON_LENGTH(messages)
+		FROM %s
+		WHERE %s
+		ORDER BY %s
+	`, sm.tableName, strings.Join(conds, " AND "), order)
+	if opts.Limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", opts.Limit)
+		if opts.Offset > 0 {
+			q += fmt.Sprintf(" OFFSET %d", opts.Offset)
+		}
+	} else if opts.Offset > 0 {
+		// MySQL requires LIMIT before OFFSET; use a large sentinel.
+		q += fmt.Sprintf(" LIMIT 18446744073709551615 OFFSET %d", opts.Offset)
+	}
+
+	rows, err := sm.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("history: query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]SessionMeta, 0, 16)
+	for rows.Next() {
+		var key string
+		var updatedAt time.Time
+		var deletedAt sql.NullTime
+		var msgCount sql.NullInt64
+		if err := rows.Scan(&key, &updatedAt, &deletedAt, &msgCount); err != nil {
+			return nil, fmt.Errorf("history: query scan: %w", err)
+		}
+		meta := SessionMeta{Key: key, UpdatedAt: updatedAt, MessageCount: int(msgCount.Int64)}
+		if deletedAt.Valid {
+			d := deletedAt.Time
+			meta.DeletedAt = &d
+		}
+		out = append(out, meta)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("history: query iter: %w", err)
+	}
+	return out, nil
+}
+
+// SoftDelete sets deleted_at = NOW() on the row and evicts the cache.
+// Reads (GetHistory / Query without IncludeDeleted) treat the session as
+// missing while the row stays behind for Restore.
+func (sm *MySQLSessionManager) SoftDelete(ctx context.Context, sessionKey string) error {
+	sm.mu.Lock()
+	delete(sm.sessions, sessionKey)
+	delete(sm.behaviors, sessionKey)
+	delete(sm.lastSumLen, sessionKey)
+	sm.mu.Unlock()
+
+	q := fmt.Sprintf("UPDATE %s SET deleted_at = NOW() WHERE session_key = ? AND deleted_at IS NULL", sm.tableName)
+	if _, err := sm.db.ExecContext(ctx, q, sessionKey); err != nil {
+		return fmt.Errorf("history: soft delete %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+// Restore clears deleted_at on the row.
+func (sm *MySQLSessionManager) Restore(ctx context.Context, sessionKey string) error {
+	q := fmt.Sprintf("UPDATE %s SET deleted_at = NULL WHERE session_key = ?", sm.tableName)
+	if _, err := sm.db.ExecContext(ctx, q, sessionKey); err != nil {
+		return fmt.Errorf("history: restore %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+// PurgeDeletedBefore hard-deletes every soft-deleted row whose deleted_at
+// is strictly older than `before`. Returns the count purged.
+func (sm *MySQLSessionManager) PurgeDeletedBefore(ctx context.Context, before time.Time) (int, error) {
+	q := fmt.Sprintf("DELETE FROM %s WHERE deleted_at IS NOT NULL AND deleted_at < ?", sm.tableName)
+	res, err := sm.db.ExecContext(ctx, q, before)
+	if err != nil {
+		return 0, fmt.Errorf("history: purge: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// escapeLikePrefix protects the user-supplied prefix from LIKE-pattern
+// metacharacters so callers that pass arbitrary strings (e.g. raw user IDs)
+// don't get unexpected wildcard matches.
+func escapeLikePrefix(prefix string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(prefix)
+}
+
+// MySQL error-code helpers. We probe by string match because the
+// go-sql-driver/mysql error type isn't part of database/sql and importing
+// it just for these checks would invert the dep direction.
+func isMySQLDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Error 1060")
+}
+
+func isMySQLDuplicateKey(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Error 1061")
 }
