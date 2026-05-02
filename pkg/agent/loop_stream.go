@@ -241,6 +241,16 @@ type AgentLoop struct {
 	// they did not execute. A "thought" event announces the truncation.
 	MaxToolCallsPerTurn int
 
+	// MaxToolCallsPerSession caps the cumulative number of tool calls
+	// scheduled across all iterations of a single Run. 0 (default) means
+	// unlimited. Distinct from MaxToolCallsPerTurn, which only bounds the
+	// wave size within one iteration — anti-loop catches identical-arg
+	// loops, but identical-tool-different-args could otherwise run
+	// unchecked across many ReAct iterations. When the cap is crossed,
+	// the loop emits an error event carrying ErrMaxToolCallsPerSession
+	// and saves the session before returning.
+	MaxToolCallsPerSession int
+
 	// AutoCacheSystem, when true, stamps Message.CacheHint=true on the first
 	// system message of every LLM call. On Anthropic this promotes the
 	// entire system prompt into the prompt-cache prefix, typically cutting
@@ -496,12 +506,24 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 	msgs = PatchDanglingToolCalls(msgs)
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
+	totalToolCalls := 0
 	for iteration := 0; iteration < al.MaxIters; iteration++ {
-		if al.runIteration(ctx, sessionKey, streamChan, &msgs, iteration, loopTracker) {
+		scheduled, done := al.runIteration(ctx, sessionKey, streamChan, &msgs, iteration, loopTracker)
+		if done {
+			return
+		}
+		totalToolCalls += scheduled
+		if al.MaxToolCallsPerSession > 0 && totalToolCalls >= al.MaxToolCallsPerSession {
+			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %d/%d", ErrMaxToolCallsPerSession, totalToolCalls, al.MaxToolCallsPerSession)))
+			al.saveSession(ctx, sessionKey, msgs)
 			return
 		}
 	}
 
+	al.emit(ctx, sessionKey, streamChan, StreamEvent{
+		Type:    EventTypeMaxItersReached,
+		Content: fmt.Sprintf(`{"limit":%d}`, al.MaxIters),
+	})
 	al.emit(ctx, sessionKey, streamChan, errEvent(ErrMaxIterations))
 	al.saveSession(ctx, sessionKey, msgs)
 }

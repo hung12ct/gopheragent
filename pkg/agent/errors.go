@@ -11,6 +11,12 @@ var (
 	// ErrMaxIterations is returned when the loop exhausts MaxIters without a final answer.
 	ErrMaxIterations = errors.New("agent: reached maximum iterations without final answer")
 
+	// ErrMaxToolCallsPerSession is returned when the cumulative number of
+	// tool calls executed across iterations of a single Run exceeds
+	// AgentLoop.MaxToolCallsPerSession. Distinct from MaxToolCallsPerTurn,
+	// which only caps the wave size within one iteration.
+	ErrMaxToolCallsPerSession = errors.New("agent: cumulative tool-call cap exceeded")
+
 	// ErrLoopDetected is returned when the anti-loop detector terminates the cycle.
 	ErrLoopDetected = errors.New("agent: infinite loop detected")
 

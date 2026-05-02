@@ -56,6 +56,17 @@ func TestPayload_ToolCallFallsBackToContentParse(t *testing.T) {
 	}
 }
 
+func TestPayload_MaxItersReachedDecodesLimit(t *testing.T) {
+	ev := StreamEvent{Type: EventTypeMaxItersReached, Content: `{"limit":15}`}
+	p, ok := ev.Payload().(MaxItersReachedEvent)
+	if !ok {
+		t.Fatalf("expected MaxItersReachedEvent, got %T", ev.Payload())
+	}
+	if p.Limit != 15 {
+		t.Fatalf("Limit: got %d, want 15", p.Limit)
+	}
+}
+
 func TestPayload_NeverReturnsNil(t *testing.T) {
 	// Empty Type must also map to UnknownEvent rather than nil.
 	if p := (StreamEvent{}).Payload(); p == nil {
@@ -163,8 +174,9 @@ func (r *recordingVisitor) VisitError(ErrorEvent)                   { r.visited 
 func (r *recordingVisitor) VisitDone(DoneEvent)                     { r.visited = "done" }
 func (r *recordingVisitor) VisitReflected(ReflectedEvent)           { r.visited = "reflected" }
 func (r *recordingVisitor) VisitToolCallReady(ToolCallReadyEvent)   { r.visited = "tool_call_ready" }
-func (r *recordingVisitor) VisitTaskList(TaskListEvent)             { r.visited = "task_list" }
-func (r *recordingVisitor) VisitUnknown(UnknownEvent)               { r.visited = "unknown" }
+func (r *recordingVisitor) VisitTaskList(TaskListEvent)              { r.visited = "task_list" }
+func (r *recordingVisitor) VisitMaxItersReached(MaxItersReachedEvent) { r.visited = "max_iters_reached" }
+func (r *recordingVisitor) VisitUnknown(UnknownEvent)                { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 	cases := []struct {
@@ -182,6 +194,7 @@ func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 		{StreamEvent{Type: EventTypeReflected, Content: `{"text":"ok","round":1}`}, "reflected"},
 		{StreamEvent{Type: EventTypeToolCallReady, Content: `{"id":"c1","name":"x","args":"{}"}`}, "tool_call_ready"},
 		{StreamEvent{Type: EventTypeTaskList, Content: `[]`}, "task_list"},
+		{StreamEvent{Type: EventTypeMaxItersReached, Content: `{"limit":15}`}, "max_iters_reached"},
 		{StreamEvent{Type: "novel_type"}, "unknown"},
 	}
 	for _, tc := range cases {

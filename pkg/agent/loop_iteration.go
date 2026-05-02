@@ -9,9 +9,11 @@ import (
 )
 
 // runIteration executes one iteration of the agent loop. Returns
-// done=true when the loop must terminate (final answer reached, fatal
-// error encountered, or ctx cancelled). Mutates *msgs in place — caller
-// observes the new slice header on return.
+// scheduledToolCalls (the number of tool calls actually dispatched to
+// wave execution this iteration — used by the caller to enforce
+// MaxToolCallsPerSession) and done=true when the loop must terminate
+// (final answer reached, fatal error encountered, or ctx cancelled).
+// Mutates *msgs in place — caller observes the new slice header on return.
 //
 // Per-iteration shape:
 //  1. ctx-cancel check
@@ -21,11 +23,11 @@ import (
 //  5. tool-call budget split + assistant msg append
 //  6. tool-wave execution
 //  7. fatal-error gate / dropped-call synthesis / tool-result drain
-func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs *[]history.Message, iteration int, tracker *LoopDetector) bool {
+func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs *[]history.Message, iteration int, tracker *LoopDetector) (int, bool) {
 	if ctx.Err() != nil {
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrContextCancelled, ctx.Err())))
 		al.saveSession(ctx, sessionKey, *msgs)
-		return true
+		return 0, true
 	}
 
 	*msgs = al.enforceTokenBudget(ctx, sessionKey, streamChan, *msgs)
@@ -46,14 +48,14 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 	if err != nil {
 		al.emit(ctx, sessionKey, streamChan, errEvent(&LLMFailureError{Cause: err}))
 		al.saveSession(ctx, sessionKey, *msgs)
-		return true
+		return 0, true
 	}
 
 	scheduled, droppedCalls := al.applyToolCallBudget(ctx, sessionKey, streamChan, result.ToolCalls)
 
 	if len(result.ToolCalls) == 0 {
 		al.handleFinalAnswer(ctx, st, *msgs, finalContent)
-		return true
+		return 0, true
 	}
 
 	*msgs = appendAssistantToolCallMsg(*msgs, finalContent, result.ToolCalls)
@@ -63,11 +65,11 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 	if ws.fatalErr != nil {
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
 		al.saveSession(ctx, sessionKey, *msgs)
-		return true
+		return len(scheduled), true
 	}
 
 	synthesizeDroppedToolErrors(ws.toolMsgs, droppedCalls, al.MaxToolCallsPerTurn)
 	*msgs = appendToolResultsInOrder(*msgs, result.ToolCalls, ws.toolMsgs)
 	al.Sessions.SetHistory(ctx, sessionKey, *msgs)
-	return false
+	return len(scheduled), false
 }
