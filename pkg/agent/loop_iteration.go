@@ -30,7 +30,11 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 		return 0, true
 	}
 
-	*msgs = al.enforceTokenBudget(ctx, sessionKey, streamChan, *msgs)
+	// Pruning is transient: the trimmed slice fuels just this LLM call.
+	// *msgs stays at full fidelity so SetHistory / saveSession persist the
+	// untouched conversation — without this distinction every prune would
+	// shrink the on-disk history forever.
+	msgsForLLM := al.enforceTokenBudget(ctx, sessionKey, streamChan, *msgs)
 	al.emitSoftLandingNudge(ctx, sessionKey, streamChan, iteration)
 
 	specMap := newSpeculativeMap()
@@ -44,7 +48,7 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 		tracker:    tracker,
 	}
 
-	finalContent, result, err := al.callLLMWithRetry(ctx, st, *msgs)
+	finalContent, result, err := al.callLLMWithRetry(ctx, st, msgsForLLM)
 	if err != nil {
 		al.emit(ctx, sessionKey, streamChan, errEvent(&LLMFailureError{Cause: err}))
 		al.saveSession(ctx, sessionKey, *msgs)
