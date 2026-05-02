@@ -80,7 +80,8 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 			async_tasks JSON,
 			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 			deleted_at  TIMESTAMP NULL DEFAULT NULL,
-			INDEX idx_deleted_at (deleted_at)
+			INDEX idx_deleted_at (deleted_at),
+			INDEX idx_updated_at (updated_at)
 		)`, cfg.tableName)
 	if _, err := db.Exec(createStmt); err != nil {
 		return nil, fmt.Errorf("failed to create session table: %w", err)
@@ -91,10 +92,17 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 	if _, err := db.Exec(addStmt); err != nil && !isMySQLDuplicateColumn(err) {
 		return nil, fmt.Errorf("failed to add deleted_at column: %w", err)
 	}
-	idxStmt := fmt.Sprintf("ALTER TABLE %s ADD INDEX idx_deleted_at (deleted_at)", cfg.tableName)
-	if _, err := db.Exec(idxStmt); err != nil && !isMySQLDuplicateKey(err) {
-		// Index may already exist on freshly-created tables — best-effort.
-		log.Printf("[MySQLSessionManager] add idx_deleted_at: %v", err)
+	for _, idx := range []struct{ name, cols string }{
+		{"idx_deleted_at", "(deleted_at)"},
+		// idx_updated_at backs the sidebar query
+		// `WHERE session_key LIKE ? ORDER BY updated_at DESC LIMIT N`
+		// which would otherwise filesort over every prefix-matching row.
+		{"idx_updated_at", "(updated_at)"},
+	} {
+		idxStmt := fmt.Sprintf("ALTER TABLE %s ADD INDEX %s %s", cfg.tableName, idx.name, idx.cols)
+		if _, err := db.Exec(idxStmt); err != nil && !isMySQLDuplicateKey(err) {
+			log.Printf("[MySQLSessionManager] add %s: %v", idx.name, err)
+		}
 	}
 
 	sp := "You are an AI assistant."
