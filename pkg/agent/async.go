@@ -75,10 +75,14 @@ func (m *AsyncTaskManager) WithMaxConcurrent(n int) *AsyncTaskManager {
 // Returns the task_id immediately; the worker runs detached from parentCtx so
 // it survives the HTTP request that spawned it.
 //
-// Session writes here use context.Background(): the task metadata must outlive
-// the caller's request even if the caller is cancelled immediately after this
-// returns.
-func (m *AsyncTaskManager) StartTask(_ context.Context, sessionKey, agentName, description string) (string, error) {
+// The worker context is built via context.WithoutCancel(parentCtx): it
+// inherits every value the caller installed (user_id, request_id, tracer
+// spans, dynamic-context func, sub-agent emitter — anything middleware
+// stamped onto ctx) but does NOT inherit the parent's Done channel, so the
+// SSE connection closing won't kill an in-flight Veo poll. Session writes
+// for the task metadata reuse the same WithoutCancel ctx so they keep
+// caller-supplied values too while still surviving caller cancellation.
+func (m *AsyncTaskManager) StartTask(parentCtx context.Context, sessionKey, agentName, description string) (string, error) {
 	// Enforce the concurrency cap. Non-blocking acquire — a full semaphore
 	// means the caller asked for more than the cap allows.
 	m.mu.RLock()
@@ -95,7 +99,13 @@ func (m *AsyncTaskManager) StartTask(_ context.Context, sessionKey, agentName, d
 
 	taskID := fmt.Sprintf("async-%s-%d", agentName, time.Now().UnixNano())
 
-	workerCtx, cancel := context.WithCancel(context.Background())
+	// detachedCtx keeps every value the caller installed (user_id, tracer
+	// spans, dynamic-context func, sub-agent emitter, …) but is immune to
+	// parentCtx cancellation. Tools running inside the worker therefore
+	// observe the same ctx-stored values they would in a synchronous call,
+	// which is exactly what middleware-driven systems expect.
+	detachedCtx := context.WithoutCancel(parentCtx)
+	workerCtx, cancel := context.WithCancel(detachedCtx)
 
 	m.mu.Lock()
 	m.ActiveTasks[taskID] = &ActiveTask{
@@ -104,15 +114,14 @@ func (m *AsyncTaskManager) StartTask(_ context.Context, sessionKey, agentName, d
 	}
 	m.mu.Unlock()
 
-	ctx := context.Background()
-	tasks := m.Sessions.GetAsyncTasks(ctx, sessionKey)
+	tasks := m.Sessions.GetAsyncTasks(detachedCtx, sessionKey)
 	tasks[taskID] = history.AsyncTask{
 		TaskID:    taskID,
 		AgentName: agentName,
 		Status:    "running",
 	}
-	m.Sessions.SetAsyncTasks(ctx, sessionKey, tasks)
-	if err := m.Sessions.Save(ctx, sessionKey); err != nil {
+	m.Sessions.SetAsyncTasks(detachedCtx, sessionKey, tasks)
+	if err := m.Sessions.Save(detachedCtx, sessionKey); err != nil {
 		log.Printf("[async] save failed for %q: %v", sessionKey, err)
 	}
 
@@ -135,7 +144,10 @@ func (m *AsyncTaskManager) runLoop(ctx context.Context, taskID, sessionKey, agen
 		if sem != nil {
 			<-sem
 		}
-		if err := m.Sessions.DeleteSession(context.Background(), workerSessionKey); err != nil {
+		// Cleanup ctx must outlive the worker's own cancellation but should
+		// keep ctx-stored values (e.g., a session-manager middleware that
+		// reads request_id for logging). WithoutCancel does both.
+		if err := m.Sessions.DeleteSession(context.WithoutCancel(ctx), workerSessionKey); err != nil {
 			log.Printf("[async] worker session cleanup failed for %q: %v", workerSessionKey, err)
 		}
 	}()
@@ -188,14 +200,17 @@ func (m *AsyncTaskManager) runLoop(ctx context.Context, taskID, sessionKey, agen
 		}
 	}
 
-	bgCtx := context.Background()
-	tasks := m.Sessions.GetAsyncTasks(bgCtx, sessionKey)
+	// Final status write needs to land even when the worker's ctx was
+	// cancelled mid-run. WithoutCancel keeps the caller-supplied values
+	// (user_id etc.) so a value-aware session manager still sees them.
+	persistCtx := context.WithoutCancel(ctx)
+	tasks := m.Sessions.GetAsyncTasks(persistCtx, sessionKey)
 	if task, exists := tasks[taskID]; exists {
 		task.Status = finalStatus
 		task.Result = finalResult
 		tasks[taskID] = task
-		m.Sessions.SetAsyncTasks(bgCtx, sessionKey, tasks)
-		if err := m.Sessions.Save(bgCtx, sessionKey); err != nil {
+		m.Sessions.SetAsyncTasks(persistCtx, sessionKey, tasks)
+		if err := m.Sessions.Save(persistCtx, sessionKey); err != nil {
 			log.Printf("[async] save failed for %q: %v", sessionKey, err)
 		}
 	}
