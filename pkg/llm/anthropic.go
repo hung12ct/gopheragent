@@ -15,6 +15,13 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
+// DefaultAnthropicMaxTokens is the per-call Anthropic MaxTokens used when
+// no override is provided. 8192 catches typical chat + tool-use turns
+// without truncating most code-gen workloads. Bump via WithMaxTokens for
+// long structured outputs (HTML5 playables, full schema dumps,
+// inline charts) — Sonnet 4.6 supports up to 64K.
+const DefaultAnthropicMaxTokens int64 = 8192
+
 // AnthropicProvider implements agent.LLMProvider using the Anthropic Messages API (Claude).
 type AnthropicProvider struct {
 	client    *anthropic.Client
@@ -22,9 +29,19 @@ type AnthropicProvider struct {
 	MaxTokens int64
 }
 
+// AnthropicOption configures an AnthropicProvider at construction.
+type AnthropicOption func(*AnthropicProvider)
+
+// WithMaxTokens overrides the per-call Anthropic MaxTokens. Use for
+// code-generation, long structured output, or any workload where the
+// default truncates mid-stream.
+func WithMaxTokens(n int64) AnthropicOption {
+	return func(p *AnthropicProvider) { p.MaxTokens = n }
+}
+
 // NewAnthropicProvider creates a Claude-backed provider.
 // Auto-discovers ANTHROPIC_API_KEY from environment if apiKey is empty.
-func NewAnthropicProvider(apiKey string, model string) (*AnthropicProvider, error) {
+func NewAnthropicProvider(apiKey string, model string, opts ...AnthropicOption) (*AnthropicProvider, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
@@ -36,7 +53,11 @@ func NewAnthropicProvider(apiKey string, model string) (*AnthropicProvider, erro
 		m = anthropic.ModelClaudeSonnet4_6
 	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	return &AnthropicProvider{client: &client, model: m, MaxTokens: 4096}, nil
+	p := &AnthropicProvider{client: &client, model: m, MaxTokens: DefaultAnthropicMaxTokens}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
@@ -200,6 +221,13 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 
 	if stream.Err() != nil {
 		return agent.LLMResult{}, fmt.Errorf("anthropic stream error: %w", stream.Err())
+	}
+
+	// Surface the per-call MaxTokens truncation as a typed cap event so
+	// adopters can render "model truncated; raise MaxTokens" instead of
+	// silently shipping half-rendered code blocks.
+	if string(accumulated.StopReason) == "max_tokens" {
+		streamChan <- agent.LimitExhaustedStreamEvent(agent.LimitKindProviderMaxTokens, int(p.MaxTokens), 0)
 	}
 
 	var finalContent string
