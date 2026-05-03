@@ -194,8 +194,10 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		})
 	}
 
+	isInlineResult := false
 	if !isToolErr {
 		if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
+			isInlineResult = true
 			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeContent, Content: "\n\n" + content + "\n\n"})
 		}
 	}
@@ -216,9 +218,10 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	}
 
 	ws.recordToolMsg(tCall.ID, history.Message{
-		Role:       "tool",
-		Content:    content,
-		ToolCallID: tCall.ID,
-		IsError:    isToolErr,
+		Role:           "tool",
+		Content:        content,
+		ToolCallID:     tCall.ID,
+		IsError:        isToolErr,
+		IsInlineResult: isInlineResult,
 	}, !isToolErr)
 }
