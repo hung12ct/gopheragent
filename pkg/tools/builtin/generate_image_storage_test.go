@@ -22,7 +22,7 @@ func TestGenerateImageTool_DownloadDelegatesToStorage(t *testing.T) {
 	store := &fakeAssetStorage{}
 	tool := &GenerateImageTool{
 		httpClient: &http.Client{Timeout: 5 * time.Second},
-		Storage:    store,
+		storage:    store,
 	}
 
 	url, err := tool.download(context.Background(), cdn.URL+"/x.png")
@@ -53,7 +53,7 @@ func TestGenerateImageTool_DownloadErrorsWithoutStorage(t *testing.T) {
 		httpClient: &http.Client{Timeout: time.Second},
 	}
 	if _, err := tool.download(context.Background(), "https://example.test/x.png"); err == nil {
-		t.Fatal("expected error when Storage is nil")
+		t.Fatal("expected error when storage is nil")
 	}
 }
 
@@ -66,13 +66,13 @@ func TestGenerateImageTool_DownloadFailsClosedOnUpstreamError(t *testing.T) {
 	store := &fakeAssetStorage{}
 	tool := &GenerateImageTool{
 		httpClient: &http.Client{Timeout: time.Second},
-		Storage:    store,
+		storage:    store,
 	}
 
 	if _, err := tool.download(context.Background(), cdn.URL+"/x.png"); err == nil {
 		t.Fatal("expected error when CDN returns 500")
 	}
 	if len(store.calls) != 0 {
-		t.Fatalf("Storage must not be called on upstream error, got %d calls", len(store.calls))
+		t.Fatalf("storage must not be called on upstream error, got %d calls", len(store.calls))
 	}
 }
