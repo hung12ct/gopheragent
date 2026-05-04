@@ -43,6 +43,18 @@ type Tool interface {
 // streamed directly to the frontend as content (e.g. images, videos, HTML widgets).
 // The result is emitted as a "content" StreamEvent in addition to being fed back
 // to the LLM as a normal tool result.
+//
+// WRAPPER WARNING: this is a method-set interface. Wrapping a tool that
+// implements InlineRenderer (e.g. embedding *GenerateImageTool inside an
+// adapter struct that overrides Name() or Execute()) WILL drop the
+// optional method silently — Go's interface satisfaction is structural,
+// and the wrapper struct does not inherit InlineResult() unless you
+// re-declare it. Symptom: the model paraphrases the markdown URL instead
+// of emitting it verbatim, the FE never sees the image. If you wrap a
+// tool that implements InlineRenderer, your wrapper MUST also implement it:
+//
+//	type MyImageWrapper struct{ *builtin.GenerateImageTool }
+//	func (w *MyImageWrapper) InlineResult() bool { return w.GenerateImageTool.InlineResult() }
 type InlineRenderer interface {
 	InlineResult() bool
 }
@@ -52,6 +64,13 @@ type InlineRenderer interface {
 // interface — or return false — bypass caching entirely even when the
 // AgentLoop has a Cache configured. This is explicit opt-in to avoid silent
 // staleness for live-data tools (prices, weather, time, etc.).
+//
+// WRAPPER WARNING: same caveat as InlineRenderer — wrapping a Cacheable
+// tool drops cacheability silently unless the wrapper re-declares the
+// method. Symptom: every call hits the underlying provider even when the
+// agent has a Cache configured. Forward explicitly:
+//
+//	func (w *MyToolWrapper) Cacheable() bool { return w.Tool.Cacheable() }
 type Cacheable interface {
 	Cacheable() bool
 }
