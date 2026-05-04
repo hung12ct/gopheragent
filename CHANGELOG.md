@@ -2,8 +2,6 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
-## [Unreleased]
-
 ## [v0.14.2] — 2026-05-03
 
 ### Fixed
@@ -49,7 +47,6 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
-[Unreleased]: https://github.com/hung12ct/gopheragent/compare/v0.14.2...HEAD
 [v0.14.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.2
 [v0.14.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.1
 [v0.14.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.0
