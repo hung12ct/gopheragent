@@ -40,6 +40,13 @@ var (
 	// PermissionChecker rejects a tool call before it runs. Distinct from
 	// ErrHITLDenied because no human was in the loop — a policy denied it.
 	ErrPermissionDenied = errors.New("agent: tool execution denied by permission policy")
+
+	// ErrConfirmationGateUnconfigured is returned when a tool requires
+	// confirmation but no ConfirmHITL callback and no PermissionAllow rule
+	// can resolve the gate. The denial is a configuration bug, not a user
+	// rejection — the model is told as much so it does not confabulate
+	// "the user denied it".
+	ErrConfirmationGateUnconfigured = errors.New("agent: tool requires confirmation but no ConfirmHITL handler is configured")
 )
 
 // ToolNotFoundError carries the name of the missing tool.
@@ -79,6 +86,24 @@ func (e *PermissionDeniedError) Error() string {
 
 func (e *PermissionDeniedError) Is(target error) bool {
 	return target == ErrPermissionDenied
+}
+
+// ConfirmationGateUnconfiguredError carries the tool name whose
+// confirmation gate could not be resolved. Surfaced when a tool declares
+// RequiresConfirmation()=true but the AgentLoop has no ConfirmHITL
+// callback and no PermissionAllow rule covers the call. This is an
+// operator-side configuration bug — the directive in the tool message
+// tells the model so explicitly.
+type ConfirmationGateUnconfiguredError struct {
+	ToolName string
+}
+
+func (e *ConfirmationGateUnconfiguredError) Error() string {
+	return fmt.Sprintf("agent: tool %q requires confirmation but no ConfirmHITL handler or PermissionAllow rule resolved the gate", e.ToolName)
+}
+
+func (e *ConfirmationGateUnconfiguredError) Is(target error) bool {
+	return target == ErrConfirmationGateUnconfigured
 }
 
 // HookRejectedError carries the underlying hook error.

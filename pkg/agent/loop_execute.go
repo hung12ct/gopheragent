@@ -108,12 +108,19 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	}
 
 	if tool.RequiresConfirmation() && permDecision != PermissionAllow {
-		approved := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
+		approved, callbackWired := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
 		if !approved {
-			deniedErr := &HITLDeniedError{ToolName: tCall.Name}
+			var msg string
+			if !callbackWired {
+				gateErr := &ConfirmationGateUnconfiguredError{ToolName: tCall.Name}
+				msg = fmt.Sprintf("%v. This is a host-side configuration bug, not a user denial — do not tell the user they refused. Tell them the tool needs operator approval that has not been wired up, and ask whether you should proceed with an alternative the tool gate does not cover.", gateErr)
+			} else {
+				deniedErr := &HITLDeniedError{ToolName: tCall.Name}
+				msg = fmt.Sprintf("%v. This is a permission gate, not a tool failure. If the user's task genuinely needs this tool, ask them explicitly to grant permission rather than silently using a workaround.", deniedErr)
+			}
 			ws.recordToolMsg(tCall.ID, history.Message{
 				Role:       "tool",
-				Content:    fmt.Sprintf("%v. This is a permission gate, not a tool failure. If the user's task genuinely needs this tool, ask them explicitly to grant permission rather than silently using a workaround.", deniedErr),
+				Content:    msg,
 				ToolCallID: tCall.ID,
 				IsError:    true,
 			}, false)

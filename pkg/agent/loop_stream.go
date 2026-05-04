@@ -331,6 +331,11 @@ type AgentLoop struct {
 	// NewAgentLoop defaults this to true — struct-literal construction
 	// (&AgentLoop{...}) gets zero-value false and must opt in explicitly.
 	AutoCacheSystem bool
+
+	// confirmHITLWarnOnce gates the one-time misconfig warning emitted by
+	// runHITLGate when ConfirmHITL is nil. Loop-scoped so each instance
+	// warns independently; never reset across calls.
+	confirmHITLWarnOnce sync.Once
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
