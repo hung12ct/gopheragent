@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -195,6 +197,105 @@ func TestWithLogging_DoesNotPanic(t *testing.T) {
 	}
 	if result != "ok:payload" {
 		t.Fatalf("unexpected result: %q", result)
+	}
+}
+
+// TestWithLogging_IncludesToolCallID pins the v0.19.0 contract: WithLogging
+// auto-reads the per-Execute correlation ID off ctx and emits it on entry
+// + exit log records, so adopters get reliable pairing without writing
+// custom slog handlers.
+func TestWithLogging_IncludesToolCallID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	tool := Chain(&mockTool{name: "log_tool"}, WithLogging(logger))
+
+	ctx := WithToolCallID(context.Background(), "trace-xyz")
+	if _, err := tool.Execute(ctx, "payload"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, `"tool_call_id":"trace-xyz"`) {
+		t.Fatalf("expected tool_call_id in log output: %s", out)
+	}
+	// duration_ms should land on the exit lines so latency audits work.
+	if !strings.Contains(out, `"duration_ms"`) {
+		t.Fatalf("expected duration_ms on exit line: %s", out)
+	}
+}
+
+// TestWithLogging_ContextExtractor pins the v0.19.0 LoggingOption: adopters
+// surface ctx-scoped values (trace_id, user_id, …) without having to write
+// a custom slog.Handler bridge.
+func TestWithLogging_ContextExtractor(t *testing.T) {
+	type traceKey struct{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	tool := Chain(&mockTool{name: "log_tool"}, WithLogging(logger,
+		WithContextExtractor(func(ctx context.Context) []slog.Attr {
+			if v, ok := ctx.Value(traceKey{}).(string); ok {
+				return []slog.Attr{slog.String("trace_id", v)}
+			}
+			return nil
+		}),
+	))
+
+	ctx := context.WithValue(context.Background(), traceKey{}, "abc-123")
+	if _, err := tool.Execute(ctx, "payload"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), `"trace_id":"abc-123"`) {
+		t.Fatalf("extractor did not surface ctx value: %s", buf.String())
+	}
+}
+
+// TestWithLogging_SuccessLevelDemotesEntryAndOk pins the noise-control knob:
+// passing WithSuccessLevel(LevelDebug) sends entry + ok lines below a
+// LevelInfo handler's threshold so they get filtered out, while errors
+// (always LevelError) still surface.
+func TestWithLogging_SuccessLevelDemotesEntryAndOk(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	tool := Chain(&mockTool{name: "log_tool"}, WithLogging(logger, WithSuccessLevel(slog.LevelDebug)))
+
+	if _, err := tool.Execute(context.Background(), "payload"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(buf.String(), `"msg":"tool call"`) || strings.Contains(buf.String(), `"msg":"tool ok"`) {
+		t.Fatalf("entry/ok lines should be below LevelInfo when demoted to Debug — got: %s", buf.String())
+	}
+
+	// Error path still surfaces at LevelError.
+	buf.Reset()
+	failTool := Chain(&mockTool{
+		name:   "fail",
+		execFn: func(_ context.Context, _ string) (string, error) { return "", errors.New("boom") },
+	}, WithLogging(logger, WithSuccessLevel(slog.LevelDebug)))
+	_, _ = failTool.Execute(context.Background(), "payload")
+	if !strings.Contains(buf.String(), `"msg":"tool error"`) {
+		t.Fatalf("error line must surface even with SuccessLevel=Debug: %s", buf.String())
+	}
+}
+
+// TestWithLogging_ArgsTruncation pins the args-budget knob: oversized args
+// are replaced with their prefix + a length marker so log lines stay
+// bounded for tools that accept large blobs.
+func TestWithLogging_ArgsTruncation(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	tool := Chain(&mockTool{name: "log_tool"}, WithLogging(logger, WithArgsTruncation(8)))
+
+	bigArgs := strings.Repeat("x", 200)
+	if _, err := tool.Execute(context.Background(), bigArgs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "truncated, 200 bytes total") {
+		t.Fatalf("expected truncation marker with original length: %s", out)
+	}
+	if strings.Count(out, "x") > 50 { // 8 prefix bytes + JSON encoding noise; never the full 200
+		t.Fatalf("truncation did not cap the args payload: %s", out)
 	}
 }
 

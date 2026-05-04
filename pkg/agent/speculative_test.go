@@ -257,6 +257,40 @@ func TestSpeculative_ToolExecutedOnceAndReused(t *testing.T) {
 	}
 }
 
+// TestSpeculative_ToolCallEventFlagsReused pins the v0.19.0 wire signal:
+// when the wave executor consumes a speculative result instead of dispatching
+// the tool again, the corresponding tool_call event has Reused=true so
+// adopters can attribute the speculation savings.
+func TestSpeculative_ToolCallEventFlagsReused(t *testing.T) {
+	tool := &slowCountingTool{name: "slow", delay: 5 * time.Millisecond, counter: new(int64)}
+	provider := &streamingToolCallReadyProvider{toolName: "slow", argsJSON: `"x"`}
+	loop, _ := setup(provider, tool)
+	loop.SpeculativeTools = true
+
+	var sawReused bool
+	var mu sync.Mutex
+	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+		if ev.Type != EventTypeToolCall {
+			return
+		}
+		mu.Lock()
+		if ev.Reused {
+			sawReused = true
+		}
+		mu.Unlock()
+	})
+
+	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !sawReused {
+		t.Fatal("speculated dispatch did not flag Reused on the tool_call event")
+	}
+}
+
 // TestSpeculative_StructuredPayloadReachesHook pins the speculator's
 // StructuredResult dispatch: when SpeculativeTools is on and the tool
 // implements tools.StructuredResult, the typed payload must still arrive
@@ -270,7 +304,7 @@ func TestSpeculative_StructuredPayloadReachesHook(t *testing.T) {
 
 	var seen any
 	var mu sync.Mutex
-	loop.OnToolResult = func(_ context.Context, _, _, result string, structured any) (string, error) {
+	loop.OnToolResult = func(_ context.Context, _, _, _, result string, structured any, _ error) (string, error) {
 		mu.Lock()
 		seen = structured
 		mu.Unlock()

@@ -134,21 +134,33 @@ type ThoughtEvent struct {
 }
 
 // ToolCallEvent announces that the agent is about to execute a tool.
-// Name is the bare tool identifier (e.g. "web_search"). Description is a
-// human-readable summary (e.g. "Executing: web_search") kept for log
-// readers — programmatic consumers should use Name.
+// Name is the bare tool identifier (e.g. "web_search"). ID is the agent-
+// generated correlation ID — it matches the toolCallID parameter on
+// ToolResultHook so observability tooling can pair entry and exit events
+// reliably even when SpeculativeTools=true interleaves parallel calls.
+// ArgsJSON is the raw tool arguments. Reused is true when the wave executor
+// is consuming a speculative result instead of dispatching the tool again.
+// Description is a human-readable summary kept for log readers —
+// programmatic consumers should use the structured fields.
 type ToolCallEvent struct {
 	BaseEvent
+	ID          string
 	Name        string
+	ArgsJSON    string
+	Reused      bool
 	Description string
 }
 
 // ToolProgressEvent is a mid-execution status update emitted by a tool via
 // tools.ReportProgress. Progress is lossy by design — consumers may drop
-// these safely.
+// these safely. Name and ToolCallID match the preceding ToolCallEvent for
+// the same dispatch; with SpeculativeTools=true multiple tools can report
+// progress concurrently, so adopters need both to attribute the message.
 type ToolProgressEvent struct {
 	BaseEvent
-	Message string
+	Name       string
+	ToolCallID string
+	Message    string
 }
 
 // ActionRequiredEvent signals that a tool invocation needs human approval.
@@ -296,9 +308,21 @@ func (ev StreamEvent) Payload() EventPayload {
 		if name == "" {
 			name = parseExecutingName(ev.Content)
 		}
-		return ToolCallEvent{BaseEvent: base, Name: name, Description: ev.Content}
+		return ToolCallEvent{
+			BaseEvent:   base,
+			ID:          ev.ToolCallID,
+			Name:        name,
+			ArgsJSON:    ev.ArgsJSON,
+			Reused:      ev.Reused,
+			Description: ev.Content,
+		}
 	case EventTypeToolProgress:
-		return ToolProgressEvent{BaseEvent: base, Message: ev.Content}
+		return ToolProgressEvent{
+			BaseEvent:  base,
+			Name:       ev.Name,
+			ToolCallID: ev.ToolCallID,
+			Message:    ev.Content,
+		}
 	case EventTypeActionRequired:
 		out := ActionRequiredEvent{BaseEvent: base, RawJSON: ev.Content}
 		var decoded struct {

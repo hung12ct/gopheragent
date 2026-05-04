@@ -2,12 +2,23 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sync"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
+
+// newToolCallID returns an opaque hex correlation ID for one tool dispatch.
+// Distinct from PendingToolCall.ID — providers like Gemini reuse tool names
+// as their call ID, which collides for parallel calls of the same tool.
+func newToolCallID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
 
 // executeToolWaves runs the scheduled tool calls in dependency waves
 // using a fresh waveState. Substitution of <output_of:...> references
@@ -137,7 +148,22 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		}
 	}
 
-	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeToolCall, Name: tCall.Name, Content: fmt.Sprintf("Executing: %s", tCall.Name)})
+	// Peek the speculative map before emitting so the tool_call event can
+	// flag Reused=true at announcement time. The actual await/execute path
+	// below uses the same (sm, speculated) values.
+	st.specMu.Lock()
+	sm, speculated := st.specMap[tCall.ID]
+	st.specMu.Unlock()
+
+	callID := newToolCallID()
+	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
+		Type:       EventTypeToolCall,
+		Name:       tCall.Name,
+		ToolCallID: callID,
+		ArgsJSON:   tCall.ArgsJSON,
+		Reused:     speculated,
+		Content:    fmt.Sprintf("Executing: %s", tCall.Name),
+	})
 
 	if cacheOK {
 		if cached, hit := al.Cache.Get(cacheKey); hit {
@@ -148,7 +174,12 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	}
 
 	toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
-		ev := StreamEvent{Type: EventTypeToolProgress, Content: msg}
+		ev := StreamEvent{
+			Type:       EventTypeToolProgress,
+			Name:       tCall.Name,
+			ToolCallID: callID,
+			Content:    msg,
+		}
 		select {
 		case st.streamChan <- ev:
 			for _, h := range al.EventHandlers {
@@ -158,6 +189,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		}
 	})
 	toolCtx = WithDynamicContextFunc(toolCtx, al.DynamicContext)
+	toolCtx = tools.WithToolCallID(toolCtx, callID)
 	toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
 		select {
 		case st.streamChan <- ev:
@@ -171,9 +203,6 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	// on its result rather than re-executing. The speculation is always
 	// for the exact argsJSON we have now because shouldSpeculate refuses
 	// to speculate anything that could later be rewritten.
-	st.specMu.Lock()
-	sm, speculated := st.specMap[tCall.ID]
-	st.specMu.Unlock()
 	var toolResult string
 	var structured any
 	var execErr error
@@ -188,12 +217,18 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	} else {
 		toolResult, execErr = tool.Execute(toolCtx, tCall.ArgsJSON)
 	}
-	if execErr == nil && al.OnToolResult != nil {
-		rewritten, hookErr := al.OnToolResult(toolCtx, tCall.Name, tCall.ArgsJSON, toolResult, structured)
+	if al.OnToolResult != nil {
+		rewritten, hookErr := al.OnToolResult(toolCtx, callID, tCall.Name, tCall.ArgsJSON, toolResult, structured, execErr)
+		// Hook semantics:
+		//   success in → (rewritten, nil): result rewritten
+		//   success in → (_, hookErr):     conversion to tool error
+		//   error in   → (_, nil):         hook recovered the call (rewritten becomes result)
+		//   error in   → (_, hookErr):     hook replaced the original error
 		if hookErr != nil {
 			execErr = hookErr
 		} else {
 			toolResult = rewritten
+			execErr = nil
 		}
 	}
 	content := toolResult

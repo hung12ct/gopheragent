@@ -133,25 +133,34 @@ type LLMResult struct {
 // estimatedTokens is a rough (chars/4) pre-call estimate of the prompt size.
 type BeforeLLMHook func(ctx context.Context, sessionKey string, estimatedTokens int) error
 
-// ToolResultHook fires after a successful tool execution and before the
-// result is appended to the LLM context, the inline-render path runs, the
-// cache stores the value, or the anti-loop tracker records the call. The
-// returned string replaces the original result; a non-nil error converts
-// the call into a tool error (formatted via formatToolError, same as if
-// tool.Execute had returned the error).
+// ToolResultHook fires after every tool execution — success or failure —
+// before the result reaches the LLM context, the inline-render path, the
+// cache, or the anti-loop tracker. Adopters get one place to observe every
+// call instead of pairing this hook with an EventTypeError handler.
 //
-// Typical uses: rewrite URLs (e.g. local -> CDN), redact secrets, normalize
-// formats, or veto a result that fails post-validation.
+// On the success path, the returned string replaces the original result and a
+// non-nil error from the hook converts the call into a tool error (formatted
+// via formatToolError). On the error path, execErr is the tool's failure;
+// returning a nil error from the hook recovers the call (the returned string
+// becomes the result the LLM sees), while returning a non-nil error replaces
+// execErr — useful for downgrading a noisy provider error to a neutral
+// retry-hint string.
 //
-// The hook does NOT fire when tool.Execute itself returned an error — error
-// handling stays untouched. ctx is the per-tool ctx (carries WithProgressFunc
-// / WithSubAgentEmitter / WithDynamicContextFunc).
+// Typical uses: audit logging (log every call regardless of success), rewrite
+// URLs (e.g. local -> CDN), redact secrets, normalize formats, post-validate
+// successful results, or veto/recover failures.
+//
+// toolCallID is the agent-generated correlation ID matching the
+// EventTypeToolCall event for this dispatch — log it alongside your records
+// so entry events and post-execution audit lines pair up. ctx is the per-tool
+// ctx (carries WithProgressFunc / WithSubAgentEmitter / WithDynamicContextFunc
+// / WithToolCallID).
 //
 // structured is non-nil only when the executed tool implements
-// tools.StructuredResult. Hooks that mutate output (URL rewrites,
-// redaction, post-validation) should prefer reading typed fields off
-// structured rather than regex-parsing result.
-type ToolResultHook func(ctx context.Context, toolName, argsJSON, result string, structured any) (string, error)
+// tools.StructuredResult. Hooks that mutate output (URL rewrites, redaction,
+// post-validation) should prefer reading typed fields off structured rather
+// than regex-parsing result.
+type ToolResultHook func(ctx context.Context, toolCallID, toolName, argsJSON, result string, structured any, execErr error) (string, error)
 
 // LLMProvider abstracts the model backend (OpenAI/Gemini/Claude).
 type LLMProvider interface {
@@ -444,11 +453,22 @@ func safeCallHandler(h EventHandler, ctx context.Context, sessionKey string, ev 
 //
 // An event whose Source is empty originates from the receiving agent itself.
 type StreamEvent struct {
-	Type     StreamEventType `json:"type"` // use the EventType* constants
-	Content  string `json:"content,omitempty"`
+	Type    StreamEventType `json:"type"` // use the EventType* constants
+	Content string          `json:"content,omitempty"`
 	// Name is the bare tool name on EventTypeToolCall events. Consumers
 	// should prefer this over parsing Content. Empty for non-tool events.
-	Name     string `json:"name,omitempty"`
+	Name string `json:"name,omitempty"`
+	// ToolCallID is the agent-generated per-Execute correlation ID on
+	// EventTypeToolCall events — pairs entry events to OnToolResult hook
+	// invocations and downstream log lines. Empty for non-tool events.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// ArgsJSON is the raw tool arguments on EventTypeToolCall events.
+	// Empty for non-tool events.
+	ArgsJSON string `json:"args,omitempty"`
+	// Reused is true on EventTypeToolCall events when the wave executor is
+	// about to consume a speculative result rather than dispatch the tool
+	// again. Adopters use it to attribute speculation savings.
+	Reused   bool   `json:"reused,omitempty"`
 	Source   string `json:"source,omitempty"`
 	ParentID string `json:"parent_id,omitempty"`
 	Err      error  `json:"-"`
