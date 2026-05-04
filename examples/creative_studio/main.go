@@ -106,10 +106,14 @@ func buildLLMProvider() agent.LLMProvider {
 func initAgent() {
 	reg := tools.NewRegistry()
 
+	// Local-disk storage for generated assets — VMs with persistent disk.
+	// For Cloud Run / Lambda / ephemeral containers, swap in a GCS / S3
+	// adapter that implements builtin.AssetStorage.
+	mediaStorage := &builtin.LocalDiskStorage{SaveDir: mediaDir, URLBase: "/media"}
+
 	// Image generation — DALL-E 3
 	if imgTool, err := builtin.NewGenerateImageTool("", ""); err == nil {
-		imgTool.SaveDir = mediaDir
-		imgTool.URLBase = "/media"
+		imgTool.Storage = mediaStorage
 		reg.Register(imgTool)
 		log.Printf("Tool: generate_image (DALL-E 3)")
 	} else {
@@ -120,8 +124,7 @@ func initAgent() {
 	// to veo-2.0-generate-001 inside NewGenerateVideoTool when empty).
 	veoModel := strings.TrimSpace(os.Getenv("VEO_MODEL"))
 	if vidTool, err := builtin.NewGenerateVideoTool("", veoModel); err == nil {
-		vidTool.SaveDir = mediaDir
-		vidTool.URLBase = "/media"
+		vidTool.Storage = mediaStorage
 		reg.Register(vidTool)
 		resolved := veoModel
 		if resolved == "" {
