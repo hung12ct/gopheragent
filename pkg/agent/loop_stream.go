@@ -439,9 +439,20 @@ func isFreshSessionHistory(msgs []history.Message) bool {
 // RunIteration provides a fast, blocking response interface (non-streaming).
 // Thoughts are always suppressed — only final content and errors are returned.
 func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userInput string) (string, error) {
+	return al.RunIterationMessage(ctx, sessionKey, history.Message{Role: "user", Content: userInput})
+}
+
+// RunIterationMessage is the multimodal-aware variant of RunIteration. The
+// caller controls the appended user message — set Parts to pass image
+// bytes, ToolCallID for tool-result inputs, CacheHint for prompt-cache
+// breakpoints, etc. Role defaults to "user" when empty.
+func (al *AgentLoop) RunIterationMessage(ctx context.Context, sessionKey string, msg history.Message) (string, error) {
+	if msg.Role == "" {
+		msg.Role = "user"
+	}
 	streamChan := make(chan StreamEvent, runIterationBuffer)
 
-	go al.runLogicLoop(ctx, sessionKey, userInput, streamChan)
+	go al.runLogicLoop(ctx, sessionKey, msg, streamChan)
 
 	var buf strings.Builder
 	var lastErr error
@@ -477,6 +488,19 @@ func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userIn
 // RunIterationStream is a streaming version of the LLM loop that pushes data to a channel.
 // It supports SSE by streaming thoughts and response chunks.
 func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, userInput string, streamChan chan<- StreamEvent) {
+	al.RunIterationStreamMessage(ctx, sessionKey, history.Message{Role: "user", Content: userInput}, streamChan)
+}
+
+// RunIterationStreamMessage is the multimodal-aware variant of
+// RunIterationStream. The caller controls the appended user message —
+// set Parts for image bytes / mixed multimodal content, ToolCallID for
+// tool-result inputs, CacheHint for prompt-cache breakpoints. Role
+// defaults to "user" when empty. Same goroutine + channel semantics as
+// RunIterationStream.
+func (al *AgentLoop) RunIterationStreamMessage(ctx context.Context, sessionKey string, msg history.Message, streamChan chan<- StreamEvent) {
+	if msg.Role == "" {
+		msg.Role = "user"
+	}
 	internalChan := make(chan StreamEvent, runIterationStreamBuffer)
 	emitThoughts := al.EmitThoughts
 
@@ -497,7 +521,7 @@ func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, 
 		}
 	}()
 
-	go al.runLogicLoop(ctx, sessionKey, userInput, internalChan)
+	go al.runLogicLoop(ctx, sessionKey, msg, internalChan)
 }
 
 // latestUserMessage returns the Content of the most recent user message, or
@@ -537,8 +561,12 @@ func (al *AgentLoop) saveSession(_ context.Context, sessionKey string, msgs []hi
 // SessionKey string is the type used to inject sessionKey into context
 type SessionKeyCtx string
 
-// runLogicLoop holds the actual execution context separated from the stream proxy
-func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userInput string, streamChan chan<- StreamEvent) {
+// runLogicLoop holds the actual execution context separated from the stream proxy.
+// userMsg is appended verbatim — callers control role / content / parts /
+// cache hints. The string-based RunIteration{,Stream} entrypoints wrap a
+// plain text message; RunIteration{,Stream}Message exposes the full shape
+// for multimodal input (image bytes, mixed parts).
+func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMsg history.Message, streamChan chan<- StreamEvent) {
 	defer close(streamChan)
 	ctx = context.WithValue(ctx, SessionKeyCtx("sessionKey"), sessionKey)
 
@@ -548,7 +576,10 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		if hook == nil {
 			continue
 		}
-		if err := hook(ctx, sessionKey, userInput); err != nil {
+		// Hooks predate multimodal input; pass the text Content so the
+		// existing string-based contract is preserved. Parts are visible
+		// in session history once SetHistory writes the message below.
+		if err := hook(ctx, sessionKey, userMsg.Content); err != nil {
 			al.emit(ctx, sessionKey, streamChan, errEvent(&HookRejectedError{Cause: err}))
 			return
 		}
@@ -561,7 +592,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 			Content: fmt.Sprintf(`{"session_key":%q}`, sessionKey),
 		})
 	}
-	msgs := append(existing, history.Message{Role: "user", Content: userInput})
+	msgs := append(existing, userMsg)
 	msgs = PatchDanglingToolCalls(msgs)
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 

@@ -100,7 +100,7 @@ func TestReflect_NoOpRoundLeavesAnswerIntact(t *testing.T) {
 	loop.Reflect = 2
 
 	streamChan := make(chan StreamEvent, 64)
-	go loop.runLogicLoop(context.Background(), "s1", "hi", streamChan)
+	go loop.runLogicLoop(context.Background(), "s1", history.Message{Role: "user", Content: "hi"}, streamChan)
 
 	var reflectedCount int
 	var finalContentBuf strings.Builder
@@ -131,7 +131,7 @@ func TestReflect_StreamsUnderReflectSource(t *testing.T) {
 	loop.Reflect = 1
 
 	streamChan := make(chan StreamEvent, 64)
-	go loop.runLogicLoop(context.Background(), "s1", "hi", streamChan)
+	go loop.runLogicLoop(context.Background(), "s1", history.Message{Role: "user", Content: "hi"}, streamChan)
 
 	sawReflectSource := false
 	sawReflectedEvent := false
