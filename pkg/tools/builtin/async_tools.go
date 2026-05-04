@@ -26,8 +26,19 @@ func asyncTaskIDSchema() tools.ToolSchema {
 
 // StartAsyncTaskTool spawns a background worker sub-agent and returns a task_id
 // that can be polled, cancelled, or steered via the other async tools.
+// Construct via NewStartAsyncTaskTool — the manager is required.
 type StartAsyncTaskTool struct {
-	Manager *agent.AsyncTaskManager
+	manager *agent.AsyncTaskManager
+}
+
+// NewStartAsyncTaskTool returns a StartAsyncTaskTool bound to mgr. Panics if
+// mgr is nil — every async tool needs a manager and a nil panic at startup is
+// strictly better than a nil-pointer deref on the first Execute.
+func NewStartAsyncTaskTool(mgr *agent.AsyncTaskManager) *StartAsyncTaskTool {
+	if mgr == nil {
+		panic("builtin: NewStartAsyncTaskTool: manager is required")
+	}
+	return &StartAsyncTaskTool{manager: mgr}
 }
 
 func (t *StartAsyncTaskTool) Name() string { return "start_async_task" }
@@ -64,7 +75,7 @@ func (t *StartAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (str
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
 		return "", fmt.Errorf("tools: invalid json: %w", err)
 	}
-	taskID, err := t.Manager.StartTask(ctx, sessionKey, input.AgentName, input.TaskDescription)
+	taskID, err := t.manager.StartTask(ctx, sessionKey, input.AgentName, input.TaskDescription)
 	if err != nil {
 		return "", err
 	}
@@ -72,8 +83,18 @@ func (t *StartAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (str
 }
 
 // CheckAsyncTaskTool reports the status or final result of an async task.
+// Construct via NewCheckAsyncTaskTool.
 type CheckAsyncTaskTool struct {
-	Manager *agent.AsyncTaskManager
+	manager *agent.AsyncTaskManager
+}
+
+// NewCheckAsyncTaskTool returns a CheckAsyncTaskTool bound to mgr. Panics if
+// mgr is nil.
+func NewCheckAsyncTaskTool(mgr *agent.AsyncTaskManager) *CheckAsyncTaskTool {
+	if mgr == nil {
+		panic("builtin: NewCheckAsyncTaskTool: manager is required")
+	}
+	return &CheckAsyncTaskTool{manager: mgr}
 }
 
 func (t *CheckAsyncTaskTool) Name() string { return "check_async_task" }
@@ -95,7 +116,7 @@ func (t *CheckAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (str
 		return "", fmt.Errorf("tools: invalid json: %w", err)
 	}
 
-	tasks := t.Manager.SyncTasks(sessionKey)
+	tasks := t.manager.SyncTasks(sessionKey)
 	task, ok := tasks[input.TaskID]
 	if !ok {
 		return "", fmt.Errorf("tools: task_id %s not found", input.TaskID)
@@ -108,8 +129,18 @@ func (t *CheckAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (str
 }
 
 // CancelAsyncTaskTool signals a running async task to stop via its CancelFunc.
+// Construct via NewCancelAsyncTaskTool.
 type CancelAsyncTaskTool struct {
-	Manager *agent.AsyncTaskManager
+	manager *agent.AsyncTaskManager
+}
+
+// NewCancelAsyncTaskTool returns a CancelAsyncTaskTool bound to mgr. Panics if
+// mgr is nil.
+func NewCancelAsyncTaskTool(mgr *agent.AsyncTaskManager) *CancelAsyncTaskTool {
+	if mgr == nil {
+		panic("builtin: NewCancelAsyncTaskTool: manager is required")
+	}
+	return &CancelAsyncTaskTool{manager: mgr}
 }
 
 func (t *CancelAsyncTaskTool) Name() string                        { return "cancel_async_task" }
@@ -129,15 +160,25 @@ func (t *CancelAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (st
 		return "", fmt.Errorf("tools: invalid json: %w", err)
 	}
 
-	if err := t.Manager.CancelTask(sessionKey, input.TaskID); err != nil {
+	if err := t.manager.CancelTask(sessionKey, input.TaskID); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Task %s has been cancelled.", input.TaskID), nil
 }
 
 // UpdateAsyncTaskTool delivers a steering instruction to a running worker.
+// Construct via NewUpdateAsyncTaskTool.
 type UpdateAsyncTaskTool struct {
-	Manager *agent.AsyncTaskManager
+	manager *agent.AsyncTaskManager
+}
+
+// NewUpdateAsyncTaskTool returns an UpdateAsyncTaskTool bound to mgr. Panics
+// if mgr is nil.
+func NewUpdateAsyncTaskTool(mgr *agent.AsyncTaskManager) *UpdateAsyncTaskTool {
+	if mgr == nil {
+		panic("builtin: NewUpdateAsyncTaskTool: manager is required")
+	}
+	return &UpdateAsyncTaskTool{manager: mgr}
 }
 
 func (t *UpdateAsyncTaskTool) Name() string { return "update_async_task" }
@@ -171,15 +212,25 @@ func (t *UpdateAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (st
 		return "", fmt.Errorf("tools: invalid json: %w", err)
 	}
 
-	if err := t.Manager.UpdateTask(input.TaskID, input.Instruction); err != nil {
+	if err := t.manager.UpdateTask(input.TaskID, input.Instruction); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Instruction sent to task %s.", input.TaskID), nil
 }
 
 // ListAsyncTasksTool enumerates every async task tracked in the current session.
+// Construct via NewListAsyncTasksTool.
 type ListAsyncTasksTool struct {
-	Manager *agent.AsyncTaskManager
+	manager *agent.AsyncTaskManager
+}
+
+// NewListAsyncTasksTool returns a ListAsyncTasksTool bound to mgr. Panics if
+// mgr is nil.
+func NewListAsyncTasksTool(mgr *agent.AsyncTaskManager) *ListAsyncTasksTool {
+	if mgr == nil {
+		panic("builtin: NewListAsyncTasksTool: manager is required")
+	}
+	return &ListAsyncTasksTool{manager: mgr}
 }
 
 func (t *ListAsyncTasksTool) Name() string                       { return "list_async_tasks" }
@@ -194,7 +245,7 @@ func (t *ListAsyncTasksTool) Execute(ctx context.Context, inputJSON string) (str
 	if !ok {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}
-	tasks := t.Manager.SyncTasks(sessionKey)
+	tasks := t.manager.SyncTasks(sessionKey)
 	if len(tasks) == 0 {
 		return "No async tasks found in this session.", nil
 	}

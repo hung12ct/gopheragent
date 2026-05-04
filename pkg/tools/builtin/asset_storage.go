@@ -28,32 +28,43 @@ type AssetStorage interface {
 }
 
 // LocalDiskStorage is the default AssetStorage implementation: writes
-// bytes under SaveDir, returns URLBase/<filename>. Suitable for
+// bytes under saveDir, returns urlBase/<filename>. Suitable for
 // long-lived VMs with persistent disk and an HTTP server fronting
-// SaveDir; broken on container platforms with ephemeral disk — use
+// saveDir; broken on container platforms with ephemeral disk — use
 // the GCS / S3 / Azure Blob adapter shipped in your integration there.
+//
+// Construct via NewLocalDiskStorage; the unexported fields prevent the
+// "did my post-construction assignment take effect?" tax that public
+// mutable fields invite.
 type LocalDiskStorage struct {
-	// SaveDir is the local directory to write files into. Created with
-	// 0755 if it does not exist. Required.
-	SaveDir string
-	// URLBase is prepended to the filename to form the returned
-	// publicURL. Trailing slashes are tolerated. Required.
-	URLBase string
+	saveDir string
+	urlBase string
 }
 
-// Save implements AssetStorage by writing data to <SaveDir>/<filename>
-// and returning <URLBase>/<filename>.
-func (s *LocalDiskStorage) Save(_ context.Context, filename string, data []byte, _ string) (string, error) {
-	if s.SaveDir == "" {
-		return "", fmt.Errorf("builtin: LocalDiskStorage: SaveDir not configured")
+// NewLocalDiskStorage constructs a LocalDiskStorage that writes files
+// under saveDir and serves them under urlBase. Both arguments are
+// required; passing "" returns an error so misconfiguration surfaces at
+// startup rather than on the first generation. urlBase trailing slashes
+// are tolerated.
+func NewLocalDiskStorage(saveDir, urlBase string) (*LocalDiskStorage, error) {
+	if saveDir == "" {
+		return nil, fmt.Errorf("builtin: NewLocalDiskStorage: saveDir is required")
 	}
-	if err := os.MkdirAll(s.SaveDir, 0o755); err != nil {
+	if urlBase == "" {
+		return nil, fmt.Errorf("builtin: NewLocalDiskStorage: urlBase is required")
+	}
+	return &LocalDiskStorage{saveDir: saveDir, urlBase: strings.TrimRight(urlBase, "/")}, nil
+}
+
+// Save implements AssetStorage by writing data to <saveDir>/<filename>
+// and returning <urlBase>/<filename>.
+func (s *LocalDiskStorage) Save(_ context.Context, filename string, data []byte, _ string) (string, error) {
+	if err := os.MkdirAll(s.saveDir, 0o755); err != nil {
 		return "", fmt.Errorf("builtin: LocalDiskStorage: mkdir: %w", err)
 	}
-	dest := filepath.Join(s.SaveDir, filename)
+	dest := filepath.Join(s.saveDir, filename)
 	if err := os.WriteFile(dest, data, 0o644); err != nil {
 		return "", fmt.Errorf("builtin: LocalDiskStorage: write: %w", err)
 	}
-	base := strings.TrimRight(s.URLBase, "/")
-	return base + "/" + filename, nil
+	return s.urlBase + "/" + filename, nil
 }

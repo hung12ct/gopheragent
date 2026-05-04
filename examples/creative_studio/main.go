@@ -109,7 +109,10 @@ func initAgent() {
 	// Local-disk storage for generated assets — VMs with persistent disk.
 	// For Cloud Run / Lambda / ephemeral containers, swap in a GCS / S3
 	// adapter that implements builtin.AssetStorage.
-	mediaStorage := &builtin.LocalDiskStorage{SaveDir: mediaDir, URLBase: "/media"}
+	mediaStorage, err := builtin.NewLocalDiskStorage(mediaDir, "/media")
+	if err != nil {
+		log.Fatalf("NewLocalDiskStorage: %v", err)
+	}
 
 	// Image generation — DALL-E 3
 	if imgTool, err := builtin.NewGenerateImageTool("", ""); err == nil {

@@ -40,7 +40,10 @@ func (f *fakeAssetStorage) Save(_ context.Context, filename string, data []byte,
 
 func TestLocalDiskStorage_WritesFileAndReturnsURL(t *testing.T) {
 	dir := t.TempDir()
-	store := &LocalDiskStorage{SaveDir: dir, URLBase: "/media/"}
+	store, err := NewLocalDiskStorage(dir, "/media/")
+	if err != nil {
+		t.Fatalf("NewLocalDiskStorage: %v", err)
+	}
 
 	url, err := store.Save(context.Background(), "kitten.png", []byte("PNGBYTES"), "image/png")
 	if err != nil {
@@ -63,7 +66,10 @@ func TestLocalDiskStorage_TrimsTrailingSlashOnURLBase(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{"/media", "/media/", "/media//"}
 	for _, base := range cases {
-		store := &LocalDiskStorage{SaveDir: dir, URLBase: base}
+		store, err := NewLocalDiskStorage(dir, base)
+		if err != nil {
+			t.Fatalf("base=%q NewLocalDiskStorage: %v", base, err)
+		}
 		url, err := store.Save(context.Background(), "x.png", []byte("x"), "image/png")
 		if err != nil {
 			t.Fatalf("base=%q Save: %v", base, err)
@@ -74,17 +80,22 @@ func TestLocalDiskStorage_TrimsTrailingSlashOnURLBase(t *testing.T) {
 	}
 }
 
-func TestLocalDiskStorage_ErrorsWhenSaveDirEmpty(t *testing.T) {
-	store := &LocalDiskStorage{URLBase: "/media"}
-	if _, err := store.Save(context.Background(), "x.png", []byte("x"), "image/png"); err == nil {
-		t.Fatal("expected error when SaveDir is empty")
+func TestNewLocalDiskStorage_RejectsEmptyArgs(t *testing.T) {
+	if _, err := NewLocalDiskStorage("", "/media"); err == nil {
+		t.Fatal("expected error when saveDir is empty")
+	}
+	if _, err := NewLocalDiskStorage("/tmp/x", ""); err == nil {
+		t.Fatal("expected error when urlBase is empty")
 	}
 }
 
 func TestLocalDiskStorage_CreatesDirectoryIfMissing(t *testing.T) {
 	parent := t.TempDir()
 	nested := filepath.Join(parent, "does", "not", "exist", "yet")
-	store := &LocalDiskStorage{SaveDir: nested, URLBase: "/media"}
+	store, err := NewLocalDiskStorage(nested, "/media")
+	if err != nil {
+		t.Fatalf("NewLocalDiskStorage: %v", err)
+	}
 
 	if _, err := store.Save(context.Background(), "x.png", []byte("x"), "image/png"); err != nil {
 		t.Fatalf("Save: %v", err)

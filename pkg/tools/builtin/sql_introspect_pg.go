@@ -35,7 +35,7 @@ var pgIdentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //	schema, err := builtin.IntrospectPostgresSchema(ctx, db, "",
 //	    "events", "users", "orgs")
 //	if err != nil { ... }
-//	sqlTool := builtin.NewSQLAgentTool(db, "", sm, provider).WithSchema(schema)
+//	sqlTool := builtin.NewCallSQLAgentTool(db, "", sm, provider).WithSchema(schema)
 func IntrospectPostgresSchema(ctx context.Context, db *sql.DB, schemaName string, tableNames ...string) (Schema, error) {
 	if len(tableNames) == 0 {
 		return Schema{}, fmt.Errorf("tools: introspect: at least one table name is required")

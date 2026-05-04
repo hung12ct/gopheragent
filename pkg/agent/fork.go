@@ -10,13 +10,17 @@ import (
 // forking, the caller can append a new user message to the new session and run
 // the loop again.
 //
-// Returns the generated new session key. Fails if the session has no user
-// messages or the underlying Fork call fails.
+// Requires sm to implement SessionForker; returns an error if it does not.
+// Fails if the session has no user messages or the underlying Fork fails.
 func ForkAtLastUser(ctx context.Context, sm SessionManager, sessionKey string) (string, error) {
+	forker, ok := sm.(SessionForker)
+	if !ok {
+		return "", fmt.Errorf("agent: ForkAtLastUser: session manager does not implement SessionForker")
+	}
 	msgs := sm.GetHistory(ctx, sessionKey)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
-			return sm.Fork(ctx, sessionKey, i)
+			return forker.Fork(ctx, sessionKey, i)
 		}
 	}
 	return "", fmt.Errorf("agent: ForkAtLastUser: session %q has no user messages", sessionKey)

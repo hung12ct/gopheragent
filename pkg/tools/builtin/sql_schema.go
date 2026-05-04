@@ -7,7 +7,7 @@ import (
 )
 
 // Schema is a structured representation of database metadata consumed by
-// SQLAgentTool. Keeping the schema structured (rather than a free-form string)
+// CallSQLAgentTool. Keeping the schema structured (rather than a free-form string)
 // unlocks two wins:
 //
 //  1. Prompt-side grounding — String() renders a compact, consistent markdown
