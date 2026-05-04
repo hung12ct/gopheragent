@@ -13,7 +13,7 @@ API hygiene batch — small interfaces, aligned names, constructor-only built-in
 - `builtin.NewStartAsyncTaskTool` / `NewCheckAsyncTaskTool` / `NewCancelAsyncTaskTool` / `NewUpdateAsyncTaskTool` / `NewListAsyncTasksTool` — every async tool now constructs through a manager-checked function, matching the rest of the builtin family. (#80)
 
 ### Changed (breaking)
-- `agent.SessionManager` core interface drops to 6 methods (CLAUDE.md "small interface" budget). `Fork`, `Query`, `SoftDelete`, `Restore`, `PurgeDeletedBefore` move to the new capability interfaces. Existing concrete backends (InMem, File, MySQL) and the `historyfake` continue to satisfy every method, so wiring with the shipped backends is unchanged.
+- `agent.SessionManager` core interface drops to 6 methods. `Fork`, `Query`, `SoftDelete`, `Restore`, `PurgeDeletedBefore` move to the new capability interfaces. Existing concrete backends (InMem, File, MySQL) and the `historyfake` continue to satisfy every method, so wiring with the shipped backends is unchanged.
 - `builtin.SQLAgentTool` renamed to `builtin.CallSQLAgentTool` (constructor `NewCallSQLAgentTool`). The type name now matches the registered tool name `"call_sql_agent"` and the existing `CallSubAgentTool` convention.
 - `builtin.LocalDiskStorage.SaveDir` / `URLBase` fields **removed** — fields are unexported. Construct via `builtin.NewLocalDiskStorage(saveDir, urlBase)`.
 - The five async-task tools' exported `Manager` field is now unexported. Construct via the new `New…` functions.
