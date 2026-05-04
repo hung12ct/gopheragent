@@ -250,6 +250,55 @@ func TestWithLogging_ContextExtractor(t *testing.T) {
 	}
 }
 
+// TestWithLogging_SuccessLevelDemotesEntryAndOk pins the noise-control knob:
+// passing WithSuccessLevel(LevelDebug) sends entry + ok lines below a
+// LevelInfo handler's threshold so they get filtered out, while errors
+// (always LevelError) still surface.
+func TestWithLogging_SuccessLevelDemotesEntryAndOk(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	tool := Chain(&mockTool{name: "log_tool"}, WithLogging(logger, WithSuccessLevel(slog.LevelDebug)))
+
+	if _, err := tool.Execute(context.Background(), "payload"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(buf.String(), `"msg":"tool call"`) || strings.Contains(buf.String(), `"msg":"tool ok"`) {
+		t.Fatalf("entry/ok lines should be below LevelInfo when demoted to Debug — got: %s", buf.String())
+	}
+
+	// Error path still surfaces at LevelError.
+	buf.Reset()
+	failTool := Chain(&mockTool{
+		name:   "fail",
+		execFn: func(_ context.Context, _ string) (string, error) { return "", errors.New("boom") },
+	}, WithLogging(logger, WithSuccessLevel(slog.LevelDebug)))
+	_, _ = failTool.Execute(context.Background(), "payload")
+	if !strings.Contains(buf.String(), `"msg":"tool error"`) {
+		t.Fatalf("error line must surface even with SuccessLevel=Debug: %s", buf.String())
+	}
+}
+
+// TestWithLogging_ArgsTruncation pins the args-budget knob: oversized args
+// are replaced with their prefix + a length marker so log lines stay
+// bounded for tools that accept large blobs.
+func TestWithLogging_ArgsTruncation(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	tool := Chain(&mockTool{name: "log_tool"}, WithLogging(logger, WithArgsTruncation(8)))
+
+	bigArgs := strings.Repeat("x", 200)
+	if _, err := tool.Execute(context.Background(), bigArgs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "truncated, 200 bytes total") {
+		t.Fatalf("expected truncation marker with original length: %s", out)
+	}
+	if strings.Count(out, "x") > 50 { // 8 prefix bytes + JSON encoding noise; never the full 200
+		t.Fatalf("truncation did not cap the args payload: %s", out)
+	}
+}
+
 func TestMiddleware_PassthroughMethods(t *testing.T) {
 	base := &mockTool{name: "base"}
 	wrapped := Chain(base, WithTimeout(time.Second))

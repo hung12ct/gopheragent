@@ -36,7 +36,31 @@ func (w *wrappedTool) Execute(ctx context.Context, argsJSON string) (string, err
 type LoggingOption func(*loggingConfig)
 
 type loggingConfig struct {
-	extractor func(context.Context) []slog.Attr
+	extractor       func(context.Context) []slog.Attr
+	successLevel    slog.Level
+	successLevelSet bool
+	argsTruncate    int
+}
+
+// WithSuccessLevel sets the slog level for the entry ("tool call") and
+// successful exit ("tool ok") log lines. Errors always log at slog.LevelError
+// regardless. Default is slog.LevelInfo. Demote to slog.LevelDebug in
+// production to keep error visibility while silencing healthy traffic:
+//
+//	tools.WithLogging(prodLogger, tools.WithSuccessLevel(slog.LevelDebug))
+func WithSuccessLevel(level slog.Level) LoggingOption {
+	return func(c *loggingConfig) {
+		c.successLevel = level
+		c.successLevelSet = true
+	}
+}
+
+// WithArgsTruncation caps the args string included on the entry log line at
+// maxBytes; longer args are replaced with their prefix plus a length marker.
+// 0 (default) disables truncation. Use to keep log lines bounded when tools
+// accept large blobs (image data URIs, multi-KB SQL, etc).
+func WithArgsTruncation(maxBytes int) LoggingOption {
+	return func(c *loggingConfig) { c.argsTruncate = maxBytes }
 }
 
 // WithContextExtractor lets adopters surface ctx-scoped values (trace_id,
@@ -65,9 +89,12 @@ func WithContextExtractor(fn func(context.Context) []slog.Attr) LoggingOption {
 //
 // Pair with WithContextExtractor to surface trace IDs, tenant tags, etc.
 func WithLogging(logger *slog.Logger, opts ...LoggingOption) Middleware {
-	cfg := &loggingConfig{}
+	cfg := &loggingConfig{successLevel: slog.LevelInfo}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+	if !cfg.successLevelSet {
+		cfg.successLevel = slog.LevelInfo
 	}
 	return func(next Tool) Tool {
 		return &wrappedTool{
@@ -81,18 +108,28 @@ func WithLogging(logger *slog.Logger, opts ...LoggingOption) Middleware {
 					attrs = append(attrs, cfg.extractor(ctx)...)
 				}
 				start := time.Now()
-				logger.LogAttrs(ctx, slog.LevelInfo, "tool call", append(attrs, slog.String("args", argsJSON))...)
+				logger.LogAttrs(ctx, cfg.successLevel, "tool call", append(attrs, slog.String("args", truncateArgs(argsJSON, cfg.argsTruncate)))...)
 				result, err := next.Execute(ctx, argsJSON)
 				exitAttrs := append(attrs, slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 				if err != nil {
 					logger.LogAttrs(ctx, slog.LevelError, "tool error", append(exitAttrs, slog.Any("error", err))...)
 				} else {
-					logger.LogAttrs(ctx, slog.LevelInfo, "tool ok", append(exitAttrs, slog.Int("result_bytes", len(result)))...)
+					logger.LogAttrs(ctx, cfg.successLevel, "tool ok", append(exitAttrs, slog.Int("result_bytes", len(result)))...)
 				}
 				return result, err
 			},
 		}
 	}
+}
+
+// truncateArgs returns args unchanged when maxBytes is 0 or the string fits;
+// otherwise it returns the prefix plus a length marker so log scrapers can
+// see how much was elided without scanning the full payload.
+func truncateArgs(args string, maxBytes int) string {
+	if maxBytes <= 0 || len(args) <= maxBytes {
+		return args
+	}
+	return args[:maxBytes] + fmt.Sprintf("...(truncated, %d bytes total)", len(args))
 }
 
 // WithTiming calls onDone with the tool name, wall-clock duration, and error after each
