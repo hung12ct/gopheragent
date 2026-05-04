@@ -29,8 +29,8 @@ const (
 // until the operation completes (up to 5 minutes). Implements InlineRenderer so
 // the video embed streams directly to the frontend chat.
 //
-// Set Storage before use — same semantics as GenerateImageTool. Required;
-// Execute returns an error if Storage is nil.
+// storage is a required AssetStorage handed to the constructor — same
+// semantics as GenerateImageTool.
 type generateVideoArgs struct {
 	Prompt          string `json:"prompt"                     description:"Detailed scene description. Include action, camera motion, lighting, style, and mood. Example: 'Slow dolly-in on a glowing neon cityscape at night, rain-slicked streets reflecting pink and blue lights, cinematic film grain.'"`
 	AspectRatio     string `json:"aspect_ratio,omitempty"     description:"16:9 for landscape/cinematic, 9:16 for vertical/social media." enum:"16:9,9:16"`
@@ -42,19 +42,22 @@ type GenerateVideoTool struct {
 	httpClient *http.Client
 	apiKey     string // kept for authenticated downloads from the Gemini Files API
 	model      string
-	// Storage persists the generated video bytes and returns the public
-	// URL used in the inline <video> embed. Required.
-	Storage AssetStorage
+	storage    AssetStorage
 }
 
 // NewGenerateVideoTool builds a video generation tool.
 // apiKey defaults to GEMINI_API_KEY; model defaults to veo-2.0-generate-001.
-func NewGenerateVideoTool(apiKey, model string) (*GenerateVideoTool, error) {
+// storage is required — pass builtin.NewLocalDiskStorage(saveDir, urlBase)
+// for local-disk persistence, or any AssetStorage implementation for cloud.
+func NewGenerateVideoTool(apiKey, model string, storage AssetStorage) (*GenerateVideoTool, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("GEMINI_API_KEY")
 	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("tools: GEMINI_API_KEY not set")
+	}
+	if storage == nil {
+		return nil, fmt.Errorf("tools: NewGenerateVideoTool: storage is required")
 	}
 	if model == "" {
 		model = defaultVideoModel
@@ -70,6 +73,7 @@ func NewGenerateVideoTool(apiKey, model string) (*GenerateVideoTool, error) {
 		httpClient: &http.Client{Timeout: videoDownloadTimeout},
 		apiKey:     apiKey,
 		model:      model,
+		storage:    storage,
 	}, nil
 }
 
@@ -182,11 +186,11 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 }
 
 // saveVideo persists the video bytes (or downloads from a Gemini Files
-// URI first) via Storage, returning the public URL the storage backend
+// URI first) via storage, returning the public URL the storage backend
 // assigned.
 func (t *GenerateVideoTool) saveVideo(ctx context.Context, vid *genai.Video) (string, error) {
-	if t.Storage == nil {
-		return "", fmt.Errorf("tools: generate_video: Storage not configured")
+	if t.storage == nil {
+		return "", fmt.Errorf("tools: generate_video: storage not configured")
 	}
 
 	var data []byte
@@ -195,7 +199,7 @@ func (t *GenerateVideoTool) saveVideo(ctx context.Context, vid *genai.Video) (st
 		data = vid.VideoBytes
 	case vid.URI != "":
 		// Veo 2 via the Gemini API returns a Files API URI that requires the API
-		// key to download. Fetch it server-side and hand to Storage.
+		// key to download. Fetch it server-side and hand to storage.
 		var err error
 		data, err = t.downloadURI(ctx, vid.URI)
 		if err != nil {
@@ -206,7 +210,7 @@ func (t *GenerateVideoTool) saveVideo(ctx context.Context, vid *genai.Video) (st
 	}
 
 	filename := fmt.Sprintf("vid-%d.mp4", time.Now().UnixNano())
-	return t.Storage.Save(ctx, filename, data, "video/mp4")
+	return t.storage.Save(ctx, filename, data, "video/mp4")
 }
 
 // downloadURI fetches a Gemini Files API URI, appending the API key so the

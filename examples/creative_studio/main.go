@@ -115,8 +115,7 @@ func initAgent() {
 	}
 
 	// Image generation — DALL-E 3
-	if imgTool, err := builtin.NewGenerateImageTool("", ""); err == nil {
-		imgTool.Storage = mediaStorage
+	if imgTool, err := builtin.NewGenerateImageTool("", "", mediaStorage); err == nil {
 		reg.Register(imgTool)
 		log.Printf("Tool: generate_image (DALL-E 3)")
 	} else {
@@ -126,8 +125,7 @@ func initAgent() {
 	// Video generation — Veo (model configurable via VEO_MODEL; defaults
 	// to veo-2.0-generate-001 inside NewGenerateVideoTool when empty).
 	veoModel := strings.TrimSpace(os.Getenv("VEO_MODEL"))
-	if vidTool, err := builtin.NewGenerateVideoTool("", veoModel); err == nil {
-		vidTool.Storage = mediaStorage
+	if vidTool, err := builtin.NewGenerateVideoTool("", veoModel, mediaStorage); err == nil {
 		reg.Register(vidTool)
 		resolved := veoModel
 		if resolved == "" {

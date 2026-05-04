@@ -28,12 +28,10 @@ const (
 // image embed that the frontend renders inline. Implements InlineRenderer so the
 // image appears in the chat immediately without waiting for the LLM to format it.
 //
-// Persistence: set Storage to a custom AssetStorage (GCS, S3, Azure Blob)
-// for cloud / container deployments. The legacy SaveDir+URLBase fields
-// still work — when Storage is nil and SaveDir is set, the tool builds a
-// LocalDiskStorage internally so existing callers keep working unchanged.
-// Cloud-deployed adopters MUST set Storage; local-disk on Cloud Run /
-// Lambda / ephemeral containers loses the file between requests.
+// Persistence: storage is a required AssetStorage handed to the constructor.
+// Use builtin.NewLocalDiskStorage for VMs with persistent disk; plug in a
+// GCS / S3 / Azure Blob adapter for container platforms with ephemeral disk
+// (Cloud Run, Lambda, Fargate) — local-disk loses the file between requests.
 type generateImageArgs struct {
 	Prompt  string `json:"prompt"            description:"Detailed visual description. Include style (photorealistic, oil painting, anime…), lighting, mood, camera angle, color palette."`
 	Size    string `json:"size,omitempty"    description:"Image dimensions. Use 1792x1024 for landscapes/wide scenes, 1024x1792 for portraits/tall compositions, 1024x1024 for balanced square shots." enum:"1024x1024,1792x1024,1024x1792"`
@@ -45,22 +43,22 @@ type GenerateImageTool struct {
 	client     *openai.Client
 	httpClient *http.Client
 	model      string
-	// Storage persists the downloaded image bytes and returns the public
-	// URL the markdown embed points at. Required — Execute returns an
-	// error if Storage is nil. Use builtin.LocalDiskStorage for VMs with
-	// persistent disk; plug in a GCS / S3 / Azure Blob adapter for
-	// container platforms with ephemeral disk.
-	Storage AssetStorage
+	storage    AssetStorage
 }
 
 // NewGenerateImageTool builds an image generation tool.
 // apiKey defaults to OPENAI_API_KEY; model defaults to dall-e-3.
-func NewGenerateImageTool(apiKey, model string) (*GenerateImageTool, error) {
+// storage is required — pass builtin.NewLocalDiskStorage(saveDir, urlBase)
+// for local-disk persistence, or any AssetStorage implementation for cloud.
+func NewGenerateImageTool(apiKey, model string, storage AssetStorage) (*GenerateImageTool, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("tools: OPENAI_API_KEY not set")
+	}
+	if storage == nil {
+		return nil, fmt.Errorf("tools: NewGenerateImageTool: storage is required")
 	}
 	if model == "" {
 		model = "dall-e-3"
@@ -69,6 +67,7 @@ func NewGenerateImageTool(apiKey, model string) (*GenerateImageTool, error) {
 		client:     openai.NewClient(apiKey),
 		httpClient: &http.Client{Timeout: imageDownloadTimeout},
 		model:      model,
+		storage:    storage,
 	}, nil
 }
 
@@ -142,12 +141,12 @@ func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (strin
 	return fmt.Sprintf("![%s](%s)\n\n*Prompt: %s*", alt, localURL, revisedPrompt), nil
 }
 
-// download fetches an image from src, hands the bytes to Storage, and
+// download fetches an image from src, hands the bytes to storage, and
 // returns the public URL the storage backend assigned. Caps the download
 // size and honors ctx for cancellation.
 func (t *GenerateImageTool) download(ctx context.Context, src string) (string, error) {
-	if t.Storage == nil {
-		return "", fmt.Errorf("tools: generate_image: Storage not configured")
+	if t.storage == nil {
+		return "", fmt.Errorf("tools: generate_image: storage not configured")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
@@ -171,7 +170,7 @@ func (t *GenerateImageTool) download(ctx context.Context, src string) (string, e
 	if err != nil {
 		return "", err
 	}
-	return t.Storage.Save(ctx, filename, data, contentType)
+	return t.storage.Save(ctx, filename, data, contentType)
 }
 
 // extensionForImage chooses a file extension from the response Content-Type,
