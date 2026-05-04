@@ -56,6 +56,34 @@ type Cacheable interface {
 	Cacheable() bool
 }
 
+// StructuredResult is optionally implemented by tools that produce a
+// typed payload alongside their string result. The string is what flows
+// to the LLM (token cost stays the same); the typed payload is delivered
+// to the agent loop's OnToolResult hook so post-execution mutators can
+// work with fields instead of substring-replacing markdown.
+//
+// Implementation pattern: tools that satisfy StructuredResult typically
+// also implement Tool — the registry needs Execute for the standard path.
+// Keep the two implementations consistent by having Execute delegate to
+// ExecuteStructured and discard the payload:
+//
+//	func (t *MyTool) Execute(ctx context.Context, args string) (string, error) {
+//	    s, _, err := t.ExecuteStructured(ctx, args)
+//	    return s, err
+//	}
+//
+//	func (t *MyTool) ExecuteStructured(ctx context.Context, args string) (string, any, error) {
+//	    // ... real work
+//	    return formatted, MyPayload{Field: x}, nil
+//	}
+//
+// The agent loop type-asserts on StructuredResult and prefers
+// ExecuteStructured when available, so the structured payload reaches
+// OnToolResult automatically.
+type StructuredResult interface {
+	ExecuteStructured(ctx context.Context, argsJSON string) (result string, structured any, err error)
+}
+
 // progressKey is the unexported context key for the progress reporting function.
 type progressKey struct{}
 
