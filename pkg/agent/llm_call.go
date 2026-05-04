@@ -25,6 +25,13 @@ func (al *AgentLoop) callLLMWithRetry(ctx context.Context, st *iterationState, m
 			Type:    "thought",
 			Content: fmt.Sprintf("LLM error (%v). Retrying in %s (attempt %d/%d)...", err, delay, attempt+1, al.Retry.MaxRetries),
 		})
+		if al.Retry.OnAttempt != nil {
+			// 1-indexed: the user-visible "attempt 1/3" matches the loop's
+			// retry semantics ("first retry"). Hook runs synchronously so
+			// span events / metric increments stay associated with the loop
+			// goroutine.
+			al.Retry.OnAttempt(ctx, attempt+1, err, delay)
+		}
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():

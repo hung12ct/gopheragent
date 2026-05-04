@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// RetryAttemptHook fires once per retry attempt, right before the
+// exponential-backoff wait. attempt is 1-indexed (first retry = 1). err
+// is the failure that triggered the retry. nextDelay is how long the
+// loop will sleep before the next call. The hook runs synchronously on
+// the loop goroutine — keep it cheap (log line, metric increment, span
+// event). Adopters use it to answer "is the run slow because of retries
+// or one slow call?" without parsing thought events.
+type RetryAttemptHook func(ctx context.Context, attempt int, err error, nextDelay time.Duration)
+
 // RetryConfig controls exponential-backoff retry behaviour for LLM calls.
 // Only transient errors are retried; context cancellation / deadline errors are not.
 // Retry is silently skipped if any "content" event has already been streamed to the
@@ -20,6 +29,10 @@ type RetryConfig struct {
 
 	// MaxDelay caps the exponential growth (default: 30s).
 	MaxDelay time.Duration
+
+	// OnAttempt, when non-nil, fires once per retry attempt with the
+	// structured (attempt, err, nextDelay) tuple. See RetryAttemptHook.
+	OnAttempt RetryAttemptHook
 }
 
 // DefaultRetryConfig returns a sensible default: 3 retries, 500ms base, 30s cap.
