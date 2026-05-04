@@ -21,11 +21,12 @@ import (
 // the stream drainer (single writer) and read by the wave executor only
 // after the drainer signals completion — no concurrent map access.
 type speculativeExec struct {
-	id     string
-	doneCh chan struct{}
-	cancel context.CancelFunc
-	result string
-	err    error
+	id         string
+	doneCh     chan struct{}
+	cancel     context.CancelFunc
+	result     string
+	structured any
+	err        error
 }
 
 // newSpeculativeMap returns an initialized map keyed by tool call ID.
@@ -121,21 +122,26 @@ func (al *AgentLoop) spawnSpeculative(
 		// Run with the speculation-scoped ctx — no progress reporter, no
 		// sub-agent emitter. The wave executor owns user-visible emissions
 		// for this call when it processes the result.
-		var t tools.Tool = tool
-		result, err := t.Execute(specCtx, argsJSON)
-		sm.result = result
-		sm.err = err
+		// Mirror the wave executor's StructuredResult preference so speculated
+		// tools still deliver their typed payload to OnToolResult.
+		if sr, ok := tool.(tools.StructuredResult); ok {
+			sm.result, sm.structured, sm.err = sr.ExecuteStructured(specCtx, argsJSON)
+			return
+		}
+		sm.result, sm.err = tool.Execute(specCtx, argsJSON)
 	}()
 }
 
 // awaitSpeculative blocks until the speculative execution completes and
-// returns its (result, err). Safe to call from the wave executor after the
-// LLM stream has closed; doneCh acts as the happens-before barrier.
-func awaitSpeculative(ctx context.Context, sm *speculativeExec) (string, error) {
+// returns its (result, structured, err). Safe to call from the wave executor
+// after the LLM stream has closed; doneCh acts as the happens-before barrier.
+// structured is non-nil only when the underlying tool implemented
+// tools.StructuredResult.
+func awaitSpeculative(ctx context.Context, sm *speculativeExec) (string, any, error) {
 	select {
 	case <-sm.doneCh:
-		return sm.result, sm.err
+		return sm.result, sm.structured, sm.err
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return "", nil, ctx.Err()
 	}
 }

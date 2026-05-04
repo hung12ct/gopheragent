@@ -91,7 +91,7 @@ func TestSpawnSpeculative_CachesResult(t *testing.T) {
 		t.Fatal("speculative entry should be registered before the goroutine runs")
 	}
 
-	result, err := awaitSpeculative(context.Background(), sm)
+	result, _, err := awaitSpeculative(context.Background(), sm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestSpawnSpeculative_CancelAbortsTool(t *testing.T) {
 	sm.cancel()
 
 	// Tool must abort with ctx.Canceled rather than completing.
-	_, err := awaitSpeculative(context.Background(), sm)
+	_, _, err := awaitSpeculative(context.Background(), sm)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected ctx.Canceled after sm.cancel(), got %v", err)
 	}
@@ -160,7 +160,7 @@ func TestSpawnSpeculative_MissingToolSurfacesError(t *testing.T) {
 	mu.Lock()
 	sm := store["c1"]
 	mu.Unlock()
-	_, err := awaitSpeculative(context.Background(), sm)
+	_, _, err := awaitSpeculative(context.Background(), sm)
 	if err == nil {
 		t.Fatal("expected ToolNotFoundError from speculative execution")
 	}
@@ -176,7 +176,7 @@ func TestAwaitSpeculative_ContextCancelReturnsEarly(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := awaitSpeculative(ctx, sm)
+	_, _, err := awaitSpeculative(ctx, sm)
 	if err == nil {
 		t.Fatal("expected ctx.Err() when caller cancels before speculative done")
 	}
@@ -254,6 +254,41 @@ func TestSpeculative_ToolExecutedOnceAndReused(t *testing.T) {
 	// speculative entry and reuse it.
 	if got := atomic.LoadInt64(&count); got != 1 {
 		t.Fatalf("expected exactly 1 tool invocation, got %d", got)
+	}
+}
+
+// TestSpeculative_StructuredPayloadReachesHook pins the speculator's
+// StructuredResult dispatch: when SpeculativeTools is on and the tool
+// implements tools.StructuredResult, the typed payload must still arrive
+// at OnToolResult. Before the fix, the speculator only called Execute,
+// so any speculated structured tool dropped its payload silently.
+func TestSpeculative_StructuredPayloadReachesHook(t *testing.T) {
+	tool := &structuredCounterTool{name: "structured"}
+	provider := &streamingToolCallReadyProvider{toolName: "structured", argsJSON: `{}`}
+	loop, _ := setup(provider, tool)
+	loop.SpeculativeTools = true
+
+	var seen any
+	var mu sync.Mutex
+	loop.OnToolResult = func(_ context.Context, _, _, result string, structured any) (string, error) {
+		mu.Lock()
+		seen = structured
+		mu.Unlock()
+		return result, nil
+	}
+
+	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	p, ok := seen.(SQLPayload)
+	if !ok {
+		t.Fatalf("speculated structured tool dropped its payload — got %T (%+v)", seen, seen)
+	}
+	if p.RowCount != 42 {
+		t.Fatalf("payload not round-tripped through speculation: %+v", p)
 	}
 }
 
