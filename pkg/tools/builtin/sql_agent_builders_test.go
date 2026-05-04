@@ -6,8 +6,8 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
-func TestSQLAgentTool_DefaultIdentity(t *testing.T) {
-	tool := NewSQLAgentTool(nil, "", nil, nil)
+func TestCallSQLAgentTool_DefaultIdentity(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil)
 	if got := tool.Name(); got != "call_sql_agent" {
 		t.Fatalf("Name default: got %q, want %q", got, "call_sql_agent")
 	}
@@ -19,8 +19,8 @@ func TestSQLAgentTool_DefaultIdentity(t *testing.T) {
 	}
 }
 
-func TestSQLAgentTool_WithName(t *testing.T) {
-	tool := NewSQLAgentTool(nil, "", nil, nil).WithName("query_external_creatives")
+func TestCallSQLAgentTool_WithName(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil).WithName("query_external_creatives")
 	if got := tool.Name(); got != "query_external_creatives" {
 		t.Fatalf("WithName: got %q, want %q", got, "query_external_creatives")
 	}
@@ -30,17 +30,17 @@ func TestSQLAgentTool_WithName(t *testing.T) {
 	}
 }
 
-func TestSQLAgentTool_WithDisplay(t *testing.T) {
+func TestCallSQLAgentTool_WithDisplay(t *testing.T) {
 	custom := tools.ToolDisplay{Label: "Querying creatives", Category: "analytics", IconHint: "database"}
-	tool := NewSQLAgentTool(nil, "", nil, nil).WithDisplay(custom)
+	tool := NewCallSQLAgentTool(nil, "", nil, nil).WithDisplay(custom)
 	got := tool.Display()
 	if got.Label != custom.Label || got.Category != custom.Category || got.IconHint != custom.IconHint {
 		t.Fatalf("WithDisplay: got %+v, want %+v", got, custom)
 	}
 }
 
-func TestSQLAgentTool_WithRequiresConfirmation(t *testing.T) {
-	tool := NewSQLAgentTool(nil, "", nil, nil).WithRequiresConfirmation(false)
+func TestCallSQLAgentTool_WithRequiresConfirmation(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil).WithRequiresConfirmation(false)
 	if tool.RequiresConfirmation() {
 		t.Fatalf("WithRequiresConfirmation(false): got true, want false")
 	}
@@ -50,8 +50,8 @@ func TestSQLAgentTool_WithRequiresConfirmation(t *testing.T) {
 	}
 }
 
-func TestSQLAgentTool_BuildersChain(t *testing.T) {
-	tool := NewSQLAgentTool(nil, "", nil, nil).
+func TestCallSQLAgentTool_BuildersChain(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil).
 		WithName("custom").
 		WithDisplay(tools.ToolDisplay{Label: "Custom Label"}).
 		WithRequiresConfirmation(false)

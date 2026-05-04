@@ -34,7 +34,7 @@ import (
 //
 // Sub-agent scope: DynamicContext is per-AgentLoop, but the parent loop
 // installs its DynamicContext on the per-tool context.Context before each
-// tool invocation (see loop_execute.go). Sub-agent tools (SQLAgentTool,
+// tool invocation (see loop_execute.go). Sub-agent tools (CallSQLAgentTool,
 // CallSubAgentTool) read it via DynamicContextFuncFromContext and wire it
 // onto their worker loop, so time-sensitive context like "today is …"
 // flows down through agent hierarchies without requiring callers to set it

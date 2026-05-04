@@ -38,7 +38,7 @@ type SQLResult struct {
 	Error       string           `json:"error,omitempty"`
 }
 
-// SQLAgentTool converts natural-language questions to SQL by delegating to an
+// CallSQLAgentTool converts natural-language questions to SQL by delegating to an
 // isolated sub-agent. The sub-agent sees only the execute_sql tool and a
 // schema-grounded system prompt; the database handle is never exposed to the
 // parent agent.
@@ -54,7 +54,7 @@ type SQLResult struct {
 // Builder methods (OnSQL, WithSchema, WithExamples, WithBusinessRules,
 // WithMaxRows, WithQueryTimeout) are chainable and safe to call in any
 // order; they mutate the receiver and return it.
-type SQLAgentTool struct {
+type CallSQLAgentTool struct {
 	db                   *sql.DB
 	schemaRaw            string
 	schema               *Schema
@@ -71,7 +71,7 @@ type SQLAgentTool struct {
 	requiresConfirmation bool
 }
 
-// NewSQLAgentTool initializes a tool capable of querying databases. The
+// NewCallSQLAgentTool initializes a tool capable of querying databases. The
 // schemaContext string is used verbatim when no structured Schema is
 // registered via WithSchema — pass an empty string and call WithSchema to
 // use the structured path exclusively.
@@ -79,8 +79,8 @@ type SQLAgentTool struct {
 // Defaults: Name() = "call_sql_agent", RequiresConfirmation() = true. Use
 // WithName / WithDisplay / WithRequiresConfirmation to override when
 // registering multiple instances or running unsupervised.
-func NewSQLAgentTool(db *sql.DB, schemaContext string, sm agent.SessionManager, provider agent.LLMProvider) *SQLAgentTool {
-	return &SQLAgentTool{
+func NewCallSQLAgentTool(db *sql.DB, schemaContext string, sm agent.SessionManager, provider agent.LLMProvider) *CallSQLAgentTool {
+	return &CallSQLAgentTool{
 		db:                   db,
 		schemaRaw:            schemaContext,
 		sessionManager:       sm,
@@ -93,16 +93,16 @@ func NewSQLAgentTool(db *sql.DB, schemaContext string, sm agent.SessionManager, 
 // query. Use it for logging, auditing, or streaming SQL to the parent
 // application. Called on both success and failure — ev.Error is non-empty on
 // failure.
-func (t *SQLAgentTool) OnSQL(fn func(context.Context, SQLQueryEvent)) *SQLAgentTool {
+func (t *CallSQLAgentTool) OnSQL(fn func(context.Context, SQLQueryEvent)) *CallSQLAgentTool {
 	t.onSQL = fn
 	return t
 }
 
 // WithSchema registers a structured schema. When set, its markdown rendering
-// replaces the raw schemaContext passed to NewSQLAgentTool in the system
+// replaces the raw schemaContext passed to NewCallSQLAgentTool in the system
 // prompt. Structured schemas produce tighter, more consistent grounding and
 // are required for downstream features like schema linking.
-func (t *SQLAgentTool) WithSchema(s Schema) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithSchema(s Schema) *CallSQLAgentTool {
 	t.schema = &s
 	return t
 }
@@ -110,7 +110,7 @@ func (t *SQLAgentTool) WithSchema(s Schema) *SQLAgentTool {
 // WithExamples registers few-shot Question→SQL demonstrations that are
 // injected into the sub-agent's system prompt. Even 2–3 examples anchored
 // to the schema materially reduce hallucination on domain-specific queries.
-func (t *SQLAgentTool) WithExamples(examples ...SQLExample) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithExamples(examples ...SQLExample) *CallSQLAgentTool {
 	t.examples = append(t.examples, examples...)
 	return t
 }
@@ -119,7 +119,7 @@ func (t *SQLAgentTool) WithExamples(examples ...SQLExample) *SQLAgentTool {
 // conventions, metric definitions) that are injected into the system prompt.
 // Use short, imperative sentences — "revenue" means NET revenue, exclude
 // refunds; "active" users have login_at in the last 30 days.
-func (t *SQLAgentTool) WithBusinessRules(rules ...string) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithBusinessRules(rules ...string) *CallSQLAgentTool {
 	t.businessRules = append(t.businessRules, rules...)
 	return t
 }
@@ -128,7 +128,7 @@ func (t *SQLAgentTool) WithBusinessRules(rules ...string) *SQLAgentTool {
 // not already contain a LIMIT clause. n <= 0 disables the behaviour
 // (default). Set this to keep accidental "SELECT * FROM large_table" calls
 // from returning millions of rows.
-func (t *SQLAgentTool) WithMaxRows(n int) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithMaxRows(n int) *CallSQLAgentTool {
 	t.maxRows = n
 	return t
 }
@@ -136,7 +136,7 @@ func (t *SQLAgentTool) WithMaxRows(n int) *SQLAgentTool {
 // WithQueryTimeout caps the wall-clock time of each underlying QueryContext
 // call. d <= 0 disables the timeout (default). Separate from the agent's
 // overall request context, which may be much longer.
-func (t *SQLAgentTool) WithQueryTimeout(d time.Duration) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithQueryTimeout(d time.Duration) *CallSQLAgentTool {
 	t.queryTimeout = d
 	return t
 }
@@ -155,7 +155,7 @@ func (t *SQLAgentTool) WithQueryTimeout(d time.Duration) *SQLAgentTool {
 // variation comes from the LLM's own sampling temperature. For stronger
 // diversity, point each run at a slightly-different provider (cheap base
 // + reasoning-tuned) via llm.RouterProvider.
-func (t *SQLAgentTool) WithSelfConsistency(n int) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithSelfConsistency(n int) *CallSQLAgentTool {
 	t.selfConsistency = n
 	return t
 }
@@ -164,7 +164,7 @@ func (t *SQLAgentTool) WithSelfConsistency(n int) *SQLAgentTool {
 // multiple SQL-agent instances (e.g. one per tenant or datalake) in the same
 // registry without wrapping in a shim type. Empty string restores the default
 // "call_sql_agent".
-func (t *SQLAgentTool) WithName(name string) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithName(name string) *CallSQLAgentTool {
 	t.name = name
 	return t
 }
@@ -172,7 +172,7 @@ func (t *SQLAgentTool) WithName(name string) *SQLAgentTool {
 // WithDisplay overrides the tool display metadata (label, category) shown by
 // integrators in UI surfaces. Pass the zero value to fall back to the
 // auto-derived default.
-func (t *SQLAgentTool) WithDisplay(d tools.ToolDisplay) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithDisplay(d tools.ToolDisplay) *CallSQLAgentTool {
 	t.display = &d
 	return t
 }
@@ -182,13 +182,13 @@ func (t *SQLAgentTool) WithDisplay(d tools.ToolDisplay) *SQLAgentTool {
 // human-supervised setups. Set to false for autonomous agents where the
 // caller has already vetted the SQL surface (typically read-only DBs paired
 // with WithMaxRows / WithQueryTimeout).
-func (t *SQLAgentTool) WithRequiresConfirmation(b bool) *SQLAgentTool {
+func (t *CallSQLAgentTool) WithRequiresConfirmation(b bool) *CallSQLAgentTool {
 	t.requiresConfirmation = b
 	return t
 }
 
 // Name implements tools.Tool.
-func (t *SQLAgentTool) Name() string {
+func (t *CallSQLAgentTool) Name() string {
 	if t.name != "" {
 		return t.name
 	}
@@ -196,7 +196,7 @@ func (t *SQLAgentTool) Name() string {
 }
 
 // Description implements tools.Tool.
-func (t *SQLAgentTool) Description() string {
+func (t *CallSQLAgentTool) Description() string {
 	return "Translate natural language business questions into SQL and query the Database directly. It automatically determines tables, runs queries, and returns structured data."
 }
 
@@ -205,14 +205,14 @@ type sqlAgentArgs struct {
 }
 
 // ParametersSchema implements tools.Tool.
-func (t *SQLAgentTool) ParametersSchema() tools.ToolSchema {
+func (t *CallSQLAgentTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[sqlAgentArgs]()
 }
 
 // RequiresConfirmation reports whether each invocation must pass the HITL
 // gate. Defaults to true; override via WithRequiresConfirmation(false) for
 // autonomous agents.
-func (t *SQLAgentTool) RequiresConfirmation() bool {
+func (t *CallSQLAgentTool) RequiresConfirmation() bool {
 	return t.requiresConfirmation
 }
 
@@ -223,13 +223,13 @@ func (t *SQLAgentTool) RequiresConfirmation() bool {
 // When WithSelfConsistency(n) with n > 1 is configured, n independent sub-
 // agents run in parallel and their execution results are clustered by hash;
 // the answer from the winning cluster is returned.
-func (t *SQLAgentTool) Display() tools.ToolDisplay {
+func (t *CallSQLAgentTool) Display() tools.ToolDisplay {
 	if t.display != nil {
 		return *t.display
 	}
 	return tools.DefaultDisplay(t.Name(), t.Description())
 }
-func (t *SQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *CallSQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args sqlAgentArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("tools: invalid arguments: %w", err)
@@ -248,7 +248,7 @@ func (t *SQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, er
 // runOnce executes a single sub-agent run and returns its candidate record.
 // The `idx` argument disambiguates parallel runs so their session keys do
 // not collide when spawned from runCandidates.
-func (t *SQLAgentTool) runOnce(ctx context.Context, query string, idx int) sqlCandidate {
+func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) sqlCandidate {
 	subSessionKey := fmt.Sprintf("sub_agent_sql_%d_%d", time.Now().UnixNano(), idx)
 	defer func() {
 		if err := t.sessionManager.DeleteSession(context.Background(), subSessionKey); err != nil && t.onSQL != nil {
@@ -295,7 +295,7 @@ func (t *SQLAgentTool) runOnce(ctx context.Context, query string, idx int) sqlCa
 
 // runCandidates fans out n parallel sub-agent runs, clusters their execution
 // results, and returns the answer from the winning cluster.
-func (t *SQLAgentTool) runCandidates(ctx context.Context, query string, n int) (string, error) {
+func (t *CallSQLAgentTool) runCandidates(ctx context.Context, query string, n int) (string, error) {
 	cands := make([]sqlCandidate, n)
 	var wg sync.WaitGroup
 	for i := range n {
@@ -316,7 +316,7 @@ func (t *SQLAgentTool) runCandidates(ctx context.Context, query string, n int) (
 
 // buildSystemPrompt assembles the sub-agent's system instruction from the
 // configured schema, examples, and business rules.
-func (t *SQLAgentTool) buildSystemPrompt() string {
+func (t *CallSQLAgentTool) buildSystemPrompt() string {
 	schemaBlock := t.schemaRaw
 	if t.schema != nil {
 		schemaBlock = t.schema.String()

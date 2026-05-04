@@ -14,7 +14,7 @@ var mysqlIdentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // connection and returns a Schema populated with column metadata for the
 // named tables. It is the deterministic alternative to a hand-maintained
 // schema doc — schema drift between docs and the live DB is the most common
-// cause of "Unknown column" errors from SQLAgentTool.
+// cause of "Unknown column" errors from CallSQLAgentTool.
 //
 // schemaName scopes the lookup; pass "" to use the connection's current
 // database (resolved via DATABASE()). tableNames must be non-empty.
@@ -35,7 +35,7 @@ var mysqlIdentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //	schema, err := builtin.IntrospectMySQLSchema(ctx, db, "",
 //	    "daily_creatives_impressions_v2", "creatives", "apps")
 //	if err != nil { ... }
-//	sqlTool := builtin.NewSQLAgentTool(db, "", sm, provider).WithSchema(schema)
+//	sqlTool := builtin.NewCallSQLAgentTool(db, "", sm, provider).WithSchema(schema)
 func IntrospectMySQLSchema(ctx context.Context, db *sql.DB, schemaName string, tableNames ...string) (Schema, error) {
 	if len(tableNames) == 0 {
 		return Schema{}, fmt.Errorf("tools: introspect: at least one table name is required")
