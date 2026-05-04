@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,7 +29,8 @@ const (
 // until the operation completes (up to 5 minutes). Implements InlineRenderer so
 // the video embed streams directly to the frontend chat.
 //
-// Set SaveDir and URLBase before use — same semantics as GenerateImageTool.
+// Set Storage before use — same semantics as GenerateImageTool. Required;
+// Execute returns an error if Storage is nil.
 type generateVideoArgs struct {
 	Prompt          string `json:"prompt"                     description:"Detailed scene description. Include action, camera motion, lighting, style, and mood. Example: 'Slow dolly-in on a glowing neon cityscape at night, rain-slicked streets reflecting pink and blue lights, cinematic film grain.'"`
 	AspectRatio     string `json:"aspect_ratio,omitempty"     description:"16:9 for landscape/cinematic, 9:16 for vertical/social media." enum:"16:9,9:16"`
@@ -42,8 +42,9 @@ type GenerateVideoTool struct {
 	httpClient *http.Client
 	apiKey     string // kept for authenticated downloads from the Gemini Files API
 	model      string
-	SaveDir    string // local directory to save generated video files
-	URLBase    string // URL prefix served by the host HTTP server, e.g. "/media"
+	// Storage persists the generated video bytes and returns the public
+	// URL used in the inline <video> embed. Required.
+	Storage AssetStorage
 }
 
 // NewGenerateVideoTool builds a video generation tool.
@@ -180,17 +181,13 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 	), nil
 }
 
-// saveVideo persists the video bytes or downloads from URI, returns local URL.
+// saveVideo persists the video bytes (or downloads from a Gemini Files
+// URI first) via Storage, returning the public URL the storage backend
+// assigned.
 func (t *GenerateVideoTool) saveVideo(ctx context.Context, vid *genai.Video) (string, error) {
-	if t.SaveDir == "" {
-		return "", fmt.Errorf("SaveDir not configured")
+	if t.Storage == nil {
+		return "", fmt.Errorf("tools: generate_video: Storage not configured")
 	}
-	if err := os.MkdirAll(t.SaveDir, 0o755); err != nil {
-		return "", fmt.Errorf("mkdir: %w", err)
-	}
-
-	filename := fmt.Sprintf("vid-%d.mp4", time.Now().UnixNano())
-	dest := filepath.Join(t.SaveDir, filename)
 
 	var data []byte
 	switch {
@@ -198,7 +195,7 @@ func (t *GenerateVideoTool) saveVideo(ctx context.Context, vid *genai.Video) (st
 		data = vid.VideoBytes
 	case vid.URI != "":
 		// Veo 2 via the Gemini API returns a Files API URI that requires the API
-		// key to download. Fetch it server-side and save locally.
+		// key to download. Fetch it server-side and hand to Storage.
 		var err error
 		data, err = t.downloadURI(ctx, vid.URI)
 		if err != nil {
@@ -208,12 +205,8 @@ func (t *GenerateVideoTool) saveVideo(ctx context.Context, vid *genai.Video) (st
 		return "", fmt.Errorf("video has neither bytes nor URI")
 	}
 
-	if err := os.WriteFile(dest, data, 0o644); err != nil {
-		return "", fmt.Errorf("write: %w", err)
-	}
-
-	base := strings.TrimRight(t.URLBase, "/")
-	return base + "/" + filename, nil
+	filename := fmt.Sprintf("vid-%d.mp4", time.Now().UnixNano())
+	return t.Storage.Save(ctx, filename, data, "video/mp4")
 }
 
 // downloadURI fetches a Gemini Files API URI, appending the API key so the

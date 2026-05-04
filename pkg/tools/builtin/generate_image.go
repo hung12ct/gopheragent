@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,8 +28,12 @@ const (
 // image embed that the frontend renders inline. Implements InlineRenderer so the
 // image appears in the chat immediately without waiting for the LLM to format it.
 //
-// Generated files are saved to SaveDir and served at URLBase/<filename>.
-// Both fields must be set before the first Execute call.
+// Persistence: set Storage to a custom AssetStorage (GCS, S3, Azure Blob)
+// for cloud / container deployments. The legacy SaveDir+URLBase fields
+// still work — when Storage is nil and SaveDir is set, the tool builds a
+// LocalDiskStorage internally so existing callers keep working unchanged.
+// Cloud-deployed adopters MUST set Storage; local-disk on Cloud Run /
+// Lambda / ephemeral containers loses the file between requests.
 type generateImageArgs struct {
 	Prompt  string `json:"prompt"            description:"Detailed visual description. Include style (photorealistic, oil painting, anime…), lighting, mood, camera angle, color palette."`
 	Size    string `json:"size,omitempty"    description:"Image dimensions. Use 1792x1024 for landscapes/wide scenes, 1024x1792 for portraits/tall compositions, 1024x1024 for balanced square shots." enum:"1024x1024,1792x1024,1024x1792"`
@@ -42,8 +45,12 @@ type GenerateImageTool struct {
 	client     *openai.Client
 	httpClient *http.Client
 	model      string
-	SaveDir    string // local directory to save generated images
-	URLBase    string // URL prefix served by the host HTTP server, e.g. "/media"
+	// Storage persists the downloaded image bytes and returns the public
+	// URL the markdown embed points at. Required — Execute returns an
+	// error if Storage is nil. Use builtin.LocalDiskStorage for VMs with
+	// persistent disk; plug in a GCS / S3 / Azure Blob adapter for
+	// container platforms with ephemeral disk.
+	Storage AssetStorage
 }
 
 // NewGenerateImageTool builds an image generation tool.
@@ -135,14 +142,12 @@ func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (strin
 	return fmt.Sprintf("![%s](%s)\n\n*Prompt: %s*", alt, localURL, revisedPrompt), nil
 }
 
-// download fetches an image from src, saves it under SaveDir, and returns the
-// local URL. Caps the download size and honors ctx for cancellation.
+// download fetches an image from src, hands the bytes to Storage, and
+// returns the public URL the storage backend assigned. Caps the download
+// size and honors ctx for cancellation.
 func (t *GenerateImageTool) download(ctx context.Context, src string) (string, error) {
-	if t.SaveDir == "" {
-		return "", fmt.Errorf("SaveDir not configured")
-	}
-	if err := os.MkdirAll(t.SaveDir, 0o755); err != nil {
-		return "", fmt.Errorf("tools: generate_image: mkdir: %w", err)
+	if t.Storage == nil {
+		return "", fmt.Errorf("tools: generate_image: Storage not configured")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
@@ -158,21 +163,15 @@ func (t *GenerateImageTool) download(ctx context.Context, src string) (string, e
 		return "", fmt.Errorf("unexpected status %d", hresp.StatusCode)
 	}
 
-	ext := extensionForImage(hresp.Header.Get("Content-Type"), src)
+	contentType := hresp.Header.Get("Content-Type")
+	ext := extensionForImage(contentType, src)
 	filename := fmt.Sprintf("img-%d%s", time.Now().UnixNano(), ext)
-	dest := filepath.Join(t.SaveDir, filename)
 
-	f, err := os.Create(dest)
+	data, err := io.ReadAll(io.LimitReader(hresp.Body, imageMaxBytes))
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if _, err := io.Copy(f, io.LimitReader(hresp.Body, imageMaxBytes)); err != nil {
-		return "", err
-	}
-
-	base := strings.TrimRight(t.URLBase, "/")
-	return base + "/" + filename, nil
+	return t.Storage.Save(ctx, filename, data, contentType)
 }
 
 // extensionForImage chooses a file extension from the response Content-Type,
