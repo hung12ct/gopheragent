@@ -2,6 +2,11 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.18.1] — 2026-05-04
+
+### Fixed
+- Speculator now honors `tools.StructuredResult`. With `SpeculativeTools=true`, `spawnSpeculative` previously called `Execute` unconditionally, dropping the typed payload — so `OnToolResult` fired with `structured=nil` for every speculated structured tool. The speculator now mirrors the wave executor's dispatch and threads the payload through `awaitSpeculative`. (#84)
+
 ## [v0.18.0] — 2026-05-04
 
 API hygiene follow-up — propagate the constructor-with-required-storage pattern to the consumer types.
@@ -97,6 +102,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.18.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.18.1
 [v0.18.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.18.0
 [v0.17.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.17.0
 [v0.16.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.16.0
