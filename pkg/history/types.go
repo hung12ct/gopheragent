@@ -33,6 +33,15 @@ type Message struct {
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`   // for role:"assistant" messages with tool calls
 	IsError    bool        `json:"is_error,omitempty"`     // true when a tool execution failed
 
+	// IsInlineResult is set on a role:"tool" message whose tool implements
+	// tools.InlineRenderer with InlineResult()=true (e.g. generate_image,
+	// generate_video). The agent loop already streamed the content inline
+	// during the live turn, so render layers that filter out tool rows on
+	// resume should special-case IsInlineResult — fold it back into the
+	// preceding assistant message — rather than dropping it. Stable signal
+	// across tool names; adopters no longer need a hand-curated allowlist.
+	IsInlineResult bool `json:"is_inline_result,omitempty"`
+
 	// CacheHint requests that LLM adapters mark this message as a prompt-cache
 	// breakpoint when the underlying provider supports it. The Anthropic
 	// adapter translates CacheHint=true into `cache_control:{type:"ephemeral"}`
