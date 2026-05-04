@@ -245,6 +245,66 @@ func TestOnToolResult_ToolCtxCarriesCallID(t *testing.T) {
 	}
 }
 
+// progressEmittingTool calls ReportProgress once during Execute. Used to
+// verify that the loop attaches Name+ToolCallID to every progress event.
+type progressEmittingTool struct{ name string }
+
+func (p *progressEmittingTool) Name() string                       { return p.name }
+func (p *progressEmittingTool) Description() string                { return "emits one progress message" }
+func (p *progressEmittingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
+func (p *progressEmittingTool) RequiresConfirmation() bool         { return false }
+func (p *progressEmittingTool) Display() tools.ToolDisplay {
+	return tools.DefaultDisplay(p.Name(), p.Description())
+}
+func (p *progressEmittingTool) Execute(ctx context.Context, _ string) (string, error) {
+	tools.ReportProgress(ctx, "halfway there")
+	return "ok", nil
+}
+
+// TestToolProgress_EventCarriesCallID pins the parallel-correlation contract
+// end-to-end: a progress event emitted from inside a running tool carries
+// the same Name and ToolCallID that landed on the originating tool_call
+// event, so adopters can attribute progress to a specific dispatch even
+// when SpeculativeTools=true interleaves multiple tools.
+func TestToolProgress_EventCarriesCallID(t *testing.T) {
+	tool := &progressEmittingTool{name: "longrun"}
+	provider := &scriptProvider{turns: []LLMResult{
+		{ToolCalls: []PendingToolCall{{ID: "c1", Name: "longrun", ArgsJSON: "{}"}}},
+		{Content: "final"},
+	}}
+	loop, _ := setup(provider, tool)
+
+	var callEventID, progressEventID, progressEventName string
+	var mu sync.Mutex
+	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch ev.Type {
+		case EventTypeToolCall:
+			callEventID = ev.ToolCallID
+		case EventTypeToolProgress:
+			progressEventID = ev.ToolCallID
+			progressEventName = ev.Name
+		}
+	})
+
+	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callEventID == "" {
+		t.Fatal("tool_call event missing ToolCallID")
+	}
+	if progressEventID != callEventID {
+		t.Fatalf("progress ToolCallID did not match tool_call: progress=%q call=%q", progressEventID, callEventID)
+	}
+	if progressEventName != "longrun" {
+		t.Fatalf("progress Name did not match tool: got %q", progressEventName)
+	}
+}
+
 func TestOnToolResult_NilHookIsZeroCost(t *testing.T) {
 	ct := &countingTool{name: "counter"}
 	provider := &scriptProvider{turns: []LLMResult{

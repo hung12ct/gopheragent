@@ -153,10 +153,14 @@ type ToolCallEvent struct {
 
 // ToolProgressEvent is a mid-execution status update emitted by a tool via
 // tools.ReportProgress. Progress is lossy by design — consumers may drop
-// these safely.
+// these safely. Name and ToolCallID match the preceding ToolCallEvent for
+// the same dispatch; with SpeculativeTools=true multiple tools can report
+// progress concurrently, so adopters need both to attribute the message.
 type ToolProgressEvent struct {
 	BaseEvent
-	Message string
+	Name       string
+	ToolCallID string
+	Message    string
 }
 
 // ActionRequiredEvent signals that a tool invocation needs human approval.
@@ -313,7 +317,12 @@ func (ev StreamEvent) Payload() EventPayload {
 			Description: ev.Content,
 		}
 	case EventTypeToolProgress:
-		return ToolProgressEvent{BaseEvent: base, Message: ev.Content}
+		return ToolProgressEvent{
+			BaseEvent:  base,
+			Name:       ev.Name,
+			ToolCallID: ev.ToolCallID,
+			Message:    ev.Content,
+		}
 	case EventTypeActionRequired:
 		out := ActionRequiredEvent{BaseEvent: base, RawJSON: ev.Content}
 		var decoded struct {

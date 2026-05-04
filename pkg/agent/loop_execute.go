@@ -174,7 +174,12 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	}
 
 	toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
-		ev := StreamEvent{Type: EventTypeToolProgress, Content: msg}
+		ev := StreamEvent{
+			Type:       EventTypeToolProgress,
+			Name:       tCall.Name,
+			ToolCallID: callID,
+			Content:    msg,
+		}
 		select {
 		case st.streamChan <- ev:
 			for _, h := range al.EventHandlers {

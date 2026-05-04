@@ -46,6 +46,26 @@ func TestPayload_ToolCallSurfacesNameDirectly(t *testing.T) {
 	}
 }
 
+// TestPayload_ToolProgressCarriesIDAndName pins the correlation contract
+// for mid-execution progress events: under SpeculativeTools=true multiple
+// tools can be reporting progress concurrently, so each progress event
+// must echo the call ID + tool name from its originating ToolCallEvent.
+func TestPayload_ToolProgressCarriesIDAndName(t *testing.T) {
+	ev := StreamEvent{
+		Type:       EventTypeToolProgress,
+		Name:       "web_search",
+		ToolCallID: "tcid-77",
+		Content:    "fetched 3/5",
+	}
+	tp, ok := ev.Payload().(ToolProgressEvent)
+	if !ok {
+		t.Fatalf("expected ToolProgressEvent, got %T", ev.Payload())
+	}
+	if tp.Name != "web_search" || tp.ToolCallID != "tcid-77" || tp.Message != "fetched 3/5" {
+		t.Fatalf("progress event did not round-trip: %+v", tp)
+	}
+}
+
 // TestPayload_ToolCallCarriesIDAndArgs pins the v0.19.0 wire additions:
 // the typed payload exposes ID, ArgsJSON, and Reused so adopters can pair
 // entry events to OnToolResult invocations and attribute speculation
