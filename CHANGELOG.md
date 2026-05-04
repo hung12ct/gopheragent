@@ -2,6 +2,22 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.17.0] — 2026-05-04
+
+API hygiene batch — small interfaces, aligned names, constructor-only built-ins, and a confirmation gate that no longer confabulates user denial.
+
+### Added
+- `agent.SessionForker`, `agent.SessionQueryable`, `agent.SoftDeletable` capability interfaces — opt-in surfaces for backends that fork, list, or soft-delete. Custom `SessionManager` implementations now stub only what they actually support; `agent.ForkAtLastUser` type-asserts and surfaces a clear error when the backend doesn't implement `SessionForker`. (#80)
+- `agent.ConfirmationGateUnconfiguredError` + `agent.ErrConfirmationGateUnconfigured` sentinel — a tool that requires confirmation while `ConfirmHITL` is nil and no `PermissionAllow` rule resolves the call now writes a misconfig-specific directive to the model (so it doesn't tell the user "you denied this") and logs a one-time warning per `AgentLoop`. (#80)
+- `builtin.NewLocalDiskStorage(saveDir, urlBase)` constructor — validates both args at startup and normalizes the `urlBase` trailing slash once at construction instead of on every `Save`. (#80)
+- `builtin.NewStartAsyncTaskTool` / `NewCheckAsyncTaskTool` / `NewCancelAsyncTaskTool` / `NewUpdateAsyncTaskTool` / `NewListAsyncTasksTool` — every async tool now constructs through a manager-checked function, matching the rest of the builtin family. (#80)
+
+### Changed (breaking)
+- `agent.SessionManager` core interface drops to 6 methods (CLAUDE.md "small interface" budget). `Fork`, `Query`, `SoftDelete`, `Restore`, `PurgeDeletedBefore` move to the new capability interfaces. Existing concrete backends (InMem, File, MySQL) and the `historyfake` continue to satisfy every method, so wiring with the shipped backends is unchanged.
+- `builtin.SQLAgentTool` renamed to `builtin.CallSQLAgentTool` (constructor `NewCallSQLAgentTool`). The type name now matches the registered tool name `"call_sql_agent"` and the existing `CallSubAgentTool` convention.
+- `builtin.LocalDiskStorage.SaveDir` / `URLBase` fields **removed** — fields are unexported. Construct via `builtin.NewLocalDiskStorage(saveDir, urlBase)`.
+- The five async-task tools' exported `Manager` field is now unexported. Construct via the new `New…` functions.
+
 ## [v0.16.0] — 2026-05-04
 
 Adopter-blocking fixes batch — cloud deployments work, hooks have typed payloads, wrapper traps documented at the source.
@@ -74,6 +90,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.17.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.17.0
 [v0.16.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.16.0
 [v0.15.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.15.0
 [v0.14.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.2
