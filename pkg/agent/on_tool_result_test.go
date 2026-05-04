@@ -15,7 +15,7 @@ func TestOnToolResult_RewritesSuccessResult(t *testing.T) {
 	}}
 	loop, sm := setup(provider, ct)
 
-	loop.OnToolResult = func(_ context.Context, name, _, result string) (string, error) {
+	loop.OnToolResult = func(_ context.Context, name, _, result string, _ any) (string, error) {
 		if name != "counter" {
 			t.Errorf("hook saw unexpected tool name: %q", name)
 		}
@@ -47,7 +47,7 @@ func TestOnToolResult_VetoConvertsToToolError(t *testing.T) {
 	loop, sm := setup(provider, ct)
 
 	veto := errors.New("post-validation rejected the output")
-	loop.OnToolResult = func(_ context.Context, _, _, _ string) (string, error) {
+	loop.OnToolResult = func(_ context.Context, _, _, _ string, _ any) (string, error) {
 		return "", veto
 	}
 

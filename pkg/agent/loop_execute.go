@@ -168,15 +168,21 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	sm, speculated := st.specMap[tCall.ID]
 	st.specMu.Unlock()
 	var toolResult string
+	var structured any
 	var execErr error
 	if speculated {
 		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)})
 		toolResult, execErr = awaitSpeculative(toolCtx, sm)
+	} else if sr, ok := tool.(tools.StructuredResult); ok {
+		// Tool advertises a typed payload — prefer the structured path so
+		// the payload reaches OnToolResult. The string branch (Execute)
+		// stays the fallback for tools that don't opt in.
+		toolResult, structured, execErr = sr.ExecuteStructured(toolCtx, tCall.ArgsJSON)
 	} else {
 		toolResult, execErr = tool.Execute(toolCtx, tCall.ArgsJSON)
 	}
 	if execErr == nil && al.OnToolResult != nil {
-		rewritten, hookErr := al.OnToolResult(toolCtx, tCall.Name, tCall.ArgsJSON, toolResult)
+		rewritten, hookErr := al.OnToolResult(toolCtx, tCall.Name, tCall.ArgsJSON, toolResult, structured)
 		if hookErr != nil {
 			execErr = hookErr
 		} else {

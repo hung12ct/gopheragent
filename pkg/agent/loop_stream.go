@@ -122,7 +122,12 @@ type BeforeLLMHook func(ctx context.Context, sessionKey string, estimatedTokens 
 // The hook does NOT fire when tool.Execute itself returned an error — error
 // handling stays untouched. ctx is the per-tool ctx (carries WithProgressFunc
 // / WithSubAgentEmitter / WithDynamicContextFunc).
-type ToolResultHook func(ctx context.Context, toolName, argsJSON, result string) (string, error)
+//
+// structured is non-nil only when the executed tool implements
+// tools.StructuredResult. Hooks that mutate output (URL rewrites,
+// redaction, post-validation) should prefer reading typed fields off
+// structured rather than regex-parsing result.
+type ToolResultHook func(ctx context.Context, toolName, argsJSON, result string, structured any) (string, error)
 
 // LLMProvider abstracts the model backend (OpenAI/Gemini/Claude).
 type LLMProvider interface {
