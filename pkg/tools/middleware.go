@@ -32,20 +32,62 @@ func (w *wrappedTool) Execute(ctx context.Context, argsJSON string) (string, err
 	return w.executeFn(ctx, argsJSON)
 }
 
-// WithLogging logs each tool call and result via slog.
+// LoggingOption customizes WithLogging. Use the With* helpers below.
+type LoggingOption func(*loggingConfig)
+
+type loggingConfig struct {
+	extractor func(context.Context) []slog.Attr
+}
+
+// WithContextExtractor lets adopters surface ctx-scoped values (trace_id,
+// user_id, request tags) on every tool log line without writing a custom
+// slog.Handler bridge. The extractor runs on every Execute and its attrs are
+// appended to the entry/exit log records. nil extractors are a no-op.
+//
+//	tools.WithLogging(logger,
+//	    tools.WithContextExtractor(func(ctx context.Context) []slog.Attr {
+//	        return []slog.Attr{
+//	            slog.String("trace_id", trace.SpanContextFromContext(ctx).TraceID().String()),
+//	            slog.String("user_id", auth.UserIDFromContext(ctx)),
+//	        }
+//	    }),
+//	)
+func WithContextExtractor(fn func(context.Context) []slog.Attr) LoggingOption {
+	return func(c *loggingConfig) { c.extractor = fn }
+}
+
+// WithLogging logs each tool call and result via slog. The tool-call
+// correlation ID set by the agent loop (see ToolCallIDFromContext) is included
+// on entry and exit so log scrapers can pair them reliably even when
+// SpeculativeTools=true interleaves parallel calls.
 //
 //	reg.Register(tools.Chain(myTool, tools.WithLogging(slog.Default())))
-func WithLogging(logger *slog.Logger) Middleware {
+//
+// Pair with WithContextExtractor to surface trace IDs, tenant tags, etc.
+func WithLogging(logger *slog.Logger, opts ...LoggingOption) Middleware {
+	cfg := &loggingConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	return func(next Tool) Tool {
 		return &wrappedTool{
 			Tool: next,
 			executeFn: func(ctx context.Context, argsJSON string) (string, error) {
-				logger.InfoContext(ctx, "tool call", "tool", next.Name(), "args", argsJSON)
+				attrs := []slog.Attr{
+					slog.String("tool", next.Name()),
+					slog.String("tool_call_id", ToolCallIDFromContext(ctx)),
+				}
+				if cfg.extractor != nil {
+					attrs = append(attrs, cfg.extractor(ctx)...)
+				}
+				start := time.Now()
+				logger.LogAttrs(ctx, slog.LevelInfo, "tool call", append(attrs, slog.String("args", argsJSON))...)
 				result, err := next.Execute(ctx, argsJSON)
+				exitAttrs := append(attrs, slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 				if err != nil {
-					logger.ErrorContext(ctx, "tool error", "tool", next.Name(), "error", err)
+					logger.LogAttrs(ctx, slog.LevelError, "tool error", append(exitAttrs, slog.Any("error", err))...)
 				} else {
-					logger.InfoContext(ctx, "tool ok", "tool", next.Name(), "result_bytes", len(result))
+					logger.LogAttrs(ctx, slog.LevelInfo, "tool ok", append(exitAttrs, slog.Int("result_bytes", len(result)))...)
 				}
 				return result, err
 			},

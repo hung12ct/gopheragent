@@ -115,6 +115,28 @@ func WithProgressFunc(ctx context.Context, f func(msg string)) context.Context {
 	return context.WithValue(ctx, progressKey{}, f)
 }
 
+// toolCallIDKey is the unexported context key for the per-call correlation ID.
+type toolCallIDKey struct{}
+
+// WithToolCallID injects a per-Execute correlation ID into ctx. The agent loop
+// generates one ID per tool dispatch (separate from the LLM-issued tool-call
+// ID, which is not always unique across providers — Gemini reuses tool names).
+// Middleware that logs tool I/O reads the ID via ToolCallIDFromContext to pair
+// entry and exit lines reliably even when SpeculativeTools=true interleaves
+// parallel calls.
+func WithToolCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+
+// ToolCallIDFromContext returns the correlation ID set by WithToolCallID, or
+// "" when called outside an agent loop.
+func ToolCallIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(toolCallIDKey{}).(string); ok {
+		return id
+	}
+	return ""
+}
+
 // ReportProgress emits a progress message if a reporting function was injected
 // into ctx by WithProgressFunc. It is a no-op when called outside an agent loop
 // (e.g. in tests that do not set up the reporting function).

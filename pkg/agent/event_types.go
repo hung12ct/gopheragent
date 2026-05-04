@@ -134,12 +134,20 @@ type ThoughtEvent struct {
 }
 
 // ToolCallEvent announces that the agent is about to execute a tool.
-// Name is the bare tool identifier (e.g. "web_search"). Description is a
-// human-readable summary (e.g. "Executing: web_search") kept for log
-// readers — programmatic consumers should use Name.
+// Name is the bare tool identifier (e.g. "web_search"). ID is the agent-
+// generated correlation ID — it matches the toolCallID parameter on
+// ToolResultHook so observability tooling can pair entry and exit events
+// reliably even when SpeculativeTools=true interleaves parallel calls.
+// ArgsJSON is the raw tool arguments. Reused is true when the wave executor
+// is consuming a speculative result instead of dispatching the tool again.
+// Description is a human-readable summary kept for log readers —
+// programmatic consumers should use the structured fields.
 type ToolCallEvent struct {
 	BaseEvent
+	ID          string
 	Name        string
+	ArgsJSON    string
+	Reused      bool
 	Description string
 }
 
@@ -296,7 +304,14 @@ func (ev StreamEvent) Payload() EventPayload {
 		if name == "" {
 			name = parseExecutingName(ev.Content)
 		}
-		return ToolCallEvent{BaseEvent: base, Name: name, Description: ev.Content}
+		return ToolCallEvent{
+			BaseEvent:   base,
+			ID:          ev.ToolCallID,
+			Name:        name,
+			ArgsJSON:    ev.ArgsJSON,
+			Reused:      ev.Reused,
+			Description: ev.Content,
+		}
 	case EventTypeToolProgress:
 		return ToolProgressEvent{BaseEvent: base, Message: ev.Content}
 	case EventTypeActionRequired:

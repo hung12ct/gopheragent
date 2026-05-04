@@ -49,7 +49,7 @@ func TestStructuredResult_PayloadReachesHook(t *testing.T) {
 
 	var seen any
 	var mu sync.Mutex
-	loop.OnToolResult = func(_ context.Context, _, _, result string, structured any) (string, error) {
+	loop.OnToolResult = func(_ context.Context, _, _, _, result string, structured any, _ error) (string, error) {
 		mu.Lock()
 		seen = structured
 		mu.Unlock()
@@ -83,7 +83,7 @@ func TestStructuredResult_NonStructuredToolDeliversNilPayload(t *testing.T) {
 	loop, _ := setup(provider, tool)
 
 	var sawNil bool
-	loop.OnToolResult = func(_ context.Context, _, _, result string, structured any) (string, error) {
+	loop.OnToolResult = func(_ context.Context, _, _, _, result string, structured any, _ error) (string, error) {
 		if structured == nil {
 			sawNil = true
 		}
@@ -109,7 +109,7 @@ func TestStructuredResult_HookCanRewriteUsingTypedFields(t *testing.T) {
 	}}
 	loop, sm := setup(provider, tool)
 
-	loop.OnToolResult = func(_ context.Context, _, _, result string, structured any) (string, error) {
+	loop.OnToolResult = func(_ context.Context, _, _, _, result string, structured any, _ error) (string, error) {
 		if p, ok := structured.(SQLPayload); ok {
 			return result + "\n\n[" + strings.Join(p.Columns, ",") + "]", nil
 		}

@@ -46,6 +46,28 @@ func TestPayload_ToolCallSurfacesNameDirectly(t *testing.T) {
 	}
 }
 
+// TestPayload_ToolCallCarriesIDAndArgs pins the v0.19.0 wire additions:
+// the typed payload exposes ID, ArgsJSON, and Reused so adopters can pair
+// entry events to OnToolResult invocations and attribute speculation
+// savings without parsing Content.
+func TestPayload_ToolCallCarriesIDAndArgs(t *testing.T) {
+	ev := StreamEvent{
+		Type:       EventTypeToolCall,
+		Name:       "web_search",
+		ToolCallID: "abc123",
+		ArgsJSON:   `{"q":"hi"}`,
+		Reused:     true,
+		Content:    "Executing: web_search",
+	}
+	tc, ok := ev.Payload().(ToolCallEvent)
+	if !ok {
+		t.Fatalf("expected ToolCallEvent, got %T", ev.Payload())
+	}
+	if tc.ID != "abc123" || tc.ArgsJSON != `{"q":"hi"}` || !tc.Reused {
+		t.Fatalf("ID/ArgsJSON/Reused did not round-trip: %+v", tc)
+	}
+}
+
 func TestPayload_ToolCallFallsBackToContentParse(t *testing.T) {
 	// Back-compat: events serialized by older versions only carry the
 	// magic-string Content. Payload() must still recover Name.
