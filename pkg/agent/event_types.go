@@ -66,6 +66,31 @@ const (
 	// payloads, budget allocation, analytics — should hang off this event
 	// instead of racing on history-empty checks.
 	EventTypeSessionCreated StreamEventType = "session_created"
+	// EventTypeLimitExhausted is the canonical signal that a configured
+	// cap fired — iteration cap, cumulative tool-call cap, provider
+	// max_tokens, etc. Adopters can render a user-friendly message based
+	// on Kind without parsing error strings. See LimitKind constants for
+	// the values currently emitted by the loop and built-in providers.
+	// MaxItersReachedEvent stays alongside this for back-compat but new
+	// consumers should prefer LimitExhaustedEvent.
+	EventTypeLimitExhausted StreamEventType = "limit_exhausted"
+)
+
+// LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
+// Custom providers may invent their own kinds — adopters that match
+// exhaustively should use a default branch.
+type LimitKind string
+
+const (
+	// LimitKindMaxIters: AgentLoop.MaxIters reached without a final answer.
+	LimitKindMaxIters LimitKind = "max_iters"
+	// LimitKindMaxToolCallsPerSession: cumulative tool-call cap exceeded.
+	LimitKindMaxToolCallsPerSession LimitKind = "max_tool_calls_per_session"
+	// LimitKindProviderMaxTokens: the LLM provider truncated the response
+	// because its per-call MaxTokens cap fired (Anthropic stop_reason
+	// "max_tokens"). The truncated text is still in the stream — adopters
+	// that need full output should bump the provider's MaxTokens.
+	LimitKindProviderMaxTokens LimitKind = "provider_max_tokens"
 )
 
 // EventPayload is a sealed interface implemented by every typed event. Use it
@@ -217,6 +242,19 @@ type SessionCreatedEvent struct {
 	SessionKey string
 }
 
+// LimitExhaustedEvent is the typed payload of EventTypeLimitExhausted.
+// Kind identifies which cap fired (see LimitKind constants); Limit is the
+// configured ceiling and Used is the actual count at the moment of the
+// trip. For provider truncation kinds, Limit is the provider's per-call
+// MaxTokens and Used is unset (the provider does not report token usage
+// in the same shape).
+type LimitExhaustedEvent struct {
+	BaseEvent
+	Kind  LimitKind
+	Limit int
+	Used  int
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -239,6 +277,7 @@ func (ToolCallReadyEvent) isEventPayload()  {}
 func (TaskListEvent) isEventPayload()        {}
 func (MaxItersReachedEvent) isEventPayload() {}
 func (SessionCreatedEvent) isEventPayload()  {}
+func (LimitExhaustedEvent) isEventPayload()  {}
 func (UnknownEvent) isEventPayload()         {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
@@ -330,6 +369,18 @@ func (ev StreamEvent) Payload() EventPayload {
 		_ = json.Unmarshal([]byte(ev.Content), &decoded)
 		out.SessionKey = decoded.SessionKey
 		return out
+	case EventTypeLimitExhausted:
+		out := LimitExhaustedEvent{BaseEvent: base}
+		var decoded struct {
+			Kind  string `json:"kind"`
+			Limit int    `json:"limit"`
+			Used  int    `json:"used"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded)
+		out.Kind = LimitKind(decoded.Kind)
+		out.Limit = decoded.Limit
+		out.Used = decoded.Used
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -356,6 +407,7 @@ type EventVisitor interface {
 	VisitTaskList(TaskListEvent)
 	VisitMaxItersReached(MaxItersReachedEvent)
 	VisitSessionCreated(SessionCreatedEvent)
+	VisitLimitExhausted(LimitExhaustedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -390,6 +442,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitMaxItersReached(p)
 	case SessionCreatedEvent:
 		v.VisitSessionCreated(p)
+	case LimitExhaustedEvent:
+		v.VisitLimitExhausted(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}

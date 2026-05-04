@@ -177,6 +177,7 @@ func (r *recordingVisitor) VisitToolCallReady(ToolCallReadyEvent)   { r.visited 
 func (r *recordingVisitor) VisitTaskList(TaskListEvent)               { r.visited = "task_list" }
 func (r *recordingVisitor) VisitMaxItersReached(MaxItersReachedEvent)  { r.visited = "max_iters_reached" }
 func (r *recordingVisitor) VisitSessionCreated(SessionCreatedEvent)    { r.visited = "session_created" }
+func (r *recordingVisitor) VisitLimitExhausted(LimitExhaustedEvent)    { r.visited = "limit_exhausted" }
 func (r *recordingVisitor) VisitUnknown(UnknownEvent)                 { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
@@ -197,6 +198,7 @@ func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 		{StreamEvent{Type: EventTypeTaskList, Content: `[]`}, "task_list"},
 		{StreamEvent{Type: EventTypeMaxItersReached, Content: `{"limit":15}`}, "max_iters_reached"},
 		{StreamEvent{Type: EventTypeSessionCreated, Content: `{"session_key":"alice:abc"}`}, "session_created"},
+		{StreamEvent{Type: EventTypeLimitExhausted, Content: `{"kind":"max_iters","limit":15,"used":15}`}, "limit_exhausted"},
 		{StreamEvent{Type: "novel_type"}, "unknown"},
 	}
 	for _, tc := range cases {

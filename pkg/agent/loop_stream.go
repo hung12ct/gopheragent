@@ -573,6 +573,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		}
 		totalToolCalls += scheduled
 		if al.MaxToolCallsPerSession > 0 && totalToolCalls >= al.MaxToolCallsPerSession {
+			al.emit(ctx, sessionKey, streamChan, limitExhaustedEvent(LimitKindMaxToolCallsPerSession, al.MaxToolCallsPerSession, totalToolCalls))
 			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %d/%d", ErrMaxToolCallsPerSession, totalToolCalls, al.MaxToolCallsPerSession)))
 			al.saveSession(ctx, sessionKey, msgs)
 			return
@@ -583,6 +584,25 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userIn
 		Type:    EventTypeMaxItersReached,
 		Content: fmt.Sprintf(`{"limit":%d}`, al.MaxIters),
 	})
+	al.emit(ctx, sessionKey, streamChan, limitExhaustedEvent(LimitKindMaxIters, al.MaxIters, al.MaxIters))
 	al.emit(ctx, sessionKey, streamChan, errEvent(ErrMaxIterations))
 	al.saveSession(ctx, sessionKey, msgs)
+}
+
+// limitExhaustedEvent constructs a typed LimitExhaustedEvent stream frame.
+// Kept as a free function so providers (which import pkg/agent) can call it
+// without going through an AgentLoop receiver.
+func limitExhaustedEvent(kind LimitKind, limit, used int) StreamEvent {
+	return StreamEvent{
+		Type:    EventTypeLimitExhausted,
+		Content: fmt.Sprintf(`{"kind":%q,"limit":%d,"used":%d}`, string(kind), limit, used),
+	}
+}
+
+// LimitExhaustedStreamEvent is the public constructor for adopters or
+// custom LLM providers that want to signal a cap fired. The kind should
+// be one of the LimitKind constants when applicable; custom providers
+// may invent their own kind strings.
+func LimitExhaustedStreamEvent(kind LimitKind, limit, used int) StreamEvent {
+	return limitExhaustedEvent(kind, limit, used)
 }
