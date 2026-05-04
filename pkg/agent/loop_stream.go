@@ -29,11 +29,14 @@ type ConfirmFunc func(ctx context.Context, toolName string, argsJSON string) boo
 // sessionKey identifies which conversation the event belongs to.
 type EventHandler func(ctx context.Context, sessionKey string, ev StreamEvent)
 
-// SessionManager interface abstracts history storage.
-//
-// Breaking-change note: DeleteSession, Fork, Query, SoftDelete, Restore,
-// and PurgeDeletedBefore are required by the loop or by typical
-// integrations. External implementations must provide them all.
+// SessionManager is the minimal contract every history backend must provide.
+// It covers the read/write/async-tasks/save/delete surface the agent loop
+// itself touches. Optional capabilities (forking, querying, soft delete) are
+// exposed via the SessionForker / SessionQueryable / SoftDeletable
+// interfaces below — call sites that need them should type-assert at the
+// boundary instead of demanding every backend implement features it does
+// not need. This keeps the core interface within the project's "small
+// interface" budget (CLAUDE.md: 3–6 methods).
 type SessionManager interface {
 	GetHistory(ctx context.Context, sessionKey string) []history.Message
 	SetHistory(ctx context.Context, sessionKey string, messages []history.Message)
@@ -44,8 +47,16 @@ type SessionManager interface {
 	// Used to clean up ephemeral sub-agent and async-worker sessions after they
 	// complete so they do not accumulate in storage. Deleting a non-existent
 	// session is a no-op (returns nil). For end-user "delete this conversation"
-	// flows that need undelete, prefer SoftDelete.
+	// flows that need undelete, prefer the SoftDeletable capability.
 	DeleteSession(ctx context.Context, sessionKey string) error
+}
+
+// SessionForker is the optional capability for backends that support
+// forking a session at a given message index. Used by ForkAtLastUser and
+// any "branch this conversation" UI flow. Backends without forking simply
+// don't implement this interface; callers type-assert and report a clear
+// error when the capability is missing.
+type SessionForker interface {
 	// Fork creates a new session whose message history is a copy of the first
 	// atIndex messages from sessionKey. atIndex is clamped to the source length
 	// and snapped backward to a "safe" boundary — the resulting prefix never
@@ -56,12 +67,25 @@ type SessionManager interface {
 	// Returns the generated new session key. Fails if sessionKey does not exist
 	// or atIndex is negative.
 	Fork(ctx context.Context, sessionKey string, atIndex int) (string, error)
+}
+
+// SessionQueryable is the optional capability for backends that support
+// listing sessions by key prefix. Used by sidebars, admin UIs, and
+// reporting tools. Backends that only need point lookups do not need to
+// implement this.
+type SessionQueryable interface {
 	// Query returns metadata for sessions whose key starts with prefix.
 	// Pass an empty prefix to list everything. Soft-deleted sessions are
 	// filtered out unless opts.IncludeDeleted is true. Result order honors
 	// opts.OrderBy (default: most recently updated first). Limit/Offset
 	// drive pagination.
 	Query(ctx context.Context, prefix string, opts history.SessionQueryOpts) ([]history.SessionMeta, error)
+}
+
+// SoftDeletable is the optional capability for backends that support
+// reversible deletion via a tombstone. Backends that only do hard deletes
+// (e.g. ephemeral in-process caches) do not need to implement this.
+type SoftDeletable interface {
 	// SoftDelete marks sessionKey as deleted without removing data; reads
 	// (GetHistory / Query default) treat it as missing, but the row stays
 	// behind so Restore can undo the action. No-op if already deleted.
