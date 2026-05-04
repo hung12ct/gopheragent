@@ -2,6 +2,19 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.16.0] — 2026-05-04
+
+Adopter-blocking fixes batch — cloud deployments work, hooks have typed payloads, wrapper traps documented at the source.
+
+### Added
+- `tools.AssetStorage` interface + `tools.LocalDiskStorage` default implementation. `GenerateImageTool` and `GenerateVideoTool` accept any `AssetStorage` so cloud / container adopters plug in GCS / S3 / Azure Blob without writing wrappers. Local-disk path stays a one-liner via `&builtin.LocalDiskStorage{SaveDir: ..., URLBase: ...}`. (#77)
+- `tools.StructuredResult` interface — tools opt in via `ExecuteStructured(ctx, args) (string, any, error)` to expose a typed payload alongside the LLM-facing string. `ToolResultHook` gains a `structured any` parameter so post-execution hooks can read typed fields instead of regex-parsing markdown. (#78)
+- Wrapper-trap doc warnings on `tools.InlineRenderer` and `tools.Cacheable` interface declarations — making the silent-method-drop bug visible at the godoc site. Includes the explicit forwarding pattern. (#76)
+
+### Changed (breaking)
+- `GenerateImageTool.SaveDir` / `URLBase` and `GenerateVideoTool.SaveDir` / `URLBase` fields **removed**. Replace with `.Storage = &builtin.LocalDiskStorage{SaveDir: ..., URLBase: ...}`.
+- `ToolResultHook` signature gains `structured any` as the 5th parameter. Existing hooks need a `_ any` placeholder.
+
 ## [v0.15.0] — 2026-05-04
 
 Adopter quality-of-life batch — multimodal entry, retry observability, cap unification, silent-failure fixes.
@@ -61,6 +74,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.16.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.16.0
 [v0.15.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.15.0
 [v0.14.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.2
 [v0.14.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.1
