@@ -2,6 +2,23 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.19.0] — 2026-05-05
+
+Tool-call observability batch — every dispatch is now correlatable across `tool_call`, `tool_progress`, and `OnToolResult` with a single ID; the hook fires on success and failure; `WithLogging` gains the knobs adopters were writing custom slog handlers for.
+
+### Added
+- `StreamEvent.ToolCallID`, `StreamEvent.ArgsJSON`, `StreamEvent.Reused` — agent-generated correlation ID, raw arguments, and a flag indicating the wave executor consumed a speculative result rather than re-dispatching. Mirrored on `ToolCallEvent` as `ID`, `ArgsJSON`, `Reused`. Adopters can now pair entry events to post-execution audit lines reliably even when `SpeculativeTools=true` interleaves parallel calls. (#86)
+- `ToolProgressEvent.Name` and `ToolProgressEvent.ToolCallID` — mid-execution progress events now echo the originating dispatch so adopters can attribute `ReportProgress` messages to a specific tool under speculation. (#86)
+- `tools.WithToolCallID(ctx, id)` / `tools.ToolCallIDFromContext(ctx)` — typed ctx accessors for the per-Execute correlation ID. Middleware reads it without re-plumbing; the agent loop sets it before invoking the tool. (#86)
+- `tools.WithContextExtractor(fn func(context.Context) []slog.Attr)` — `WithLogging` option that surfaces ctx-scoped attrs (trace_id, user_id, tenant tags) on every tool log line in one line of wiring instead of writing a custom `slog.Handler` bridge. (#86)
+- `tools.WithSuccessLevel(slog.Level)` — `WithLogging` option that demotes entry ("tool call") and successful exit ("tool ok") records below the `LevelError` baseline. Errors always log at `LevelError`; production handlers at `LevelInfo` keep failure visibility while filtering out healthy traffic. (#86)
+- `tools.WithArgsTruncation(maxBytes int)` — `WithLogging` option that caps oversized arguments in log output, replacing the tail with a length marker. Useful for tools accepting image data URIs, multi-KB SQL, etc. (#86)
+- `WithLogging` automatically includes `tool_call_id` (read from ctx) and `duration_ms` (exit-line latency) on every record. (#86)
+
+### Changed (breaking)
+- `ToolResultHook` signature is now `func(ctx context.Context, toolCallID, toolName, argsJSON, result string, structured any, execErr error) (string, error)`. The hook fires on **every** dispatch — success and failure — eliminating the need for a separate `EventTypeError` listener for adopters wanting "every tool call in one place." Hook semantics: on success, `(rewritten, nil)` rewrites the result and `(_, hookErr)` converts to a tool error; on failure, `(rewritten, nil)` recovers the call (rewritten becomes the LLM-facing result) and `(_, hookErr)` replaces the original error. Existing callers add `_ string` (callID) and `_ error` (execErr) placeholders; success-only hooks guard with `if execErr != nil { return result, nil }`. (#86)
+- `tools.WithLogging` now takes a variadic `...LoggingOption`. Existing zero-option callers compile unchanged; configurable callers use the new `With*` helpers above. (#86)
+
 ## [v0.18.1] — 2026-05-04
 
 ### Fixed
@@ -102,6 +119,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.19.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.19.0
 [v0.18.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.18.1
 [v0.18.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.18.0
 [v0.17.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.17.0
