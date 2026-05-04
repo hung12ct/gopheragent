@@ -179,7 +179,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	var execErr error
 	if speculated {
 		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)})
-		toolResult, execErr = awaitSpeculative(toolCtx, sm)
+		toolResult, structured, execErr = awaitSpeculative(toolCtx, sm)
 	} else if sr, ok := tool.(tools.StructuredResult); ok {
 		// Tool advertises a typed payload — prefer the structured path so
 		// the payload reaches OnToolResult. The string branch (Execute)
