@@ -2,6 +2,20 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.15.0] — 2026-05-04
+
+Adopter quality-of-life batch — multimodal entry, retry observability, cap unification, silent-failure fixes.
+
+### Added
+- `AgentLoop.RunIterationStreamMessage(ctx, sessionKey, msg, ch)` and `RunIterationMessage(ctx, sessionKey, msg) (string, error)` accept a full `history.Message` instead of a plain string. Adopters can now pass user messages with multimodal `Parts` (image bytes, mixed text+image), `ToolCallID`, and `CacheHint` directly at chat time. The string-based `RunIteration{Stream}` keeps working — they wrap into a default-role `"user"` message internally. (#72)
+- `EventTypeLimitExhausted` / `LimitExhaustedEvent { Kind, Limit, Used }` — unified typed signal for cap trips. Emitted on `MaxIters`, `MaxToolCallsPerSession`, and Anthropic `stop_reason="max_tokens"`. Adopters can render user-friendly messages via a single switch on `Kind` instead of parsing strings or reading multiple code paths. Visitor gains `VisitLimitExhausted`. `MaxItersReachedEvent` keeps firing alongside for back-compat. (#70)
+- `llm.WithMaxTokens(n)` constructor option for `NewAnthropicProvider`. The default also bumps from 4096 → 8192 (`DefaultAnthropicMaxTokens`) so code-gen turns (HTML5 playables, full-schema dumps, inline charts) stop truncating silently. Anthropic `stop_reason="max_tokens"` now surfaces as `LimitExhaustedEvent{Kind: "provider_max_tokens"}`. (#70)
+- `RetryConfig.OnAttempt RetryAttemptHook` — fires once per retry attempt with structured `(attempt, err, nextDelay)` so adopters can answer "is this turn slow because of retries or one slow call?" without parsing thought events. Nil hook is zero-cost; default behavior unchanged. (#71)
+- `history.Message.IsInlineResult bool` — set automatically on `role:"tool"` rows whose tool implements `tools.InlineRenderer` with `InlineResult()=true`. Render layers can now special-case inline-result rows on session resume (fold them back into the preceding assistant message) instead of maintaining a hand-curated tool-name allowlist. Failing tools are never flagged. (#73)
+
+### Changed (breaking)
+- `EventVisitor` interface gains `VisitLimitExhausted`. Custom visitors must add the method.
+
 ## [v0.14.2] — 2026-05-03
 
 ### Fixed
@@ -47,6 +61,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.15.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.15.0
 [v0.14.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.2
 [v0.14.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.1
 [v0.14.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.14.0
