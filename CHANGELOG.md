@@ -2,6 +2,16 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.21.0] — 2026-05-13
+
+SQL workbench batch — opt-in mutations alongside the read-only verbs, and HITL on the inner SQL statement (not just the natural-language request). The two combine into the "show me the DELETE before it runs" UX adopters building AI data workbenches were rebuilding by hand.
+
+### Added
+- `builtin.CallSQLAgentTool.WithAllowMutations(allow bool)` — widens the SQL classifier to accept `INSERT` / `UPDATE` / `DELETE` / `MERGE` alongside the read-only verbs. DDL (`DROP` / `CREATE` / `ALTER` / `TRUNCATE` / `GRANT` / `REVOKE`) stays rejected. Mutation path runs through `ExecContext` and reports affected rows in `SQLResult.RowCount`; `EnsureLimit` is intentionally skipped on mutations (UPDATE/DELETE `LIMIT` semantics are dialect-specific and would silently change meaning). Default false — no regression for existing read-only adopters. Godoc on the builder recommends pairing with `RequiresConfirmation` + `ConfirmHITL` so mutations always reach a human. (#94)
+- `builtin.ClassifySQL(sql string) (SQLKind, error)` + `builtin.SQLKind` enum (`SQLKindRead` / `SQLKindMutation` / `SQLKindUnknown`) — adopters needing their own dispatch around the read/mutation split now have a public classifier. `builtin.ValidateReadOnly` keeps its old contract and is a thin wrapper around `ClassifySQL`. (#94)
+- `builtin.CallSQLAgentTool.WithExecuteSQLConfirmation(allow bool)` — opt-in HITL on the inner `execute_sql` leaf, so adopters can approve the actual SQL string the model generated rather than (only) the natural-language request at the outer `call_sql_agent` boundary. Workbench UX combines `WithExecuteSQLConfirmation(true).WithRequiresConfirmation(false)` to gate on the statement and skip the intent prompt; the original chatbot UX stays the default (intent approval, single gate). Godoc documents all four flag combinations. (#95)
+- `agent.WithConfirmHITL(ctx, fn)` + `agent.ConfirmHITLFromContext(ctx)` — sub-agents previously constructed worker `AgentLoop`s without inheriting the parent's `ConfirmHITL`, so any `RequiresConfirmation=true` tool deep in a sub-agent denied silently with the `ConfirmationGateUnconfigured` directive. The agent executor now stamps `WithConfirmHITL` on every tool's ctx (mirroring the existing `WithDynamicContextFunc` propagation), and `CallSQLAgentTool.runOnce` reads it back to wire the sub-agent's gate. Closes a latent gap that would have been hit by anyone using `CallSubAgentTool` for confirmation-required tools too. (#95)
+
 ## [v0.20.2] — 2026-05-13
 
 ### Fixed
@@ -141,6 +151,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.21.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.21.0
 [v0.20.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.2
 [v0.20.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.1
 [v0.20.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.0
