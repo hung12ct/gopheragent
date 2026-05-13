@@ -2,6 +2,11 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.20.2] — 2026-05-13
+
+### Fixed
+- `builtin.GenerateTitle` now appends a user-role nudge when the sanitized history ends with an assistant turn. Anthropic rejects calls whose final message is assistant (`"This model does not support assistant message prefill. The conversation must end with a user message."`); after v0.20.1's tool-block strip, the typical `[user, finalAssistant]` shape tripped this rule. The appended nudge (`"Now produce the title for the conversation above. Output only the title — no quotes, no trailing punctuation, no explanation."`) makes titling robust against Anthropic's "must end with user" constraint without changing behavior on OpenAI / Gemini. Idempotent — slices already ending in user (mid-conversation retitle) are forwarded unchanged. Should have shipped together with v0.20.1; recording as a separate release because v0.20.1 is already tagged. (#92)
+
 ## [v0.20.1] — 2026-05-13
 
 ### Fixed
@@ -136,6 +141,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.20.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.2
 [v0.20.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.1
 [v0.20.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.0
 [v0.19.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.19.0
