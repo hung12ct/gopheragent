@@ -51,8 +51,10 @@ func (al *AgentLoop) callLLMWithRetry(ctx context.Context, st *iterationState, m
 }
 
 // handleFinalAnswer appends the assistant's final-answer message,
-// runs the optional Reflect rounds, emits Done, and persists session
-// history. Caller must return immediately after this.
+// runs the optional Reflect rounds, persists session history, and emits
+// Done. Save precedes Done so adopters who read history on Done (auto-
+// titling, chat-list refresh) observe the assistant message rather than
+// racing the persistence write. Caller must return immediately after this.
 func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, msgs []history.Message, finalContent string) {
 	msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
 	if al.Reflect > 0 && finalContent != "" {
@@ -80,8 +82,8 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 			})
 		}
 	}
-	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeDone})
 	al.saveSession(ctx, st.sessionKey, msgs)
+	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeDone})
 }
 
 // callLLM runs one LLM stream attempt. Returns the accumulated content,

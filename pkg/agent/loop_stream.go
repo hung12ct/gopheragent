@@ -541,6 +541,16 @@ func (al *AgentLoop) RunIterationMessage(ctx context.Context, sessionKey string,
 
 // RunIterationStream is a streaming version of the LLM loop that pushes data to a channel.
 // It supports SSE by streaming thoughts and response chunks.
+//
+// Channel lifecycle: this call returns immediately after spawning two
+// internal goroutines (the relayer and the agent loop). The library owns
+// streamChan and will close() it exactly once when the agent loop
+// terminates — callers MUST NOT close streamChan themselves and MUST NOT
+// wrap the call in `go func() { defer close(streamChan); ... }()`. Doing
+// so races the relayer at loop_stream.go and produces
+// "send on closed channel" / "close of closed channel" panics on the
+// first emitted event. Range over the channel from the caller; it
+// terminates naturally when the agent is done.
 func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, userInput string, streamChan chan<- StreamEvent) {
 	al.RunIterationStreamMessage(ctx, sessionKey, history.Message{Role: "user", Content: userInput}, streamChan)
 }
@@ -550,7 +560,8 @@ func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, 
 // set Parts for image bytes / mixed multimodal content, ToolCallID for
 // tool-result inputs, CacheHint for prompt-cache breakpoints. Role
 // defaults to "user" when empty. Same goroutine + channel semantics as
-// RunIterationStream.
+// RunIterationStream — returns immediately, library owns streamChan,
+// callers MUST NOT close it.
 func (al *AgentLoop) RunIterationStreamMessage(ctx context.Context, sessionKey string, msg history.Message, streamChan chan<- StreamEvent) {
 	if msg.Role == "" {
 		msg.Role = "user"
@@ -658,20 +669,20 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 		}
 		totalToolCalls += scheduled
 		if al.MaxToolCallsPerSession > 0 && totalToolCalls >= al.MaxToolCallsPerSession {
+			al.saveSession(ctx, sessionKey, msgs)
 			al.emit(ctx, sessionKey, streamChan, limitExhaustedEvent(LimitKindMaxToolCallsPerSession, al.MaxToolCallsPerSession, totalToolCalls))
 			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %d/%d", ErrMaxToolCallsPerSession, totalToolCalls, al.MaxToolCallsPerSession)))
-			al.saveSession(ctx, sessionKey, msgs)
 			return
 		}
 	}
 
+	al.saveSession(ctx, sessionKey, msgs)
 	al.emit(ctx, sessionKey, streamChan, StreamEvent{
 		Type:    EventTypeMaxItersReached,
 		Content: fmt.Sprintf(`{"limit":%d}`, al.MaxIters),
 	})
 	al.emit(ctx, sessionKey, streamChan, limitExhaustedEvent(LimitKindMaxIters, al.MaxIters, al.MaxIters))
 	al.emit(ctx, sessionKey, streamChan, errEvent(ErrMaxIterations))
-	al.saveSession(ctx, sessionKey, msgs)
 }
 
 // limitExhaustedEvent constructs a typed LimitExhaustedEvent stream frame.
