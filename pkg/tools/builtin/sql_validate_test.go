@@ -82,6 +82,70 @@ func TestValidateReadOnly_SemicolonInsideStringIsNotSplit(t *testing.T) {
 	}
 }
 
+func TestClassifySQL_ClassifiesReads(t *testing.T) {
+	for _, sql := range []string{
+		"SELECT 1",
+		"  with t as (select 1) select * from t",
+		"EXPLAIN SELECT 1",
+		"SHOW TABLES",
+		"DESCRIBE t",
+		"DESC t",
+	} {
+		kind, err := ClassifySQL(sql)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", sql, err)
+		}
+		if kind != SQLKindRead {
+			t.Fatalf("expected Read for %q, got %v", sql, kind)
+		}
+	}
+}
+
+func TestClassifySQL_ClassifiesMutations(t *testing.T) {
+	for _, sql := range []string{
+		"INSERT INTO t VALUES (1)",
+		"update t set x = 1 where id = 5",
+		"DELETE FROM t WHERE id = 2",
+		"MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET x = s.x",
+	} {
+		kind, err := ClassifySQL(sql)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", sql, err)
+		}
+		if kind != SQLKindMutation {
+			t.Fatalf("expected Mutation for %q, got %v", sql, kind)
+		}
+	}
+}
+
+func TestClassifySQL_RejectsDDLAndPermissions(t *testing.T) {
+	for _, sql := range []string{
+		"DROP TABLE t",
+		"CREATE TABLE t (id INT)",
+		"ALTER TABLE t ADD COLUMN x INT",
+		"TRUNCATE TABLE t",
+		"GRANT SELECT ON t TO u",
+		"REVOKE ALL ON t FROM u",
+	} {
+		kind, err := ClassifySQL(sql)
+		if err == nil {
+			t.Fatalf("expected error for %q, got nil (kind=%v)", sql, kind)
+		}
+		if kind != SQLKindUnknown {
+			t.Fatalf("expected SQLKindUnknown for rejected %q, got %v", sql, kind)
+		}
+	}
+}
+
+func TestClassifySQL_RejectsMultiStatementAndEmpty(t *testing.T) {
+	if _, err := ClassifySQL("SELECT 1; DELETE FROM t"); err == nil {
+		t.Fatal("expected multi-statement error")
+	}
+	if _, err := ClassifySQL("   "); err == nil {
+		t.Fatal("expected empty-statement error")
+	}
+}
+
 func TestStripSQLComments_RemovesLineAndBlock(t *testing.T) {
 	in := "-- header\nSELECT 1 /* inline */ FROM t -- trailing"
 	got := StripSQLComments(in)

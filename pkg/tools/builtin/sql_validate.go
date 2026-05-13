@@ -5,8 +5,20 @@ import (
 	"strings"
 )
 
-// readOnlyHeads lists the first-token keywords that are allowed as the start
-// of a statement. Anything else (UPDATE, DELETE, DROP, etc.) is rejected.
+// SQLKind classifies a parsed single SQL statement by its leading verb.
+// Unknown covers anything that isn't a read or a permitted mutation —
+// DDL (DROP / CREATE / ALTER / TRUNCATE), permissions (GRANT / REVOKE),
+// and any other unrecognised verb. ClassifySQL never returns Unknown
+// alongside a nil error; the kind/error pair is always consistent.
+type SQLKind int
+
+const (
+	SQLKindUnknown SQLKind = iota
+	SQLKindRead
+	SQLKindMutation
+)
+
+// readOnlyHeads lists the first-token keywords that classify as Read.
 var readOnlyHeads = map[string]bool{
 	"SELECT":   true,
 	"WITH":     true,
@@ -16,15 +28,22 @@ var readOnlyHeads = map[string]bool{
 	"SHOW":     true,
 }
 
-// ValidateReadOnly checks that sql is exactly one read-only statement.
-// It rejects:
-//   - multi-statement input ("SELECT 1; DROP TABLE x")
-//   - any statement whose first keyword is not in readOnlyHeads
-//
-// Comments are stripped before analysis, so "/* update */ SELECT" is
-// correctly classified as a SELECT. Returns nil when the input is a single
-// read-only statement.
-func ValidateReadOnly(sql string) error {
+// mutationHeads lists the DML verbs that classify as Mutation. DDL and
+// permission statements are intentionally excluded — those carry larger
+// blast radius and aren't covered by the opt-in flag.
+var mutationHeads = map[string]bool{
+	"INSERT": true,
+	"UPDATE": true,
+	"DELETE": true,
+	"MERGE":  true,
+}
+
+// ClassifySQL parses sql, rejects multi-statement input, and returns the
+// kind of the single statement. Comments are stripped before analysis, so
+// "/* update */ SELECT" still classifies as Read. An empty or
+// multi-statement input, or an unrecognised verb, yields SQLKindUnknown
+// with a wrapped error.
+func ClassifySQL(sql string) (SQLKind, error) {
 	stripped := StripSQLComments(sql)
 	statements := SplitStatements(stripped)
 	nonEmpty := statements[:0]
@@ -34,13 +53,35 @@ func ValidateReadOnly(sql string) error {
 		}
 	}
 	if len(nonEmpty) == 0 {
-		return fmt.Errorf("tools: empty SQL statement")
+		return SQLKindUnknown, fmt.Errorf("tools: empty SQL statement")
 	}
 	if len(nonEmpty) > 1 {
-		return fmt.Errorf("tools: multiple statements are not permitted (got %d)", len(nonEmpty))
+		return SQLKindUnknown, fmt.Errorf("tools: multiple statements are not permitted (got %d)", len(nonEmpty))
 	}
 	head := firstKeyword(nonEmpty[0])
-	if !readOnlyHeads[head] {
+	switch {
+	case readOnlyHeads[head]:
+		return SQLKindRead, nil
+	case mutationHeads[head]:
+		return SQLKindMutation, nil
+	default:
+		return SQLKindUnknown, fmt.Errorf("tools: statement type %q is not permitted; allowed verbs are SELECT, WITH, EXPLAIN, SHOW, DESCRIBE (and INSERT, UPDATE, DELETE, MERGE when mutations are enabled)", head)
+	}
+}
+
+// ValidateReadOnly checks that sql is exactly one read-only statement.
+// Equivalent to `kind, err := ClassifySQL(sql); kind == SQLKindRead`.
+// Returns nil when the input is a single read-only statement; rejects
+// multi-statement input and any non-read verb (including the mutation
+// verbs covered by ClassifySQL — call ClassifySQL directly to permit
+// mutations).
+func ValidateReadOnly(sql string) error {
+	kind, err := ClassifySQL(sql)
+	if err != nil {
+		return err
+	}
+	if kind != SQLKindRead {
+		head := firstKeyword(StripSQLComments(sql))
 		return fmt.Errorf("tools: statement type %q is not permitted; only read-only queries (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE) are allowed", head)
 	}
 	return nil

@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/hung12ct/gopheragent/pkg/tools"
@@ -47,6 +49,57 @@ func TestCallSQLAgentTool_WithRequiresConfirmation(t *testing.T) {
 	tool.WithRequiresConfirmation(true)
 	if !tool.RequiresConfirmation() {
 		t.Fatalf("WithRequiresConfirmation(true): got false, want true")
+	}
+}
+
+func TestCallSQLAgentTool_WithAllowMutations(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil)
+	if tool.allowMutations {
+		t.Fatalf("WithAllowMutations default: got true, want false")
+	}
+	tool.WithAllowMutations(true)
+	if !tool.allowMutations {
+		t.Fatalf("WithAllowMutations(true): flag not set")
+	}
+	tool.WithAllowMutations(false)
+	if tool.allowMutations {
+		t.Fatalf("WithAllowMutations(false): flag not cleared")
+	}
+}
+
+func TestExecuteSQLTool_RejectsMutationsWhenDisabled(t *testing.T) {
+	// Mutation-off (default) — Execute must refuse INSERT/UPDATE/DELETE
+	// before touching the DB. We pass db=nil to prove no DB call happens
+	// on the rejection path.
+	exec := &executeSQLTool{db: nil, allowMutations: false}
+	out, err := exec.Execute(context.Background(), `{"sql_query":"UPDATE customers SET active = false WHERE id = 1"}`)
+	if err != nil {
+		t.Fatalf("Execute returned a hard error instead of a structured rejection: %v", err)
+	}
+	if !strings.Contains(out, "not permitted") || !strings.Contains(out, "WithAllowMutations") {
+		t.Fatalf("rejection payload should mention permission + the enabling builder, got %s", out)
+	}
+}
+
+func TestExecuteSQLTool_DescriptionReflectsMutationFlag(t *testing.T) {
+	off := (&executeSQLTool{allowMutations: false}).Description()
+	on := (&executeSQLTool{allowMutations: true}).Description()
+	if !strings.Contains(off, "read-only") || strings.Contains(off, "INSERT") {
+		t.Fatalf("read-only description regressed: %s", off)
+	}
+	if !strings.Contains(on, "INSERT") || !strings.Contains(on, "MERGE") {
+		t.Fatalf("mutation-enabled description should list DML verbs: %s", on)
+	}
+}
+
+func TestCallSQLAgentTool_BuildSystemPromptMentionsMutations(t *testing.T) {
+	off := NewCallSQLAgentTool(nil, "schema", nil, nil).buildSystemPrompt()
+	on := NewCallSQLAgentTool(nil, "schema", nil, nil).WithAllowMutations(true).buildSystemPrompt()
+	if !strings.Contains(off, "read-only SQL query") || strings.Contains(off, "Mutations (INSERT") {
+		t.Fatalf("read-only prompt regressed: %s", off)
+	}
+	if !strings.Contains(on, "Mutations (INSERT, UPDATE, DELETE, MERGE) are permitted") {
+		t.Fatalf("mutation-enabled prompt missing rule 12: %s", on)
 	}
 }
 
