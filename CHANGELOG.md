@@ -2,6 +2,11 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.20.1] — 2026-05-13
+
+### Fixed
+- `builtin.GenerateTitle` no longer 400s when adopters slice tool-using histories. Anthropic rejects message slices where an assistant `tool_use` is not immediately followed by its paired `tool_result`; the typical auto-title input shape (`[firstUser, firstAssistant-with-toolcall, tool, finalAssistant]`) frequently breaks that adjacency once the conversation is sliced for titling. `GenerateTitle` now strips `role:"tool"` messages and clears `ToolCalls` on assistant messages before forwarding, dropping any assistant message that becomes empty after the strip. Titles only need intent + outcome, so the sanitization is the correct semantic regardless of provider quirks. (#90)
+
 ## [v0.20.0] — 2026-05-13
 
 Adopter integration batch — terminal-event/persistence ordering hardened across every exit path, `OnSQL` finally surfaces result rows, stream-channel ownership documented.
@@ -131,6 +136,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.20.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.1
 [v0.20.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.0
 [v0.19.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.19.0
 [v0.18.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.18.1
