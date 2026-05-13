@@ -14,14 +14,17 @@ import (
 
 // titleProvider is a minimal LLMProvider stub for GenerateTitle tests.
 // It can stream the response in chunks (exercise event-buffering path) or
-// only set Content on the result (exercise fallback path).
+// only set Content on the result (exercise fallback path). got captures
+// the message slice GenerateTitle forwarded — used to assert sanitization.
 type titleProvider struct {
 	streamChunks []string
 	resultText   string
 	err          error
+	got          []history.Message
 }
 
-func (p *titleProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, ch chan<- agent.StreamEvent) (agent.LLMResult, error) {
+func (p *titleProvider) GenerateStream(_ context.Context, msgs []history.Message, _ *tools.Registry, ch chan<- agent.StreamEvent) (agent.LLMResult, error) {
+	p.got = append([]history.Message(nil), msgs...)
 	if p.err != nil {
 		return agent.LLMResult{}, p.err
 	}
@@ -131,6 +134,85 @@ func TestGenerateTitle_HonorsTimeout(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+}
+
+func TestGenerateTitle_StripsToolBlocksFromHistory(t *testing.T) {
+	// Mirrors Phin's slice: [firstUser, firstAssistant-with-toolcall, tool,
+	// finalAssistant]. Before the fix, this propagated tool_use blocks
+	// without paired tool_result blocks to Anthropic and 400'd. After
+	// sanitization, the provider sees system + user + (preserved
+	// intermediate assistant text) + final assistant only.
+	p := &titleProvider{streamChunks: []string{"Top Customers Report"}}
+	title, err := GenerateTitle(context.Background(), p, TitleOptions{
+		Messages: []history.Message{
+			{Role: "user", Content: "show me top customers"},
+			{Role: "assistant", Content: "Checking the warehouse...", ToolCalls: []history.ToolCall{{ID: "toolu_1", Name: "call_sql_agent", Arguments: `{"query":"top customers"}`}}},
+			{Role: "tool", ToolCallID: "toolu_1", Content: `{"rows":[]}`},
+			{Role: "assistant", Content: "Top customers are X, Y, Z."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if title != "Top Customers Report" {
+		t.Fatalf("unexpected title: %q", title)
+	}
+	// p.got[0] is the injected system prompt; the rest must be free of
+	// tool_use / tool_result residue.
+	if len(p.got) < 1 || p.got[0].Role != "system" {
+		t.Fatalf("expected system prompt first, got %+v", p.got)
+	}
+	for i, m := range p.got[1:] {
+		if m.Role == "tool" {
+			t.Fatalf("p.got[%d] is a tool message; should have been stripped", i+1)
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			t.Fatalf("p.got[%d] still carries ToolCalls: %+v", i+1, m.ToolCalls)
+		}
+	}
+	// Final assistant must survive.
+	last := p.got[len(p.got)-1]
+	if last.Role != "assistant" || last.Content != "Top customers are X, Y, Z." {
+		t.Fatalf("final assistant lost: %+v", last)
+	}
+}
+
+func TestGenerateTitle_DropsEmptyAssistantAfterStrippingToolCalls(t *testing.T) {
+	// Assistant emitted only a tool_use (no narration). After clearing
+	// ToolCalls, the message has no Content / Parts — drop it entirely
+	// rather than send an empty assistant turn the provider will reject.
+	p := &titleProvider{streamChunks: []string{"Untitled Query"}}
+	_, err := GenerateTitle(context.Background(), p, TitleOptions{
+		Messages: []history.Message{
+			{Role: "user", Content: "list tables"},
+			{Role: "assistant", ToolCalls: []history.ToolCall{{ID: "toolu_2", Name: "call_sql_agent", Arguments: "{}"}}},
+			{Role: "tool", ToolCallID: "toolu_2", Content: "ok"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// system + user only; the empty-after-strip assistant and the tool
+	// row must both be gone.
+	if len(p.got) != 2 || p.got[0].Role != "system" || p.got[1].Role != "user" {
+		t.Fatalf("expected [system, user], got %+v", p.got)
+	}
+}
+
+func TestGenerateTitle_ErrorsWhenEveryMessageStripped(t *testing.T) {
+	p := &titleProvider{streamChunks: []string{"ignored"}}
+	_, err := GenerateTitle(context.Background(), p, TitleOptions{
+		Messages: []history.Message{
+			{Role: "assistant", ToolCalls: []history.ToolCall{{ID: "toolu_3", Name: "x", Arguments: "{}"}}},
+			{Role: "tool", ToolCallID: "toolu_3", Content: "done"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error when no titleable messages remain")
+	}
+	if !strings.Contains(err.Error(), "stripping tool-call blocks") {
+		t.Fatalf("expected stripped-empty error, got %v", err)
 	}
 }
 
