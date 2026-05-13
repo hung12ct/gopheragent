@@ -25,8 +25,11 @@ import (
 //  7. fatal-error gate / dropped-call synthesis / tool-result drain
 func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs *[]history.Message, iteration int, tracker *LoopDetector) (int, bool) {
 	if ctx.Err() != nil {
-		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrContextCancelled, ctx.Err())))
+		// Persist before signaling so adopters that read history on the
+		// terminal event observe the durable state, not a partial in-memory
+		// snapshot. See handleFinalAnswer for the canonical sequencing.
 		al.saveSession(ctx, sessionKey, *msgs)
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrContextCancelled, ctx.Err())))
 		return 0, true
 	}
 
@@ -50,8 +53,8 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 
 	finalContent, result, err := al.callLLMWithRetry(ctx, st, msgsForLLM)
 	if err != nil {
-		al.emit(ctx, sessionKey, streamChan, errEvent(&LLMFailureError{Cause: err}))
 		al.saveSession(ctx, sessionKey, *msgs)
+		al.emit(ctx, sessionKey, streamChan, errEvent(&LLMFailureError{Cause: err}))
 		return 0, true
 	}
 
@@ -67,8 +70,8 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 
 	ws := al.executeToolWaves(ctx, st, scheduled)
 	if ws.fatalErr != nil {
-		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
 		al.saveSession(ctx, sessionKey, *msgs)
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
 		return len(scheduled), true
 	}
 

@@ -17,10 +17,19 @@ import (
 // SQLQueryEvent carries metadata about a SQL query executed by the sub-agent.
 // Error is non-empty when the query failed (DB error, DML rejection, or
 // validation failure before execution).
+//
+// Columns / Rows / Truncated are populated on successful execution so adopters
+// can flow result sets out of the sub-agent (e.g. into a side-by-side data
+// grid) without re-running the query against their own DB handle. On failure
+// these fields are zero-valued; partial rows from a mid-iteration error are
+// still surfaced, mirroring the SQLResult returned to the model.
 type SQLQueryEvent struct {
 	SessionKey string
 	Query      string
-	Error      string // empty on success
+	Error      string           // empty on success
+	Columns    []string         // populated on success; nil on early validation failure
+	Rows       []map[string]any // populated on success; nil on early validation failure
+	Truncated  bool             // true when the MaxRows safety cap clipped output
 }
 
 // SQLResult is the structured envelope returned from execute_sql back to the
@@ -423,12 +432,21 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 	}
 	sqlStr := strings.TrimSpace(args.SQLQuery)
 
-	notify := func(query, errMsg string) {
+	// emit fans the SQLResult out to OnSQL (so adopters see columns/rows/
+	// truncated alongside the query) and marshals the same payload back to
+	// the model. Centralising both keeps every exit path in sync — no
+	// silently-empty Rows for success and no missing OnSQL call on error.
+	emit := func(res SQLResult) (string, error) {
 		if t.onSQL != nil {
-			t.onSQL(ctx, SQLQueryEvent{SessionKey: t.sessionKey, Query: query, Error: errMsg})
+			t.onSQL(ctx, SQLQueryEvent{
+				SessionKey: t.sessionKey,
+				Query:      res.SQL,
+				Error:      res.Error,
+				Columns:    res.Columns,
+				Rows:       res.Rows,
+				Truncated:  res.Truncated,
+			})
 		}
-	}
-	marshal := func(res SQLResult) (string, error) {
 		b, err := json.Marshal(res)
 		if err != nil {
 			return "", fmt.Errorf("tools: marshal result: %w", err)
@@ -438,8 +456,7 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 
 	// 1. Validation — fails before the DB even sees the query.
 	if err := ValidateReadOnly(sqlStr); err != nil {
-		notify(sqlStr, err.Error())
-		return marshal(SQLResult{SQL: sqlStr, Error: err.Error()})
+		return emit(SQLResult{SQL: sqlStr, Error: err.Error()})
 	}
 
 	// 2. Apply LIMIT if configured and missing.
@@ -456,8 +473,7 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 	start := time.Now()
 	rows, err := t.db.QueryContext(queryCtx, effectiveSQL)
 	if err != nil {
-		notify(effectiveSQL, err.Error())
-		return marshal(SQLResult{
+		return emit(SQLResult{
 			SQL:         effectiveSQL,
 			ExecutionMs: time.Since(start).Milliseconds(),
 			Error:       err.Error(),
@@ -467,8 +483,7 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 
 	cols, err := rows.Columns()
 	if err != nil {
-		notify(effectiveSQL, err.Error())
-		return marshal(SQLResult{
+		return emit(SQLResult{
 			SQL:         effectiveSQL,
 			ExecutionMs: time.Since(start).Milliseconds(),
 			Error:       fmt.Sprintf("failed to read columns: %v", err),
@@ -484,8 +499,7 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 			columnPointers[i] = &columns[i]
 		}
 		if err := rows.Scan(columnPointers...); err != nil {
-			notify(effectiveSQL, err.Error())
-			return marshal(SQLResult{
+			return emit(SQLResult{
 				SQL:         effectiveSQL,
 				ExecutionMs: time.Since(start).Milliseconds(),
 				Error:       fmt.Sprintf("scan error: %v", err),
@@ -510,8 +524,7 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 		}
 	}
 	if err := rows.Err(); err != nil {
-		notify(effectiveSQL, err.Error())
-		return marshal(SQLResult{
+		return emit(SQLResult{
 			SQL:         effectiveSQL,
 			ExecutionMs: time.Since(start).Milliseconds(),
 			Error:       fmt.Sprintf("row iteration error: %v", err),
@@ -529,14 +542,13 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 		ExecutionMs: time.Since(start).Milliseconds(),
 		Truncated:   truncated,
 	}
-	notify(effectiveSQL, "")
 
 	t.captureMu.Lock()
 	copied := finalRes
 	t.capture = &copied
 	t.captureMu.Unlock()
 
-	return marshal(finalRes)
+	return emit(finalRes)
 }
 
 // lastCapture returns a copy of the last successfully-executed SQLResult,
