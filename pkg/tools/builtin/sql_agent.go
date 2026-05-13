@@ -77,8 +77,9 @@ type CallSQLAgentTool struct {
 	onSQL                func(context.Context, SQLQueryEvent)
 	name                 string
 	display              *tools.ToolDisplay
-	requiresConfirmation bool
-	allowMutations       bool
+	requiresConfirmation         bool
+	allowMutations               bool
+	execSQLRequiresConfirmation  bool
 }
 
 // NewCallSQLAgentTool initializes a tool capable of querying databases. The
@@ -197,6 +198,36 @@ func (t *CallSQLAgentTool) WithRequiresConfirmation(b bool) *CallSQLAgentTool {
 	return t
 }
 
+// WithExecuteSQLConfirmation toggles HITL on the inner execute_sql tool
+// — the leaf that actually hits the database — rather than (only) on the
+// outer call_sql_agent boundary. When true, every SQL statement the
+// sub-agent generates is surfaced through the parent loop's ConfirmHITL
+// with the rendered SQL (the `sql_query` field of executeSQLArgs) as the
+// argsJSON the host UI shows for approval. Default is false, preserving
+// the original "approve the natural-language request" gate.
+//
+// **Workbench UX pattern (Phin):** `WithExecuteSQLConfirmation(true).
+// WithRequiresConfirmation(false)` — skip the outer "may I call the
+// sub-agent?" prompt and instead approve the actual SQL the model
+// produced. Pair with WithAllowMutations(true) when the user must see
+// UPDATE/DELETE statements before they run.
+//
+// **Chatbot pattern (default):** `WithRequiresConfirmation(true).
+// WithExecuteSQLConfirmation(false)` — adopters care about intent, not
+// statements; one approval per request.
+//
+// **Both true:** double-confirmation. Intent gated, then every SQL
+// re-confirmed.
+//
+// The parent's ConfirmHITL is propagated to the sub-agent automatically
+// via the tool ctx (no extra wiring required). A nil parent ConfirmHITL
+// will fall back to the EventTypeActionRequired path inside the sub-agent
+// same as on the parent loop.
+func (t *CallSQLAgentTool) WithExecuteSQLConfirmation(b bool) *CallSQLAgentTool {
+	t.execSQLRequiresConfirmation = b
+	return t
+}
+
 // WithAllowMutations toggles whether the sub-agent may emit DML — INSERT,
 // UPDATE, DELETE, MERGE — in addition to the read-only verbs. Default is
 // false, preserving the original read-only contract.
@@ -290,18 +321,24 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 	}()
 
 	exec := &executeSQLTool{
-		db:             t.db,
-		onSQL:          t.onSQL,
-		sessionKey:     subSessionKey,
-		maxRows:        t.maxRows,
-		queryTimeout:   t.queryTimeout,
-		allowMutations: t.allowMutations,
+		db:                   t.db,
+		onSQL:                t.onSQL,
+		sessionKey:           subSessionKey,
+		maxRows:              t.maxRows,
+		queryTimeout:         t.queryTimeout,
+		allowMutations:       t.allowMutations,
+		requiresConfirmation: t.execSQLRequiresConfirmation,
 	}
 	sqlTools := tools.NewRegistry()
 	sqlTools.Register(exec)
 
 	subAgent := agent.NewAgentLoop(t.sessionManager, sqlTools, t.provider)
 	subAgent.DynamicContext = agent.DynamicContextFuncFromContext(ctx)
+	// Propagate the parent loop's HITL gate so RequiresConfirmation on
+	// execute_sql surfaces through the same approval path as the outer
+	// call_sql_agent boundary. Nil-safe — when the parent has no
+	// ConfirmHITL, the sub-agent falls back to EventTypeActionRequired.
+	subAgent.ConfirmHITL = agent.ConfirmHITLFromContext(ctx)
 
 	t.sessionManager.SetHistory(ctx, subSessionKey, []history.Message{
 		{Role: "system", Content: t.buildSystemPrompt()},
@@ -429,12 +466,13 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 // contract.
 // ---------------------------------------------------------
 type executeSQLTool struct {
-	db             *sql.DB
-	sessionKey     string
-	onSQL          func(context.Context, SQLQueryEvent)
-	maxRows        int
-	queryTimeout   time.Duration
-	allowMutations bool
+	db                   *sql.DB
+	sessionKey           string
+	onSQL                func(context.Context, SQLQueryEvent)
+	maxRows              int
+	queryTimeout         time.Duration
+	allowMutations       bool
+	requiresConfirmation bool
 
 	// capture, when non-nil, records the last successful SQLResult observed
 	// in this instance. Used by self-consistency clustering. Protected by
@@ -461,7 +499,7 @@ func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
 	return tools.SchemaFor[executeSQLArgs]()
 }
 
-func (t *executeSQLTool) RequiresConfirmation() bool { return false }
+func (t *executeSQLTool) RequiresConfirmation() bool { return t.requiresConfirmation }
 
 func (t *executeSQLTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 

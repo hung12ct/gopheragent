@@ -189,6 +189,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		}
 	})
 	toolCtx = WithDynamicContextFunc(toolCtx, al.DynamicContext)
+	toolCtx = WithConfirmHITL(toolCtx, al.ConfirmHITL)
 	toolCtx = tools.WithToolCallID(toolCtx, callID)
 	toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
 		select {
