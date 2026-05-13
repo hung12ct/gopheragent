@@ -67,9 +67,21 @@ func GenerateTitle(ctx context.Context, provider agent.LLMProvider, opts TitleOp
 		timeout = 30 * time.Second
 	}
 
-	msgs := make([]history.Message, 0, len(opts.Messages)+1)
+	// Strip the tool dance. Anthropic rejects message slices where an
+	// assistant tool_use isn't immediately followed by its matching
+	// tool_result; adopters slicing history for titling routinely produce
+	// that shape ([firstUser, firstAssistant, tool, finalAssistant] is
+	// fine end-to-end but blows up when only some turns are included).
+	// Titles want intent + outcome, not the tool dance, so removing the
+	// pair is the right semantic regardless of the provider quirk.
+	sanitized := stripToolDance(opts.Messages)
+	if len(sanitized) == 0 {
+		return "", errors.New("builtin: GenerateTitle: no titleable messages after stripping tool-call blocks")
+	}
+
+	msgs := make([]history.Message, 0, len(sanitized)+1)
 	msgs = append(msgs, history.Message{Role: "system", Content: system})
-	msgs = append(msgs, opts.Messages...)
+	msgs = append(msgs, sanitized...)
 
 	streamCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -115,6 +127,40 @@ func GenerateTitle(ctx context.Context, provider agent.LLMProvider, opts TitleOp
 // ErrEmptyTitle is returned when the provider produced no usable text.
 // Callers typically fall back to a placeholder like "New conversation".
 var ErrEmptyTitle = errors.New("builtin: GenerateTitle: model returned empty title")
+
+// stripToolDance returns a copy of in with role:"tool" messages removed
+// and ToolCalls cleared from assistant messages. An assistant message
+// whose only content was a tool_use block (no text / parts) is dropped
+// entirely. Other roles pass through unchanged.
+//
+// This keeps titling robust when adopters feed a sub-slice of the full
+// conversation (e.g. [firstUser, firstAssistant, tool, finalAssistant])
+// — Anthropic otherwise rejects the call because a tool_use needs its
+// tool_result in the immediately-next message and the slice boundaries
+// can break that pairing.
+func stripToolDance(in []history.Message) []history.Message {
+	out := make([]history.Message, 0, len(in))
+	for _, m := range in {
+		switch m.Role {
+		case "tool":
+			continue
+		case "assistant":
+			if len(m.ToolCalls) == 0 {
+				out = append(out, m)
+				continue
+			}
+			cleaned := m
+			cleaned.ToolCalls = nil
+			if cleaned.Content == "" && len(cleaned.Parts) == 0 {
+				continue
+			}
+			out = append(out, cleaned)
+		default:
+			out = append(out, m)
+		}
+	}
+	return out
+}
 
 // normalizeTitle strips wrapping quotes, trims trailing punctuation that
 // the model occasionally adds despite instructions, collapses internal
