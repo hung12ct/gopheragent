@@ -2,6 +2,18 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.20.0] — 2026-05-13
+
+Adopter integration batch — terminal-event/persistence ordering hardened across every exit path, `OnSQL` finally surfaces result rows, stream-channel ownership documented.
+
+### Added
+- `SQLQueryEvent.Columns []string`, `SQLQueryEvent.Rows []map[string]any`, `SQLQueryEvent.Truncated bool` — `builtin.CallSQLAgentTool.OnSQL` now fans out the executed result (not just the query string), so adopters mirroring sub-agent results into their own UI (data grid, export panel) no longer need to re-run the query against their own DB handle. Populated on success and on partial-row errors; zero-valued on early validation failure. Existing `Query` / `Error` consumers keep working unchanged.
+- `RunIterationStream` / `RunIterationStreamMessage` godoc now spells out channel-lifecycle ownership — the library spawns goroutines and closes `streamChan` exactly once on agent loop termination. Callers MUST NOT close the channel themselves; doing so previously caused `panic: send on closed channel` / `panic: close of closed channel` on the first emitted event.
+
+### Fixed
+- Terminal events (`Done`, `Error`, `LimitExhausted`, `MaxItersReached`) now fire **after** `saveSession` at all six exit sites (`handleFinalAnswer`, `runIteration` ctx-cancel / LLM-fail / fatal-loop, `runLogicLoop` MaxToolCallsPerSession / MaxIters). Adopters consuming a terminal event and immediately reading `Sessions.GetHistory(...)` (auto-titling, sidebar refresh, audit pipelines) now observe the durable state instead of racing the persistence write.
+- `executeSQLTool` `Execute` no longer split its success/failure exits between two helpers (`notify` + `marshal`) that could drift — refactored into a single `emit` so every return path emits a consistent `SQLQueryEvent` and marshals the same `SQLResult` envelope.
+
 ## [v0.19.0] — 2026-05-05
 
 Tool-call observability batch — every dispatch is now correlatable across `tool_call`, `tool_progress`, and `OnToolResult` with a single ID; the hook fires on success and failure; `WithLogging` gains the knobs adopters were writing custom slog handlers for.
@@ -119,6 +131,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.20.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.0
 [v0.19.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.19.0
 [v0.18.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.18.1
 [v0.18.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.18.0
