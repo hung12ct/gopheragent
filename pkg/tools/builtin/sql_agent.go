@@ -78,6 +78,7 @@ type CallSQLAgentTool struct {
 	name                 string
 	display              *tools.ToolDisplay
 	requiresConfirmation bool
+	allowMutations       bool
 }
 
 // NewCallSQLAgentTool initializes a tool capable of querying databases. The
@@ -196,6 +197,26 @@ func (t *CallSQLAgentTool) WithRequiresConfirmation(b bool) *CallSQLAgentTool {
 	return t
 }
 
+// WithAllowMutations toggles whether the sub-agent may emit DML — INSERT,
+// UPDATE, DELETE, MERGE — in addition to the read-only verbs. Default is
+// false, preserving the original read-only contract.
+//
+// DDL (DROP, CREATE, ALTER, TRUNCATE, GRANT, REVOKE) remains rejected
+// regardless of this flag. The existing hardening (multi-statement reject,
+// comment strip, per-query timeout, structured SQLResult envelope) stays
+// in force for the mutation path; mutations execute via ExecContext and
+// surface the affected-row count in SQLResult.RowCount.
+//
+// **Pair with the HITL gate.** Mutations have side effects you usually
+// want the human in the loop for: leave RequiresConfirmation at the true
+// default and wire AgentLoop.ConfirmHITL so every UPDATE / DELETE is
+// surfaced for explicit user approval. Auto-approve should be off for
+// mutation-enabled agents.
+func (t *CallSQLAgentTool) WithAllowMutations(allow bool) *CallSQLAgentTool {
+	t.allowMutations = allow
+	return t
+}
+
 // Name implements tools.Tool.
 func (t *CallSQLAgentTool) Name() string {
 	if t.name != "" {
@@ -269,11 +290,12 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 	}()
 
 	exec := &executeSQLTool{
-		db:           t.db,
-		onSQL:        t.onSQL,
-		sessionKey:   subSessionKey,
-		maxRows:      t.maxRows,
-		queryTimeout: t.queryTimeout,
+		db:             t.db,
+		onSQL:          t.onSQL,
+		sessionKey:     subSessionKey,
+		maxRows:        t.maxRows,
+		queryTimeout:   t.queryTimeout,
+		allowMutations: t.allowMutations,
 	}
 	sqlTools := tools.NewRegistry()
 	sqlTools.Register(exec)
@@ -332,11 +354,19 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(`You are a SQL database expert. Translate the user's natural-language question into a valid, read-only SQL query, execute it with execute_sql, and return the raw JSON result untouched.
+	if t.allowMutations {
+		b.WriteString(`You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read or DML), execute it with execute_sql, and return the raw JSON result untouched. Propose mutations only when the user explicitly asks to change data; default to reads otherwise.
 
 **Schema (use ONLY these tables and columns — never invent names):**
 
 `)
+	} else {
+		b.WriteString(`You are a SQL database expert. Translate the user's natural-language question into a valid, read-only SQL query, execute it with execute_sql, and return the raw JSON result untouched.
+
+**Schema (use ONLY these tables and columns — never invent names):**
+
+`)
+	}
 	b.WriteString(schemaBlock)
 	b.WriteString("\n")
 
@@ -371,8 +401,13 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 9. Filter NULLs with WHERE <col> IS NOT NULL or via JOIN. Use ORDER BY ... NULLS LAST for nullable columns.
 10. Use DISTINCT only when unique values are explicitly needed.
 11. For fuzzy text matching: LOWER(col) LIKE '%value%'.
-12. Read-only: NEVER write UPDATE, DELETE, DROP, INSERT, CREATE, ALTER, TRUNCATE, MERGE, GRANT, or REVOKE — the tool will reject them.
-13. Submit one statement at a time. Multiple statements separated by ';' are rejected.
+`)
+	if t.allowMutations {
+		b.WriteString("12. Mutations (INSERT, UPDATE, DELETE, MERGE) are permitted. Only emit them when the user explicitly asks to change data, and target a narrow, scoped row set (always include a WHERE clause for UPDATE/DELETE). DDL (DROP, CREATE, ALTER, TRUNCATE, GRANT, REVOKE) and other statements remain rejected.\n")
+	} else {
+		b.WriteString("12. Read-only: NEVER write UPDATE, DELETE, DROP, INSERT, CREATE, ALTER, TRUNCATE, MERGE, GRANT, or REVOKE — the tool will reject them.\n")
+	}
+	b.WriteString(`13. Submit one statement at a time. Multiple statements separated by ';' are rejected.
 
 **Reasoning strategy (Chain-of-Thought, use for complex queries):**
 
@@ -394,11 +429,12 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 // contract.
 // ---------------------------------------------------------
 type executeSQLTool struct {
-	db           *sql.DB
-	sessionKey   string
-	onSQL        func(context.Context, SQLQueryEvent)
-	maxRows      int
-	queryTimeout time.Duration
+	db             *sql.DB
+	sessionKey     string
+	onSQL          func(context.Context, SQLQueryEvent)
+	maxRows        int
+	queryTimeout   time.Duration
+	allowMutations bool
 
 	// capture, when non-nil, records the last successful SQLResult observed
 	// in this instance. Used by self-consistency clustering. Protected by
@@ -411,11 +447,14 @@ type executeSQLTool struct {
 func (t *executeSQLTool) Name() string { return "execute_sql" }
 
 func (t *executeSQLTool) Description() string {
+	if t.allowMutations {
+		return "Execute a single SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Reads (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE) and mutations (INSERT, UPDATE, DELETE, MERGE) are accepted; DDL and multi-statement input are rejected. For mutations, row_count reports the affected-row count and columns/rows are empty."
+	}
 	return "Execute a single read-only SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Multi-statement input and DDL/DML are rejected."
 }
 
 type executeSQLArgs struct {
-	SQLQuery string `json:"sql_query" description:"The exact SQL query string to run. Single statement only, read-only."`
+	SQLQuery string `json:"sql_query" description:"The exact SQL query string to run. Single statement only."`
 }
 
 func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
@@ -425,6 +464,10 @@ func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
 func (t *executeSQLTool) RequiresConfirmation() bool { return false }
 
 func (t *executeSQLTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
+
+// Execute dispatches to executeRead or executeMutation based on
+// ClassifySQL. Unknown verbs and multi-statement input are rejected
+// here before any DB I/O.
 func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var args executeSQLArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -432,11 +475,31 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 	}
 	sqlStr := strings.TrimSpace(args.SQLQuery)
 
-	// emit fans the SQLResult out to OnSQL (so adopters see columns/rows/
-	// truncated alongside the query) and marshals the same payload back to
-	// the model. Centralising both keeps every exit path in sync — no
-	// silently-empty Rows for success and no missing OnSQL call on error.
-	emit := func(res SQLResult) (string, error) {
+	emit := t.makeEmitFunc(ctx)
+
+	kind, err := ClassifySQL(sqlStr)
+	if err != nil {
+		return emit(SQLResult{SQL: sqlStr, Error: err.Error()})
+	}
+	if kind == SQLKindMutation {
+		if !t.allowMutations {
+			return emit(SQLResult{
+				SQL:   sqlStr,
+				Error: fmt.Sprintf("tools: statement type %q is not permitted on a read-only sql agent; enable via CallSQLAgentTool.WithAllowMutations(true)", firstKeyword(StripSQLComments(sqlStr))),
+			})
+		}
+		return t.executeMutation(ctx, sqlStr, emit)
+	}
+	return t.executeRead(ctx, sqlStr, emit)
+}
+
+// makeEmitFunc returns a closure that fans the SQLResult out to OnSQL
+// (so adopters see columns/rows/truncated alongside the query) and
+// marshals the same payload back to the model. Centralising both keeps
+// every exit path in sync — no silently-empty Rows for success and no
+// missing OnSQL call on error.
+func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (string, error) {
+	return func(res SQLResult) (string, error) {
 		if t.onSQL != nil {
 			t.onSQL(ctx, SQLQueryEvent{
 				SessionKey: t.sessionKey,
@@ -453,16 +516,15 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 		}
 		return string(b), nil
 	}
+}
 
-	// 1. Validation — fails before the DB even sees the query.
-	if err := ValidateReadOnly(sqlStr); err != nil {
-		return emit(SQLResult{SQL: sqlStr, Error: err.Error()})
-	}
-
-	// 2. Apply LIMIT if configured and missing.
+// executeRead runs the read-only path: optional LIMIT injection, then
+// QueryContext + row iteration into a structured SQLResult.
+func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit func(SQLResult) (string, error)) (string, error) {
+	// 1. Apply LIMIT if configured and missing.
 	effectiveSQL := EnsureLimit(sqlStr, t.maxRows)
 
-	// 3. Per-query timeout layered on top of the request context.
+	// 2. Per-query timeout layered on top of the request context.
 	queryCtx := ctx
 	if t.queryTimeout > 0 {
 		var cancel context.CancelFunc
@@ -549,6 +611,36 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 	t.captureMu.Unlock()
 
 	return emit(finalRes)
+}
+
+// executeMutation runs a DML statement via ExecContext and reports the
+// affected-row count in SQLResult.RowCount. EnsureLimit is intentionally
+// skipped — auto-injecting LIMIT into UPDATE/DELETE has dialect-specific
+// semantics (MySQL accepts it, Postgres doesn't) and silently changes
+// the meaning of the statement.
+func (t *executeSQLTool) executeMutation(ctx context.Context, sqlStr string, emit func(SQLResult) (string, error)) (string, error) {
+	queryCtx := ctx
+	if t.queryTimeout > 0 {
+		var cancel context.CancelFunc
+		queryCtx, cancel = context.WithTimeout(ctx, t.queryTimeout)
+		defer cancel()
+	}
+
+	start := time.Now()
+	res, err := t.db.ExecContext(queryCtx, sqlStr)
+	ms := time.Since(start).Milliseconds()
+	if err != nil {
+		return emit(SQLResult{SQL: sqlStr, ExecutionMs: ms, Error: err.Error()})
+	}
+	// RowsAffected error is driver-specific (some return it when the
+	// statement type has no meaningful affected count); treat as zero
+	// rather than fail the call.
+	affected, _ := res.RowsAffected()
+	return emit(SQLResult{
+		SQL:         sqlStr,
+		RowCount:    int(affected),
+		ExecutionMs: ms,
+	})
 }
 
 // lastCapture returns a copy of the last successfully-executed SQLResult,
