@@ -112,3 +112,29 @@ func TestCallSQLAgentTool_BuildersChain(t *testing.T) {
 		t.Fatalf("chained builders: got name=%q label=%q confirm=%v", tool.Name(), tool.Display().Label, tool.RequiresConfirmation())
 	}
 }
+
+func TestCallSQLAgentTool_WithExecuteSQLConfirmation(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil)
+	if tool.execSQLRequiresConfirmation {
+		t.Fatalf("WithExecuteSQLConfirmation default: got true, want false")
+	}
+	tool.WithExecuteSQLConfirmation(true)
+	if !tool.execSQLRequiresConfirmation {
+		t.Fatalf("WithExecuteSQLConfirmation(true): flag not set")
+	}
+	tool.WithExecuteSQLConfirmation(false)
+	if tool.execSQLRequiresConfirmation {
+		t.Fatalf("WithExecuteSQLConfirmation(false): flag not cleared")
+	}
+}
+
+func TestExecuteSQLTool_RequiresConfirmationReflectsFlag(t *testing.T) {
+	off := (&executeSQLTool{}).RequiresConfirmation()
+	on := (&executeSQLTool{requiresConfirmation: true}).RequiresConfirmation()
+	if off {
+		t.Fatalf("default executeSQLTool.RequiresConfirmation() should be false, got true")
+	}
+	if !on {
+		t.Fatalf("executeSQLTool.RequiresConfirmation() should follow the flag, got false")
+	}
+}
