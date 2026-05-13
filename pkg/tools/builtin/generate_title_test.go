@@ -171,10 +171,71 @@ func TestGenerateTitle_StripsToolBlocksFromHistory(t *testing.T) {
 			t.Fatalf("p.got[%d] still carries ToolCalls: %+v", i+1, m.ToolCalls)
 		}
 	}
-	// Final assistant must survive.
+	// The final assistant turn must still be in the forwarded slice,
+	// followed by the library-appended user nudge (Anthropic requires the
+	// conversation to end with a user message).
+	if len(p.got) < 2 {
+		t.Fatalf("expected forwarded slice to include sanitized turns, got %+v", p.got)
+	}
 	last := p.got[len(p.got)-1]
-	if last.Role != "assistant" || last.Content != "Top customers are X, Y, Z." {
-		t.Fatalf("final assistant lost: %+v", last)
+	if last.Role != "user" {
+		t.Fatalf("expected trailing user nudge, got %+v", last)
+	}
+	foundFinal := false
+	for _, m := range p.got {
+		if m.Role == "assistant" && m.Content == "Top customers are X, Y, Z." {
+			foundFinal = true
+			break
+		}
+	}
+	if !foundFinal {
+		t.Fatalf("final assistant lost from forwarded slice: %+v", p.got)
+	}
+}
+
+func TestGenerateTitle_AppendsUserNudgeWhenHistoryEndsWithAssistant(t *testing.T) {
+	// Anthropic 400s on conversations ending in assistant. GenerateTitle
+	// appends a library-owned user nudge so adopters don't each rediscover
+	// the rule and copy-paste their own phrasing.
+	p := &titleProvider{streamChunks: []string{"Customer Lookup"}}
+	_, err := GenerateTitle(context.Background(), p, TitleOptions{
+		Messages: []history.Message{
+			{Role: "user", Content: "look up customer 42"},
+			{Role: "assistant", Content: "Customer 42 is Acme Corp."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(p.got) != 4 || p.got[0].Role != "system" || p.got[1].Role != "user" || p.got[2].Role != "assistant" {
+		t.Fatalf("expected [system, user, assistant, user-nudge], got %+v", p.got)
+	}
+	nudge := p.got[3]
+	if nudge.Role != "user" || nudge.Content == "" {
+		t.Fatalf("expected user-role nudge with content, got %+v", nudge)
+	}
+}
+
+func TestGenerateTitle_DoesNotAppendNudgeWhenHistoryEndsWithUser(t *testing.T) {
+	// Mid-conversation retitle: the slice already ends with user.
+	// Appending another user turn would duplicate it and confuse the model.
+	p := &titleProvider{streamChunks: []string{"Followup Question"}}
+	_, err := GenerateTitle(context.Background(), p, TitleOptions{
+		Messages: []history.Message{
+			{Role: "user", Content: "first"},
+			{Role: "assistant", Content: "answer"},
+			{Role: "user", Content: "second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// system + user + assistant + user → no nudge appended.
+	if len(p.got) != 4 {
+		t.Fatalf("expected 4 messages (no extra nudge), got %d: %+v", len(p.got), p.got)
+	}
+	if p.got[3].Role != "user" || p.got[3].Content != "second" {
+		t.Fatalf("user nudge incorrectly appended: %+v", p.got[3])
 	}
 }
 

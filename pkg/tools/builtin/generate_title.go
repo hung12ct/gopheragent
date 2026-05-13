@@ -37,6 +37,14 @@ type TitleOptions struct {
 
 const defaultTitleSystemPrompt = "Produce a 4-7 word title that summarizes the conversation. Output ONLY the title — no quotes, no trailing punctuation, no explanation."
 
+// defaultTitleUserNudge is appended when the sanitized history ends with
+// an assistant message. Anthropic rejects calls whose final message is
+// assistant ("This model does not support assistant message prefill. The
+// conversation must end with a user message."); other providers tolerate
+// the shape but the nudge is harmless there. Phrasing intentionally
+// mirrors the system prompt so the model gets a consistent ask.
+const defaultTitleUserNudge = "Now produce the title for the conversation above. Output only the title — no quotes, no trailing punctuation, no explanation."
+
 // GenerateTitle asks provider for a one-shot title summarizing opts.Messages.
 // It runs a single GenerateStream round, drains content events, and post-
 // processes the result (strip wrapping quotes, trim trailing punctuation,
@@ -77,6 +85,14 @@ func GenerateTitle(ctx context.Context, provider agent.LLMProvider, opts TitleOp
 	sanitized := stripToolDance(opts.Messages)
 	if len(sanitized) == 0 {
 		return "", errors.New("builtin: GenerateTitle: no titleable messages after stripping tool-call blocks")
+	}
+	// Anthropic requires the final message be user-role. Sanitized title
+	// inputs almost always end with the assistant's final answer, so
+	// append a library-owned nudge asking for the title. Idempotent —
+	// when the input already ends with a user turn (mid-conversation
+	// retitle), no nudge is added.
+	if sanitized[len(sanitized)-1].Role == "assistant" {
+		sanitized = append(sanitized, history.Message{Role: "user", Content: defaultTitleUserNudge})
 	}
 
 	msgs := make([]history.Message, 0, len(sanitized)+1)
