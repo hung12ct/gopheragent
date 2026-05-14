@@ -86,6 +86,8 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 	workerLoop.MaxIters = 15
 	workerLoop.EmitThoughts = true // forward thoughts upstream when streaming; parent filters as needed
 	workerLoop.DynamicContext = agent.DynamicContextFuncFromContext(ctx)
+	workerLoop.ConfirmHITL = agent.ConfirmHITLFromContext(ctx)
+	workerLoop.ConfirmHITLTimeout = agent.ConfirmHITLTimeoutFromContext(ctx)
 
 	instruction := fmt.Sprintf("[%s Sub-Agent Task]\n%s", input.AgentName, input.TaskDescription)
 
@@ -108,19 +110,26 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 
 	var buf strings.Builder
 	var workerErr error
+	var hitlEvent agent.StreamEvent
 	for ev := range workerChan {
 		// Accumulate the worker's own content as its final report; content that
 		// comes from deeper nested sub-agents (Source already set) is only
 		// observational and must not pollute this worker's answer.
-		if ev.Source == "" && ev.Type == "content" {
+		if ev.Source == "" && ev.Type == agent.EventTypeContent {
 			buf.WriteString(ev.Content)
 		}
-		if ev.Source == "" && ev.Type == "error" && workerErr == nil {
+		if ev.Source == "" && ev.Type == agent.EventTypeError && workerErr == nil {
 			if ev.Err != nil {
 				workerErr = ev.Err
 			} else {
 				workerErr = fmt.Errorf("agent: %s", ev.Content)
 			}
+		}
+		if ev.Source == "" && (ev.Type == agent.EventTypeHITLDenied || ev.Type == agent.EventTypeHITLTimedOut) {
+			// Latch the most recent HITL signal so the report surfaces the
+			// cause to the outer agent verbatim instead of relying on the
+			// worker's paraphrase.
+			hitlEvent = ev
 		}
 
 		emitter(agent.DecorateForwardedEvent(ev, source, parentSessionKey))
@@ -130,5 +139,23 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 		return "", fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, workerErr)
 	}
 
-	return fmt.Sprintf("Report from %s:\n%s", input.AgentName, buf.String()), nil
+	return fmt.Sprintf("Report from %s:\n%s", input.AgentName, subAgentHITLReport(hitlEvent, buf.String())), nil
+}
+
+// subAgentHITLReport mirrors hitlBlockedReport for CallSubAgentTool: when
+// the worker's HITL gate fired, prepend an explicit "HITL_BLOCKED" directive
+// so the outer agent sees the cause directly rather than the worker's
+// paraphrased final answer.
+func subAgentHITLReport(hitlEvent agent.StreamEvent, innerSummary string) string {
+	if hitlEvent.Type == "" {
+		return innerSummary
+	}
+	switch hitlEvent.Type {
+	case agent.EventTypeHITLTimedOut:
+		p, _ := hitlEvent.Payload().(agent.HITLTimedOutEvent)
+		return fmt.Sprintf("HITL_BLOCKED: timeout — the human approval prompt for tool %q expired after %s before the operator responded. The user did NOT refuse. Tell the user the approval window closed and ask them to retry when they are ready to confirm; do not paraphrase this as a denial. Worker summary (may be misleading): %s", p.Tool, p.Timeout, innerSummary)
+	default:
+		p, _ := hitlEvent.Payload().(agent.HITLDeniedEvent)
+		return fmt.Sprintf("HITL_BLOCKED: denied — the human operator denied approval for tool %q. Tell the user directly that they have not granted the permission this action requires, and ask whether they have an alternative approach. Worker summary (may be misleading): %s", p.Tool, innerSummary)
+	}
 }

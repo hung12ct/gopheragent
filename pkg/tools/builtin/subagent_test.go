@@ -199,6 +199,68 @@ func TestCallSubAgentTool_NonStreamingFallbackWhenNoEmitter(t *testing.T) {
 	}
 }
 
+// scriptedProvider emits a different LLMResult per call. Used to simulate
+// the worker calling a HITL-required tool, getting denied, then paraphrasing
+// the outcome as a vague final answer.
+type scriptedProvider struct {
+	mu    sync.Mutex
+	turns []agent.LLMResult
+	idx   int
+}
+
+func (p *scriptedProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, ch chan<- agent.StreamEvent) (agent.LLMResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.idx >= len(p.turns) {
+		return agent.LLMResult{Content: "done"}, nil
+	}
+	r := p.turns[p.idx]
+	p.idx++
+	if len(r.ToolCalls) == 0 && r.Content != "" {
+		ch <- agent.StreamEvent{Type: "content", Content: r.Content}
+	}
+	return r, nil
+}
+
+// hitlTool is a stub tool that declares RequiresConfirmation()=true so the
+// HITL gate fires before its Execute would ever run.
+type hitlTool struct{}
+
+func (hitlTool) Name() string                          { return "dangerous_action" }
+func (hitlTool) Description() string                   { return "stub for HITL bubble-up tests" }
+func (hitlTool) ParametersSchema() tools.ToolSchema    { return tools.ToolSchema{} }
+func (hitlTool) RequiresConfirmation() bool            { return true }
+func (hitlTool) Display() tools.ToolDisplay            { return tools.DefaultDisplay("dangerous_action", "stub") }
+func (hitlTool) Execute(context.Context, string) (string, error) {
+	return "should never reach here", nil
+}
+
+func TestCallSubAgentTool_HITLDenialBubbleUp(t *testing.T) {
+	sm := newSpySessionManager("sys")
+	reg := tools.NewRegistry()
+	reg.Register(hitlTool{})
+	prov := &scriptedProvider{turns: []agent.LLMResult{
+		{ToolCalls: []agent.PendingToolCall{{ID: "c1", Name: "dangerous_action", ArgsJSON: `{}`}}},
+		{Content: "I was unable to complete the request."}, // vague paraphrase
+	}}
+	tool := NewCallSubAgentTool(sm, reg, prov)
+
+	ctx := agent.WithSubAgentEmitter(context.Background(), func(agent.StreamEvent) {})
+	ctx = context.WithValue(ctx, agent.SessionKeyCtx("sessionKey"), "parent-session")
+	ctx = agent.WithConfirmHITL(ctx, func(context.Context, string, string) bool { return false })
+
+	res, err := tool.Execute(ctx, `{"task_description":"do dangerous","agent_name":"worker"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(res, "HITL_BLOCKED: denied") {
+		t.Fatalf("expected HITL_BLOCKED denial directive in result, got: %q", res)
+	}
+	if !strings.Contains(res, "dangerous_action") {
+		t.Fatalf("expected tool name in result, got: %q", res)
+	}
+}
+
 func TestCallSubAgentTool_InvalidJSON(t *testing.T) {
 	sm := newSpySessionManager("sys")
 	tool := NewCallSubAgentTool(sm, tools.NewRegistry(), &capturingProvider{reply: "x"})
