@@ -169,6 +169,31 @@ func TestRunIteration_ContextCancelled(t *testing.T) {
 	}
 }
 
+func TestRunIterationStream_ForwardsErrorOnCancelledCtx(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the loop starts so runIteration's pre-check fires.
+
+	provider := &scriptProvider{turns: []LLMResult{{Content: "unreachable"}}}
+	loop, _ := setup(provider)
+
+	ch := make(chan StreamEvent, 10)
+	loop.RunIterationStream(ctx, "s1", "hello", ch)
+
+	var sawTerminal bool
+	for ev := range ch {
+		if ev.Type != EventTypeError && ev.Type != EventTypeDone {
+			continue
+		}
+		sawTerminal = true
+		if ev.Type == EventTypeError && !errors.Is(ev.Err, ErrContextCancelled) {
+			t.Fatalf("expected ErrContextCancelled, got %v", ev.Err)
+		}
+	}
+	if !sawTerminal {
+		t.Fatal("expected terminal event (done/error) before channel close on ctx cancel")
+	}
+}
+
 func TestRunIteration_ParallelToolCalls(t *testing.T) {
 	provider := &scriptProvider{turns: []LLMResult{
 		{ToolCalls: []PendingToolCall{

@@ -551,6 +551,14 @@ func (al *AgentLoop) RunIterationMessage(ctx context.Context, sessionKey string,
 // "send on closed channel" / "close of closed channel" panics on the
 // first emitted event. Range over the channel from the caller; it
 // terminates naturally when the agent is done.
+//
+// Cancellation contract: when ctx is cancelled mid-stream the agent loop
+// emits a terminal error event wrapping [ErrContextCancelled]; the relayer
+// best-effort forwards any terminal frame (done/error) to streamChan before
+// closing it, even after ctx fires. Non-terminal events queued at the moment
+// of cancellation are dropped. Adopters should treat both EventTypeDone and
+// EventTypeError (where Source == "") as terminal so the consumer transitions
+// out of its streaming state in every termination path.
 func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, userInput string, streamChan chan<- StreamEvent) {
 	al.RunIterationStreamMessage(ctx, sessionKey, history.Message{Role: "user", Content: userInput}, streamChan)
 }
@@ -572,14 +580,18 @@ func (al *AgentLoop) RunIterationStreamMessage(ctx context.Context, sessionKey s
 	go func() {
 		defer close(streamChan)
 		for ev := range internalChan {
-			if ev.Type == "thought" && !emitThoughts {
+			if ev.Type == EventTypeThought && !emitThoughts {
 				continue
 			}
 			select {
 			case streamChan <- ev:
 			case <-ctx.Done():
-				// Consumer disconnected — drain internalChan to unblock runLogicLoop
-				for range internalChan {
+				// Consumer ctx cancelled. Best-effort forward terminal frames
+				// (done/error) so adopters can distinguish cancellation from a
+				// silent close; drop the rest to unblock runLogicLoop.
+				trySendTerminal(streamChan, ev)
+				for ev := range internalChan {
+					trySendTerminal(streamChan, ev)
 				}
 				return
 			}
@@ -587,6 +599,20 @@ func (al *AgentLoop) RunIterationStreamMessage(ctx context.Context, sessionKey s
 	}()
 
 	go al.runLogicLoop(ctx, sessionKey, msg, internalChan)
+}
+
+// trySendTerminal non-blocking sends ev to streamChan only when ev is a
+// terminal frame (done/error). Used by the relayer's ctx-cancel branch to
+// forward cancellation/completion signals on a best-effort basis without
+// risking a block when the consumer has stopped reading.
+func trySendTerminal(streamChan chan<- StreamEvent, ev StreamEvent) {
+	if ev.Type != EventTypeDone && ev.Type != EventTypeError {
+		return
+	}
+	select {
+	case streamChan <- ev:
+	default:
+	}
 }
 
 // latestUserMessage returns the Content of the most recent user message, or

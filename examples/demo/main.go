@@ -503,6 +503,25 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 
 	go myAgentApp.RunIterationStream(r.Context(), sessionKey, userInput, streamChan)
 
+	sawTerminal := false
+	defer func() {
+		if sawTerminal {
+			return
+		}
+		// Synthesize a terminal frame so the frontend exits its streaming
+		// state when the upstream channel closes without one (e.g. consumer
+		// disconnect or any future code path that bypasses the terminal
+		// emit). Prefer an error frame when our request ctx is cancelled
+		// so the UI can show "stopped" rather than "completed".
+		ev := agent.StreamEvent{Type: agent.EventTypeDone}
+		if err := r.Context().Err(); err != nil {
+			ev = agent.StreamEvent{Type: agent.EventTypeError, Content: "cancelled: " + err.Error()}
+		}
+		b, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}()
+
 	for {
 		select {
 		case event, ok := <-streamChan:
@@ -512,7 +531,10 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 			eventBytes, _ := json.Marshal(event)
 			fmt.Fprintf(w, "data: %s\n\n", string(eventBytes))
 			flusher.Flush()
-			if event.Type == "done" {
+			// Only top-level frames (Source=="") terminate the SSE stream;
+			// forwarded sub-agent done/error events are observational.
+			if event.Source == "" && (event.Type == agent.EventTypeDone || event.Type == agent.EventTypeError) {
+				sawTerminal = true
 				return
 			}
 		case <-r.Context().Done():
