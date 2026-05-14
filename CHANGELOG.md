@@ -2,6 +2,24 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.22.0] — 2026-05-14
+
+Streaming termination + HITL clarity batch — the agent loop's cancellation path now always delivers a terminal frame, and the HITL gate distinguishes timeout from denial with typed events that bubble cleanly through sub-agent wrappers so the outer chat agent sees the real cause instead of the inner worker's paraphrase.
+
+### Added
+- `AgentLoop.ConfirmHITLTimeout time.Duration` (default 0 = no timeout) — caps how long the HITL gate waits for `ConfirmHITL` to return. When set, the gate wraps the callback ctx with this deadline; a callback that honors ctx returns false on expiry, the gate emits the typed timeout event, and the model receives a timeout-specific directive distinct from a user denial ("the approval prompt expired — ask the user to retry when ready"). Zero-cost when unused. (#98)
+- `agent.WithConfirmHITLTimeout(ctx, d)` + `agent.ConfirmHITLTimeoutFromContext(ctx)` — mirrors the existing `WithConfirmHITL` pattern so sub-agent worker loops inherit the parent's approval window without manual plumbing. `CallSQLAgentTool` and `CallSubAgentTool` now wire it on construction alongside `ConfirmHITL`. (#98)
+- `EventTypeHITLDenied` / `HITLDeniedEvent` and `EventTypeHITLTimedOut` / `HITLTimedOutEvent` — typed observational signals emitted from the HITL gate so adopters can route on cause (denial vs. timeout) without scraping tool-message text. `HITLTimedOutEvent.Timeout` carries the configured window so UI can render "approval expired after 2m" without reaching into agent state. (#98)
+- `agent.HITLTimedOutError` + `agent.ErrHITLTimedOut` sentinel — typed error parallel to `HITLDeniedError` / `ErrHITLDenied` so adopters can `errors.Is` on the cause. (#98)
+- `CallSQLAgentTool` and `CallSubAgentTool` now prepend an unambiguous `HITL_BLOCKED: timeout — ...` / `HITL_BLOCKED: denied — ...` directive to their return string when the inner HITL gate fires. The outer chat agent receives the structured cause instead of the worker sub-agent's vague paraphrase ("I was unable to execute the query") — closes a UX gap where outer agents would tell users to "click Approve" after the prompt had actually timed out or been denied. Same shape applies to any `CallSubAgentTool` adopter, not just SQL. (#98)
+
+### Changed (breaking)
+- `EventVisitor` interface gains `VisitHITLDenied(HITLDeniedEvent)` and `VisitHITLTimedOut(HITLTimedOutEvent)`. Adopters implementing `EventVisitor` directly must add both methods; consumers using the type-switch on `StreamEvent.Payload()` are unaffected. (#98)
+
+### Fixed
+- `AgentLoop.RunIterationStream` / `RunIterationStreamMessage` now best-effort forward terminal frames (`done` / `error`) on ctx cancel instead of silently draining the internal channel. Previously, when the consumer's ctx fired, the relayer dropped every pending event — including the loop's `ErrContextCancelled` error event — and just closed `streamChan`. Adopters that distinguish cancellation by terminal frame type now receive the typed error; consumers that infer termination only from channel-close still work. (#97)
+- `examples/demo/main.go` SSE handler now synthesizes a terminal frame in a defer when the upstream channel closes without one, and treats top-level `EventTypeError` (Source=="") as terminal alongside `done`. The frontend exits its streaming state regardless of termination path (client disconnect, ctx cancel, natural completion). (#97)
+
 ## [v0.21.0] — 2026-05-13
 
 SQL workbench batch — opt-in mutations alongside the read-only verbs, and HITL on the inner SQL statement (not just the natural-language request). The two combine into the "show me the DELETE before it runs" UX adopters building AI data workbenches were rebuilding by hand.
@@ -151,6 +169,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.22.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.22.0
 [v0.21.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.21.0
 [v0.20.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.2
 [v0.20.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.1
