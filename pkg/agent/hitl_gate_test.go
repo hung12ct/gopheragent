@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestWithConfirmHITL_RoundTrip(t *testing.T) {
@@ -36,5 +37,26 @@ func TestWithConfirmHITL_NilIsZeroCost(t *testing.T) {
 func TestConfirmHITLFromContext_AbsentReturnsNil(t *testing.T) {
 	if ConfirmHITLFromContext(context.Background()) != nil {
 		t.Fatal("background ctx should carry no ConfirmFunc")
+	}
+}
+
+func TestWithConfirmHITLTimeout_RoundTrip(t *testing.T) {
+	want := 2 * time.Minute
+	ctx := WithConfirmHITLTimeout(context.Background(), want)
+	if got := ConfirmHITLTimeoutFromContext(ctx); got != want {
+		t.Fatalf("recovered timeout = %s, want %s", got, want)
+	}
+}
+
+func TestWithConfirmHITLTimeout_ZeroIsZeroCost(t *testing.T) {
+	parent := context.Background()
+	if ctx := WithConfirmHITLTimeout(parent, 0); ctx != parent {
+		t.Fatal("WithConfirmHITLTimeout(0) should not wrap the ctx")
+	}
+	if ctx := WithConfirmHITLTimeout(parent, -5*time.Second); ctx != parent {
+		t.Fatal("WithConfirmHITLTimeout(negative) should not wrap the ctx")
+	}
+	if got := ConfirmHITLTimeoutFromContext(parent); got != 0 {
+		t.Fatalf("expected zero timeout on a never-stamped ctx, got %s", got)
 	}
 }

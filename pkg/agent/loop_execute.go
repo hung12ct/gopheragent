@@ -119,13 +119,17 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	}
 
 	if tool.RequiresConfirmation() && permDecision != PermissionAllow {
-		approved, callbackWired := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
-		if !approved {
+		outcome := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
+		if outcome != hitlApproved {
 			var msg string
-			if !callbackWired {
+			switch outcome {
+			case hitlUnconfigured:
 				gateErr := &ConfirmationGateUnconfiguredError{ToolName: tCall.Name}
 				msg = fmt.Sprintf("%v. This is a host-side configuration bug, not a user denial — do not tell the user they refused. Tell them the tool needs operator approval that has not been wired up, and ask whether you should proceed with an alternative the tool gate does not cover.", gateErr)
-			} else {
+			case hitlTimedOut:
+				timeoutErr := &HITLTimedOutError{ToolName: tCall.Name, Timeout: al.ConfirmHITLTimeout}
+				msg = fmt.Sprintf("%v. The user did NOT refuse — the approval prompt expired before they could respond. Do not paraphrase this as a denial or seek a workaround. Tell the user the approval window closed and ask them to repeat the request when they are ready to confirm.", timeoutErr)
+			default:
 				deniedErr := &HITLDeniedError{ToolName: tCall.Name}
 				msg = fmt.Sprintf("%v. This is a permission gate, not a tool failure. If the user's task genuinely needs this tool, ask them explicitly to grant permission rather than silently using a workaround.", deniedErr)
 			}
@@ -190,6 +194,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	})
 	toolCtx = WithDynamicContextFunc(toolCtx, al.DynamicContext)
 	toolCtx = WithConfirmHITL(toolCtx, al.ConfirmHITL)
+	toolCtx = WithConfirmHITLTimeout(toolCtx, al.ConfirmHITLTimeout)
 	toolCtx = tools.WithToolCallID(toolCtx, callID)
 	toolCtx = WithSubAgentEmitter(toolCtx, func(ev StreamEvent) {
 		select {

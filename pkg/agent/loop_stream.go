@@ -181,6 +181,15 @@ type AgentLoop struct {
 	// If set, the loop blocks until the function returns.
 	ConfirmHITL ConfirmFunc
 
+	// ConfirmHITLTimeout caps how long the HITL gate waits for ConfirmHITL
+	// to return. Zero (default) means no timeout — the gate blocks until the
+	// callback returns or ctx is cancelled. When set, the gate wraps the
+	// callback ctx with this deadline; a ConfirmHITL that respects ctx will
+	// return false on expiry, the gate emits EventTypeHITLTimedOut, and the
+	// model receives a timeout-specific directive (distinct from a user
+	// denial) so it can ask the user to retry rather than seek an alternative.
+	ConfirmHITLTimeout time.Duration
+
 	// Cache provides optional tool result caching with trigram similarity matching.
 	// If nil, caching is disabled. Set via cache.NewSearchCache().
 	Cache *cache.SearchCache

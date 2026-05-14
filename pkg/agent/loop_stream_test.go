@@ -273,6 +273,72 @@ func TestRunIteration_HITLApproved(t *testing.T) {
 	}
 }
 
+func TestRunIterationStream_HITLTimedOutEmitsTypedEvent(t *testing.T) {
+	provider := &scriptProvider{turns: []LLMResult{
+		{ToolCalls: []PendingToolCall{{ID: "c1", Name: "dangerous", ArgsJSON: `{}`}}},
+		{Content: "moved on"},
+	}}
+	loop, _ := setup(provider, &echoTool{name: "dangerous", confirm: true})
+	loop.EmitThoughts = false
+	loop.ConfirmHITLTimeout = 25 * time.Millisecond
+	loop.ConfirmHITL = func(ctx context.Context, _, _ string) bool {
+		<-ctx.Done() // honor ctx — the gate's deadline must fire.
+		return false
+	}
+
+	ch := make(chan StreamEvent, 50)
+	loop.RunIterationStream(context.Background(), "s1", "do risky thing", ch)
+
+	var sawTimedOut bool
+	for ev := range ch {
+		if ev.Type != EventTypeHITLTimedOut {
+			continue
+		}
+		sawTimedOut = true
+		p, ok := ev.Payload().(HITLTimedOutEvent)
+		if !ok {
+			t.Fatalf("expected HITLTimedOutEvent payload, got %T", ev.Payload())
+		}
+		if p.Tool != "dangerous" {
+			t.Errorf("expected payload.Tool=dangerous, got %q", p.Tool)
+		}
+		if p.Timeout != 25*time.Millisecond {
+			t.Errorf("expected payload.Timeout=25ms, got %s", p.Timeout)
+		}
+	}
+	if !sawTimedOut {
+		t.Fatal("expected EventTypeHITLTimedOut event after timeout fired")
+	}
+
+	// Final tool message should carry the timeout directive (not a denial).
+	msgs := loop.Sessions.GetHistory(context.Background(), "s1")
+	var sawTimeoutDirective bool
+	for _, m := range msgs {
+		if m.Role == "tool" && strings.Contains(m.Content, "approval prompt expired") {
+			sawTimeoutDirective = true
+			if errors.Is(asErr(m.Content), ErrHITLDenied) {
+				t.Errorf("timeout directive must not match ErrHITLDenied")
+			}
+		}
+	}
+	if !sawTimeoutDirective {
+		t.Fatal("expected tool message to mention the timeout in its directive")
+	}
+}
+
+// asErr is a tiny helper to keep the assertion inline-readable: the loop
+// records the typed error formatted with %v into the tool-message Content,
+// so we just need a non-nil sentinel for the Is comparison.
+func asErr(content string) error {
+	if strings.Contains(content, "denied execution of tool") {
+		return &HITLDeniedError{}
+	}
+	if strings.Contains(content, "human approval") && strings.Contains(content, "timed out") {
+		return &HITLTimedOutError{}
+	}
+	return errors.New("agent: " + content)
+}
+
 func TestRunIteration_HITLDeniedViaCallback(t *testing.T) {
 	provider := &scriptProvider{turns: []LLMResult{
 		{ToolCalls: []PendingToolCall{{ID: "c1", Name: "dangerous", ArgsJSON: `{}`}}},
