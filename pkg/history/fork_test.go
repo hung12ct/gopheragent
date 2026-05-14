@@ -59,6 +59,23 @@ func TestSnapToSafeBoundary_ClampAndNegative(t *testing.T) {
 	}
 }
 
+func TestSafeTruncate_PublicAliasMatchesInternal(t *testing.T) {
+	// SafeTruncate is the public surface used by agent.Regenerate /
+	// agent.Continue; it must remain a thin alias over snapToSafeBoundary so
+	// the in-place rewind and Fork paths can't drift.
+	msgs := []Message{
+		{Role: "system"},
+		{Role: "user", Content: "go"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "t"}}},
+	}
+	if got, want := SafeTruncate(msgs, 3), snapToSafeBoundary(msgs, 3); got != want {
+		t.Fatalf("SafeTruncate diverged from snapToSafeBoundary: got %d want %d", got, want)
+	}
+	if got := SafeTruncate(msgs, 2); got != 2 {
+		t.Fatalf("safe boundary should be returned unchanged, got %d", got)
+	}
+}
+
 func TestInMemSessionManager_Fork_AutoSnapsOnDanglingAssistant(t *testing.T) {
 	sm := NewInMemSessionManager("sys")
 	ctx := t.Context()

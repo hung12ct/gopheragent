@@ -54,6 +54,18 @@ var (
 	// rejection — the model is told as much so it does not confabulate
 	// "the user denied it".
 	ErrConfirmationGateUnconfigured = errors.New("agent: tool requires confirmation but no ConfirmHITL handler is configured")
+
+	// ErrNothingToRegenerate is returned by AgentLoop.Regenerate when the
+	// session has no user message to replay (system-only history, or every
+	// user message was already truncated). The call leaves history and the
+	// stream untouched.
+	ErrNothingToRegenerate = errors.New("agent: no user message to regenerate")
+
+	// ErrNothingToContinue is returned by AgentLoop.Continue when the
+	// session's last persisted message is a clean final-assistant turn —
+	// the previous run ended naturally, and the caller should send a new
+	// user message instead of trying to extend it.
+	ErrNothingToContinue = errors.New("agent: session ended cleanly; nothing to continue")
 )
 
 // ToolNotFoundError carries the name of the missing tool.

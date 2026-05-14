@@ -1,14 +1,25 @@
 package history
 
-// snapToSafeBoundary returns an index <= atIndex such that msgs[:result] is a
+// SafeTruncate returns an index <= atIndex such that msgs[:result] is a
 // self-contained prefix: it never ends mid tool-call / tool-result group.
 //
-// Specifically, the returned prefix satisfies both:
+// The returned prefix satisfies both invariants:
 //   - no trailing assistant message has unresolved ToolCalls (dangling calls),
 //   - no trailing tool message lacks its matching assistant (orphan results).
 //
 // When the input atIndex is already safe, it is returned unchanged. When it is
 // not, the index is walked backward past the offending boundary.
+//
+// Use this when rewinding a live conversation in place (Regenerate / Continue
+// affordances) — the framework backends use the same helper inside Fork so the
+// two paths share one source of truth for tool-pair safety.
+func SafeTruncate(msgs []Message, atIndex int) int {
+	return snapToSafeBoundary(msgs, atIndex)
+}
+
+// snapToSafeBoundary is the internal implementation backing SafeTruncate. It
+// stays unexported so the legacy call sites inside Fork keep their concise
+// name while the public API uses the more descriptive SafeTruncate.
 func snapToSafeBoundary(msgs []Message, atIndex int) int {
 	if atIndex < 0 {
 		return 0

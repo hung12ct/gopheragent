@@ -89,6 +89,16 @@ const (
 	// "ask the user to retry when ready" vs. "the user said no." Payload:
 	// HITLTimedOutEvent.
 	EventTypeHITLTimedOut StreamEventType = "hitl_timed_out"
+	// EventTypeRegenerated marks the start of an AgentLoop.Regenerate replay.
+	// It is the first frame emitted on the regenerate stream — UIs use it to
+	// gray out / supersede the previous assistant turn before the replacement
+	// content starts arriving. Payload: RegeneratedEvent.
+	EventTypeRegenerated StreamEventType = "regenerated"
+	// EventTypeContinued marks the start of an AgentLoop.Continue resume.
+	// Emitted as the first frame so UIs can attach subsequent content to the
+	// existing assistant bubble rather than rendering a new turn. Payload:
+	// ContinuedEvent.
+	EventTypeContinued StreamEventType = "continued"
 )
 
 // LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
@@ -306,6 +316,28 @@ type HITLTimedOutEvent struct {
 	RawJSON string
 }
 
+// RegeneratedEvent is the typed payload of EventTypeRegenerated.
+// PreviousAssistantIndex is the index of the final assistant message in the
+// pre-regenerate history — UIs mark that bubble as superseded. TruncatedAt is
+// the length of the rewound prefix (msgs[:TruncatedAt] is what survived the
+// safe-boundary truncation). Both indices refer to the history snapshot the
+// adopter held at the moment the call ran; downstream events update the
+// session beyond that point.
+type RegeneratedEvent struct {
+	BaseEvent
+	PreviousAssistantIndex int
+	TruncatedAt            int
+}
+
+// ContinuedEvent is the typed payload of EventTypeContinued.
+// ContinuedFromIndex is the index of the last persisted message at the moment
+// Continue was invoked — adopters can use it to anchor "resumed from here" UI
+// (e.g. attaching new content to the existing assistant bubble).
+type ContinuedEvent struct {
+	BaseEvent
+	ContinuedFromIndex int
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -331,6 +363,8 @@ func (SessionCreatedEvent) isEventPayload()  {}
 func (LimitExhaustedEvent) isEventPayload()  {}
 func (HITLDeniedEvent) isEventPayload()      {}
 func (HITLTimedOutEvent) isEventPayload()    {}
+func (RegeneratedEvent) isEventPayload()     {}
+func (ContinuedEvent) isEventPayload()       {}
 func (UnknownEvent) isEventPayload()         {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
@@ -468,6 +502,24 @@ func (ev StreamEvent) Payload() EventPayload {
 		out.Args = decoded.Args
 		out.Timeout = time.Duration(decoded.TimeoutMs) * time.Millisecond
 		return out
+	case EventTypeRegenerated:
+		out := RegeneratedEvent{BaseEvent: base}
+		var decoded struct {
+			PreviousAssistantIndex int `json:"previous_assistant_index"`
+			TruncatedAt            int `json:"truncated_at"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded)
+		out.PreviousAssistantIndex = decoded.PreviousAssistantIndex
+		out.TruncatedAt = decoded.TruncatedAt
+		return out
+	case EventTypeContinued:
+		out := ContinuedEvent{BaseEvent: base}
+		var decoded struct {
+			ContinuedFromIndex int `json:"continued_from_index"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded)
+		out.ContinuedFromIndex = decoded.ContinuedFromIndex
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -497,6 +549,8 @@ type EventVisitor interface {
 	VisitLimitExhausted(LimitExhaustedEvent)
 	VisitHITLDenied(HITLDeniedEvent)
 	VisitHITLTimedOut(HITLTimedOutEvent)
+	VisitRegenerated(RegeneratedEvent)
+	VisitContinued(ContinuedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -537,6 +591,10 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitHITLDenied(p)
 	case HITLTimedOutEvent:
 		v.VisitHITLTimedOut(p)
+	case RegeneratedEvent:
+		v.VisitRegenerated(p)
+	case ContinuedEvent:
+		v.VisitContinued(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}

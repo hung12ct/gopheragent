@@ -222,6 +222,8 @@ func (r *recordingVisitor) VisitSessionCreated(SessionCreatedEvent)    { r.visit
 func (r *recordingVisitor) VisitLimitExhausted(LimitExhaustedEvent)    { r.visited = "limit_exhausted" }
 func (r *recordingVisitor) VisitHITLDenied(HITLDeniedEvent)            { r.visited = "hitl_denied" }
 func (r *recordingVisitor) VisitHITLTimedOut(HITLTimedOutEvent)        { r.visited = "hitl_timed_out" }
+func (r *recordingVisitor) VisitRegenerated(RegeneratedEvent)         { r.visited = "regenerated" }
+func (r *recordingVisitor) VisitContinued(ContinuedEvent)             { r.visited = "continued" }
 func (r *recordingVisitor) VisitUnknown(UnknownEvent)                 { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
@@ -245,6 +247,8 @@ func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 		{StreamEvent{Type: EventTypeLimitExhausted, Content: `{"kind":"max_iters","limit":15,"used":15}`}, "limit_exhausted"},
 		{StreamEvent{Type: EventTypeHITLDenied, Content: `{"tool":"x","args":"{}"}`}, "hitl_denied"},
 		{StreamEvent{Type: EventTypeHITLTimedOut, Content: `{"tool":"x","args":"{}","timeout_ms":1000}`}, "hitl_timed_out"},
+		{StreamEvent{Type: EventTypeRegenerated, Content: `{"previous_assistant_index":3,"truncated_at":2}`}, "regenerated"},
+		{StreamEvent{Type: EventTypeContinued, Content: `{"continued_from_index":7}`}, "continued"},
 		{StreamEvent{Type: "novel_type"}, "unknown"},
 	}
 	for _, tc := range cases {

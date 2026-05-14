@@ -2,6 +2,20 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.23.0] — 2026-05-15
+
+First-class `Regenerate` / `Continue` affordances on `AgentLoop` so chat-UI adopters get the "redo my last turn" and "keep going from where it stopped" patterns without re-implementing tool_use/tool_result-safe history truncation in adopter code (the exact shape that produced the Anthropic 400s sanitized in v0.20.1).
+
+### Added
+- `AgentLoop.Regenerate(ctx, sessionKey, streamChan) error` — rewinds the session to just before the last user message using safe-boundary truncation, persists the rewound history before any new tool runs, and replays the recovered user message through a fresh iteration. Returns `ErrNothingToRegenerate` without touching history or the stream when no user message exists. Stream lifecycle matches `RunIterationStream` (library owns the channel and closes it on completion).
+- `AgentLoop.Continue(ctx, sessionKey, streamChan) error` — resumes the loop on the current persisted history without appending a new user message. Intended for "the previous run hit `MaxIters` / `MaxToolCallsPerSession` / a HITL timeout / a user-issued Stop and the user wants to keep going." Returns `ErrNothingToContinue` when the session's last message is a clean final-assistant turn. `PatchDanglingToolCalls` is applied to the live history before iteration so any half-finished tool wave from the prior run is sealed with synthetic results before the next LLM call.
+- `EventTypeRegenerated` / `RegeneratedEvent{PreviousAssistantIndex, TruncatedAt}` and `EventTypeContinued` / `ContinuedEvent{ContinuedFromIndex}` — typed transition events emitted as the first frame of their respective streams so UIs can mark the superseded bubble or anchor "resumed from here" rendering before replacement content arrives.
+- `ErrNothingToRegenerate` / `ErrNothingToContinue` sentinels — match with `errors.Is` to distinguish "the call couldn't run" from a normal terminal error event.
+- `history.SafeTruncate(msgs, atIndex) int` — public alias over the internal `snapToSafeBoundary` that `SessionForker.Fork` already uses. `Regenerate` and `Continue` go through the same helper so the in-place rewind and the fork path share one source of truth for tool-pair safety.
+
+### Changed (breaking)
+- `EventVisitor` interface gains `VisitRegenerated(RegeneratedEvent)` and `VisitContinued(ContinuedEvent)`. Adopters implementing `EventVisitor` directly must add both methods; consumers using the type-switch on `StreamEvent.Payload()` are unaffected (the new payloads round-trip through `EventPayload` like every other typed event).
+
 ## [v0.22.0] — 2026-05-14
 
 Streaming termination + HITL clarity batch — the agent loop's cancellation path now always delivers a terminal frame, and the HITL gate distinguishes timeout from denial with typed events that bubble cleanly through sub-agent wrappers so the outer chat agent sees the real cause instead of the inner worker's paraphrase.
@@ -169,6 +183,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.23.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.23.0
 [v0.22.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.22.0
 [v0.21.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.21.0
 [v0.20.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.20.2
