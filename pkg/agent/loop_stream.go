@@ -670,8 +670,6 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	defer close(streamChan)
 	ctx = context.WithValue(ctx, SessionKeyCtx("sessionKey"), sessionKey)
 
-	loopTracker := NewLoopDetector()
-
 	for _, hook := range al.BeforeHooks {
 		if hook == nil {
 			continue
@@ -696,6 +694,17 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	msgs = PatchDanglingToolCalls(msgs)
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
+	al.iterateMessages(ctx, sessionKey, streamChan, msgs)
+}
+
+// iterateMessages is the shared iteration body used by every loop entry point
+// (runLogicLoop, Regenerate, Continue). The caller is responsible for
+// preparing msgs (PatchDanglingToolCalls applied and persisted via
+// SetHistory) before invoking it. iterateMessages drives the loop to a
+// terminal frame — final answer, fatal error, cap exhaustion, or
+// MaxIters — and never returns without emitting one.
+func (al *AgentLoop) iterateMessages(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs []history.Message) {
+	loopTracker := NewLoopDetector()
 	totalToolCalls := 0
 	for iteration := 0; iteration < al.MaxIters; iteration++ {
 		scheduled, done := al.runIteration(ctx, sessionKey, streamChan, &msgs, iteration, loopTracker)
