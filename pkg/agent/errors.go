@@ -4,6 +4,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Sentinel errors returned by AgentLoop. Use errors.Is / errors.As for matching.
@@ -26,6 +27,12 @@ var (
 	// ErrHITLDenied is returned (as a StreamEvent) when a human-in-the-loop operator
 	// denies execution of a tool. The loop continues; the LLM is told to find a workaround.
 	ErrHITLDenied = errors.New("agent: tool execution denied by human operator")
+
+	// ErrHITLTimedOut is returned when AgentLoop.ConfirmHITLTimeout fires
+	// before the operator responds. Distinct from ErrHITLDenied so the model
+	// can distinguish "user did not respond in time" from "user said no",
+	// and so adopters can route on the cause (e.g. retry vs. abort).
+	ErrHITLTimedOut = errors.New("agent: human approval timed out")
 
 	// ErrHookRejected is returned when a BeforeHook rejects the request.
 	ErrHookRejected = errors.New("agent: request rejected by policy hook")
@@ -73,6 +80,23 @@ func (e *HITLDeniedError) Error() string {
 
 func (e *HITLDeniedError) Is(target error) bool {
 	return target == ErrHITLDenied
+}
+
+// HITLTimedOutError carries the tool name and configured timeout for an
+// expired HITL approval prompt. Surfaced when AgentLoop.ConfirmHITLTimeout
+// elapses before the operator responds, so the model directive can ask the
+// user to retry instead of routing around the gate.
+type HITLTimedOutError struct {
+	ToolName string
+	Timeout  time.Duration
+}
+
+func (e *HITLTimedOutError) Error() string {
+	return fmt.Sprintf("agent: human approval for tool %q timed out after %s", e.ToolName, e.Timeout)
+}
+
+func (e *HITLTimedOutError) Is(target error) bool {
+	return target == ErrHITLTimedOut
 }
 
 // PermissionDeniedError carries the tool name that was denied by policy.

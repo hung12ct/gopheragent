@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // parseExecutingName recovers the tool name from the legacy
@@ -74,6 +75,20 @@ const (
 	// MaxItersReachedEvent stays alongside this for back-compat but new
 	// consumers should prefer LimitExhaustedEvent.
 	EventTypeLimitExhausted StreamEventType = "limit_exhausted"
+	// EventTypeHITLDenied is emitted when the HITL gate resolves to "user
+	// denied" — the ConfirmHITL callback returned false without a timeout
+	// firing. Observational; the per-tool denial directive is already
+	// recorded as a tool message by the loop. Sub-agent wrappers watch for
+	// this so they can surface a clear "HITL_BLOCKED: denied" signal to the
+	// outer agent instead of relying on the inner agent's paraphrased
+	// summary. Payload: HITLDeniedEvent.
+	EventTypeHITLDenied StreamEventType = "hitl_denied"
+	// EventTypeHITLTimedOut is emitted when AgentLoop.ConfirmHITLTimeout
+	// fires before the operator responds. Distinct from EventTypeHITLDenied
+	// so sub-agent wrappers and UI layers can route differently — typically
+	// "ask the user to retry when ready" vs. "the user said no." Payload:
+	// HITLTimedOutEvent.
+	EventTypeHITLTimedOut StreamEventType = "hitl_timed_out"
 )
 
 // LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
@@ -267,6 +282,30 @@ type LimitExhaustedEvent struct {
 	Used  int
 }
 
+// HITLDeniedEvent is the typed payload of EventTypeHITLDenied. Carries the
+// tool the gate was guarding so consumers — typically sub-agent wrappers
+// rendering "HITL_BLOCKED" to the outer agent — can route on it without
+// parsing the raw JSON Content. RawJSON preserves the wire bytes for
+// forward-compatible adopters.
+type HITLDeniedEvent struct {
+	BaseEvent
+	Tool    string
+	Args    string
+	RawJSON string
+}
+
+// HITLTimedOutEvent is the typed payload of EventTypeHITLTimedOut. Mirrors
+// HITLDeniedEvent and additionally carries the configured Timeout so a UI
+// can show "approval expired after 2m" without reaching back into agent
+// state.
+type HITLTimedOutEvent struct {
+	BaseEvent
+	Tool    string
+	Args    string
+	Timeout time.Duration
+	RawJSON string
+}
+
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
 // the raw wire fields so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
@@ -290,6 +329,8 @@ func (TaskListEvent) isEventPayload()        {}
 func (MaxItersReachedEvent) isEventPayload() {}
 func (SessionCreatedEvent) isEventPayload()  {}
 func (LimitExhaustedEvent) isEventPayload()  {}
+func (HITLDeniedEvent) isEventPayload()      {}
+func (HITLTimedOutEvent) isEventPayload()    {}
 func (UnknownEvent) isEventPayload()         {}
 
 // Payload returns a typed view of ev. It never returns nil — unknown types
@@ -405,6 +446,28 @@ func (ev StreamEvent) Payload() EventPayload {
 		out.Limit = decoded.Limit
 		out.Used = decoded.Used
 		return out
+	case EventTypeHITLDenied:
+		out := HITLDeniedEvent{BaseEvent: base, RawJSON: ev.Content}
+		var decoded struct {
+			Tool string `json:"tool"`
+			Args string `json:"args"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded)
+		out.Tool = decoded.Tool
+		out.Args = decoded.Args
+		return out
+	case EventTypeHITLTimedOut:
+		out := HITLTimedOutEvent{BaseEvent: base, RawJSON: ev.Content}
+		var decoded struct {
+			Tool      string `json:"tool"`
+			Args      string `json:"args"`
+			TimeoutMs int64  `json:"timeout_ms"`
+		}
+		_ = json.Unmarshal([]byte(ev.Content), &decoded)
+		out.Tool = decoded.Tool
+		out.Args = decoded.Args
+		out.Timeout = time.Duration(decoded.TimeoutMs) * time.Millisecond
+		return out
 	default:
 		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
 	}
@@ -432,6 +495,8 @@ type EventVisitor interface {
 	VisitMaxItersReached(MaxItersReachedEvent)
 	VisitSessionCreated(SessionCreatedEvent)
 	VisitLimitExhausted(LimitExhaustedEvent)
+	VisitHITLDenied(HITLDeniedEvent)
+	VisitHITLTimedOut(HITLTimedOutEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -468,6 +533,10 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitSessionCreated(p)
 	case LimitExhaustedEvent:
 		v.VisitLimitExhausted(p)
+	case HITLDeniedEvent:
+		v.VisitHITLDenied(p)
+	case HITLTimedOutEvent:
+		v.VisitHITLTimedOut(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	}
