@@ -106,7 +106,7 @@ func TestAsyncTaskManager_CancelTaskStopsWorker(t *testing.T) {
 	// Let the worker start its first iteration.
 	time.Sleep(50 * time.Millisecond)
 
-	if err := mgr.CancelTask("parent", id); err != nil {
+	if err := mgr.CancelTask(context.Background(), "parent", id); err != nil {
 		t.Fatalf("CancelTask failed: %v", err)
 	}
 	// Wait for the worker goroutine to exit and persist status.
@@ -126,7 +126,7 @@ func TestAsyncTaskManager_CancelTaskReturnsErrorForUnknownID(t *testing.T) {
 	reg := tools.NewRegistry()
 	mgr := NewAsyncTaskManager(sm, reg, &immediateProvider{content: "ok"})
 
-	err := mgr.CancelTask("parent", "bogus-id")
+	err := mgr.CancelTask(context.Background(), "parent", "bogus-id")
 	if err == nil {
 		t.Fatal("expected error for unknown task_id, got nil")
 	}
@@ -208,7 +208,7 @@ func TestAsyncTaskManager_MaxConcurrentRejectsOverflow(t *testing.T) {
 	}
 
 	// Cancel one — a slot must free up and the next StartTask should succeed.
-	if err := mgr.CancelTask("parent", id1); err != nil {
+	if err := mgr.CancelTask(context.Background(), "parent", id1); err != nil {
 		t.Fatalf("cancel task-1: %v", err)
 	}
 	// Wait for the cancelled goroutine to release the semaphore slot.
@@ -226,8 +226,8 @@ func TestAsyncTaskManager_MaxConcurrentRejectsOverflow(t *testing.T) {
 	}
 
 	// Clean up remaining tasks so the test exits promptly.
-	_ = mgr.CancelTask("parent", id2)
-	_ = mgr.CancelTask("parent", id3)
+	_ = mgr.CancelTask(context.Background(), "parent", id2)
+	_ = mgr.CancelTask(context.Background(), "parent", id3)
 }
 
 func TestAsyncTaskManager_SyncTasksMarksOrphanedAsInterrupted(t *testing.T) {
@@ -242,7 +242,7 @@ func TestAsyncTaskManager_SyncTasksMarksOrphanedAsInterrupted(t *testing.T) {
 	}
 	sm.SetAsyncTasks(context.Background(), "parent", tasks)
 
-	got := mgr.SyncTasks("parent")
+	got := mgr.SyncTasks(context.Background(), "parent")
 	if got["orphan-1"].Status != "interrupted" {
 		t.Fatalf("expected orphan marked as 'interrupted', got %q", got["orphan-1"].Status)
 	}

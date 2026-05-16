@@ -648,10 +648,11 @@ func estimateTokens(msgs []history.Message) int {
 	return total
 }
 
-// saveSession persists history, using background context if the request context is already cancelled.
-func (al *AgentLoop) saveSession(_ context.Context, sessionKey string, msgs []history.Message) {
-	// Always use Background context — session persistence must outlive the HTTP request.
-	saveCtx := context.Background()
+// saveSession persists history using the caller's ctx with cancellation
+// stripped — values (trace IDs, user IDs) propagate to value-aware session
+// backends but a cancelled request ctx will not abort persistence.
+func (al *AgentLoop) saveSession(ctx context.Context, sessionKey string, msgs []history.Message) {
+	saveCtx := context.WithoutCancel(ctx)
 	al.Sessions.SetHistory(saveCtx, sessionKey, msgs)
 	if err := al.Sessions.Save(saveCtx, sessionKey); err != nil {
 		log.Printf("[gopheragent] session save error for %q: %v", sessionKey, err)

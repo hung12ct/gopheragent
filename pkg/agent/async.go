@@ -222,8 +222,10 @@ func (m *AsyncTaskManager) runLoop(ctx context.Context, taskID, sessionKey, agen
 
 // CancelTask signals the worker goroutine to stop and marks the task as
 // cancelled in the parent session. Returns an error when taskID is not
-// currently active.
-func (m *AsyncTaskManager) CancelTask(sessionKey, taskID string) error {
+// currently active. ctx supplies caller-stamped values (trace IDs, user IDs)
+// to the session backend; cancellation is intentionally stripped so the
+// final status update survives request-scoped teardown.
+func (m *AsyncTaskManager) CancelTask(ctx context.Context, sessionKey, taskID string) error {
 	m.mu.Lock()
 	task, ok := m.ActiveTasks[taskID]
 	if ok {
@@ -236,13 +238,13 @@ func (m *AsyncTaskManager) CancelTask(sessionKey, taskID string) error {
 		return fmt.Errorf("agent: task %q not found or already completed", taskID)
 	}
 
-	bgCtx := context.Background()
-	tasks := m.Sessions.GetAsyncTasks(bgCtx, sessionKey)
+	persistCtx := context.WithoutCancel(ctx)
+	tasks := m.Sessions.GetAsyncTasks(persistCtx, sessionKey)
 	if task, exists := tasks[taskID]; exists {
 		task.Status = "cancelled"
 		tasks[taskID] = task
-		m.Sessions.SetAsyncTasks(bgCtx, sessionKey, tasks)
-		if err := m.Sessions.Save(bgCtx, sessionKey); err != nil {
+		m.Sessions.SetAsyncTasks(persistCtx, sessionKey, tasks)
+		if err := m.Sessions.Save(persistCtx, sessionKey); err != nil {
 			log.Printf("[async] save failed for %q: %v", sessionKey, err)
 		}
 	}
@@ -268,10 +270,12 @@ func (m *AsyncTaskManager) UpdateTask(taskID, instruction string) error {
 // SyncTasks reconciles persisted task metadata with the manager's in-memory
 // ActiveTasks map. Tasks whose status says "running" but are not present in
 // ActiveTasks are marked "interrupted" (e.g., the process restarted).
-// Returns a snapshot copy of the reconciled task map.
-func (m *AsyncTaskManager) SyncTasks(sessionKey string) map[string]history.AsyncTask {
-	bgCtx := context.Background()
-	tasks := m.Sessions.GetAsyncTasks(bgCtx, sessionKey)
+// Returns a snapshot copy of the reconciled task map. ctx supplies caller
+// values to the session backend; cancellation is stripped so reconciliation
+// outlives request-scoped teardown.
+func (m *AsyncTaskManager) SyncTasks(ctx context.Context, sessionKey string) map[string]history.AsyncTask {
+	persistCtx := context.WithoutCancel(ctx)
+	tasks := m.Sessions.GetAsyncTasks(persistCtx, sessionKey)
 	changed := false
 	m.mu.RLock()
 	for id, t := range tasks {
@@ -286,8 +290,8 @@ func (m *AsyncTaskManager) SyncTasks(sessionKey string) map[string]history.Async
 	}
 	m.mu.RUnlock()
 	if changed {
-		m.Sessions.SetAsyncTasks(bgCtx, sessionKey, tasks)
-		if err := m.Sessions.Save(bgCtx, sessionKey); err != nil {
+		m.Sessions.SetAsyncTasks(persistCtx, sessionKey, tasks)
+		if err := m.Sessions.Save(persistCtx, sessionKey); err != nil {
 			log.Printf("[async] save failed for %q: %v", sessionKey, err)
 		}
 	}
