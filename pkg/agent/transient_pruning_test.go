@@ -13,7 +13,7 @@ import (
 // the LLM call only. The session history written via SetHistory must
 // retain the original full-fidelity tool output.
 func TestPruning_DoesNotPersistTrimmedMessages(t *testing.T) {
-	bigContent := strings.Repeat("X", SoftTrimThreshold*2) // exceeds soft-trim threshold
+	bigContent := strings.Repeat("X", softTrimThreshold*2) // exceeds soft-trim threshold
 
 	provider := &scriptProvider{turns: []LLMResult{
 		{Content: "ok"},

@@ -689,7 +689,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 		})
 	}
 	msgs := append(existing, userMsg)
-	msgs = PatchDanglingToolCalls(msgs)
+	msgs = patchDanglingToolCalls(msgs)
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
 	al.iterateMessages(ctx, sessionKey, streamChan, msgs)

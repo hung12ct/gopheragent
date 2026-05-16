@@ -16,7 +16,7 @@ import (
 // standard PruneContextMessages with default depth.
 func (al *AgentLoop) enforceTokenBudget(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs []history.Message) []history.Message {
 	if al.MaxTokenBudget <= 0 {
-		return PruneContextMessages(msgs, 3)
+		return pruneContextMessages(msgs, 3)
 	}
 
 	estToks := estimateTokens(msgs)
@@ -24,16 +24,16 @@ func (al *AgentLoop) enforceTokenBudget(ctx context.Context, sessionKey string, 
 
 	if estToks > thresh && estToks <= al.MaxTokenBudget {
 		al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh)})
-		msgs = TruncateToolArguments(msgs)
+		msgs = truncateToolArguments(msgs)
 	}
 
 	if estimateTokens(msgs) > al.MaxTokenBudget {
 		al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf(
 			"Token budget exceeded (~%d est. tokens). Applying emergency context pruning.", estimateTokens(msgs),
 		)})
-		return PruneContextMessages(msgs, 1)
+		return pruneContextMessages(msgs, 1)
 	}
-	return PruneContextMessages(msgs, 3)
+	return pruneContextMessages(msgs, 3)
 }
 
 // emitSoftLandingNudge fires the user-visible thought event marking the

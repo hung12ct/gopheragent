@@ -91,7 +91,7 @@ func (al *AgentLoop) continueLogicLoop(ctx context.Context, sessionKey string, s
 	ctx = WithSessionKey(ctx, sessionKey)
 
 	msgs := al.Sessions.GetHistory(ctx, sessionKey)
-	msgs = PatchDanglingToolCalls(msgs)
+	msgs = patchDanglingToolCalls(msgs)
 	al.Sessions.SetHistory(ctx, sessionKey, msgs)
 
 	al.iterateMessages(ctx, sessionKey, streamChan, msgs)
