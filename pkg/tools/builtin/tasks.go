@@ -140,7 +140,7 @@ func validStatus(s TaskStatus) bool {
 // AgentLoop did not inject a session key, so one session cannot read or
 // mutate another's task list.
 func taskSessionKey(ctx context.Context) (string, error) {
-	sk, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sk, ok := agent.SessionKeyFromContext(ctx)
 	if !ok || sk == "" {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}

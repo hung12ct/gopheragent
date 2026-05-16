@@ -64,7 +64,7 @@ func (t *StartAsyncTaskTool) ParametersSchema() tools.ToolSchema {
 func (t *StartAsyncTaskTool) RequiresConfirmation() bool { return false }
 func (t *StartAsyncTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *StartAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (string, error) {
-	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sessionKey, ok := agent.SessionKeyFromContext(ctx)
 	if !ok {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}
@@ -105,7 +105,7 @@ func (t *CheckAsyncTaskTool) ParametersSchema() tools.ToolSchema { return asyncT
 func (t *CheckAsyncTaskTool) RequiresConfirmation() bool         { return false }
 func (t *CheckAsyncTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *CheckAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (string, error) {
-	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sessionKey, ok := agent.SessionKeyFromContext(ctx)
 	if !ok {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}
@@ -149,7 +149,7 @@ func (t *CancelAsyncTaskTool) ParametersSchema() tools.ToolSchema  { return asyn
 func (t *CancelAsyncTaskTool) RequiresConfirmation() bool          { return false }
 func (t *CancelAsyncTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *CancelAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (string, error) {
-	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sessionKey, ok := agent.SessionKeyFromContext(ctx)
 	if !ok {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}
@@ -241,7 +241,7 @@ func (t *ListAsyncTasksTool) ParametersSchema() tools.ToolSchema {
 func (t *ListAsyncTasksTool) RequiresConfirmation() bool { return false }
 func (t *ListAsyncTasksTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
 func (t *ListAsyncTasksTool) Execute(ctx context.Context, inputJSON string) (string, error) {
-	sessionKey, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sessionKey, ok := agent.SessionKeyFromContext(ctx)
 	if !ok {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}

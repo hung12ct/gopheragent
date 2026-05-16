@@ -153,7 +153,7 @@ func buildConfirmPlan() agent.ConfirmPlanFunc {
 			pendingMu.Unlock()
 		}()
 
-		sessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+		sessionKey, _ := agent.SessionKeyFromContext(ctx)
 
 		payload, _ := json.Marshal(map[string]any{
 			"approval_id": approvalID,
@@ -294,7 +294,7 @@ func buildHITL() agent.ConfirmFunc {
 
 		// Extract session key injected by AgentLoop so we can route to the
 		// right SSE connection.
-		sessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+		sessionKey, _ := agent.SessionKeyFromContext(ctx)
 
 		var rawArgs any
 		_ = json.Unmarshal([]byte(argsJSON), &rawArgs)

@@ -659,9 +659,6 @@ func (al *AgentLoop) saveSession(ctx context.Context, sessionKey string, msgs []
 	}
 }
 
-// SessionKey string is the type used to inject sessionKey into context
-type SessionKeyCtx string
-
 // runLogicLoop holds the actual execution context separated from the stream proxy.
 // userMsg is appended verbatim — callers control role / content / parts /
 // cache hints. The string-based RunIteration{,Stream} entrypoints wrap a
@@ -669,7 +666,7 @@ type SessionKeyCtx string
 // for multimodal input (image bytes, mixed parts).
 func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMsg history.Message, streamChan chan<- StreamEvent) {
 	defer close(streamChan)
-	ctx = context.WithValue(ctx, SessionKeyCtx("sessionKey"), sessionKey)
+	ctx = WithSessionKey(ctx, sessionKey)
 
 	for _, hook := range al.BeforeHooks {
 		if hook == nil {

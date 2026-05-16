@@ -142,7 +142,7 @@ func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (string
 		return "", fmt.Errorf("tools: prompt is required")
 	}
 
-	sessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sessionKey, _ := agent.SessionKeyFromContext(ctx)
 	t.mu.RLock()
 	f, ok := t.sessions[sessionKey]
 	t.mu.RUnlock()

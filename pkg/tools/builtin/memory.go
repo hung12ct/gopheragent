@@ -95,7 +95,7 @@ func (s *InMemoryStore) List(_ context.Context, sessionKey string) ([]string, er
 // memory tools fail closed when the key is absent — without it, one session
 // could read or clobber another's memory.
 func memorySessionKey(ctx context.Context) (string, error) {
-	sk, ok := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sk, ok := agent.SessionKeyFromContext(ctx)
 	if !ok || sk == "" {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}

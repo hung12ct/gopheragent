@@ -102,7 +102,7 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 		return fmt.Sprintf("Report from %s:\n%s", input.AgentName, result), nil
 	}
 
-	parentSessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	parentSessionKey, _ := agent.SessionKeyFromContext(ctx)
 	source := "subagent:" + input.AgentName
 
 	workerChan := make(chan agent.StreamEvent, 50)

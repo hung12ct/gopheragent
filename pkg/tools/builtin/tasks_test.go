@@ -11,7 +11,7 @@ import (
 )
 
 func taskCtx(sessionKey string) context.Context {
-	return context.WithValue(context.Background(), agent.SessionKeyCtx("sessionKey"), sessionKey)
+	return agent.WithSessionKey(context.Background(), sessionKey)
 }
 
 func TestInMemoryTaskStore_CreateAssignsSequentialIDs(t *testing.T) {

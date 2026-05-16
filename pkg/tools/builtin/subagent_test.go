@@ -142,7 +142,7 @@ func TestCallSubAgentTool_ForwardsEventsWhenEmitterPresent(t *testing.T) {
 		defer mu.Unlock()
 		forwarded = append(forwarded, ev)
 	})
-	ctx = context.WithValue(ctx, agent.SessionKeyCtx("sessionKey"), "parent-session")
+	ctx = agent.WithSessionKey(ctx, "parent-session")
 
 	result, err := tool.Execute(ctx, `{"task_description":"go","agent_name":"researcher"}`)
 	if err != nil {
@@ -246,7 +246,7 @@ func TestCallSubAgentTool_HITLDenialBubbleUp(t *testing.T) {
 	tool := NewCallSubAgentTool(sm, reg, prov)
 
 	ctx := agent.WithSubAgentEmitter(context.Background(), func(agent.StreamEvent) {})
-	ctx = context.WithValue(ctx, agent.SessionKeyCtx("sessionKey"), "parent-session")
+	ctx = agent.WithSessionKey(ctx, "parent-session")
 	ctx = agent.WithConfirmHITL(ctx, func(context.Context, string, string) bool { return false })
 
 	res, err := tool.Execute(ctx, `{"task_description":"do dangerous","agent_name":"worker"}`)

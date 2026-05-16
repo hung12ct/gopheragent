@@ -88,7 +88,7 @@ func (al *AgentLoop) Continue(ctx context.Context, sessionKey string, streamChan
 // next LLM call.
 func (al *AgentLoop) continueLogicLoop(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) {
 	defer close(streamChan)
-	ctx = context.WithValue(ctx, SessionKeyCtx("sessionKey"), sessionKey)
+	ctx = WithSessionKey(ctx, sessionKey)
 
 	msgs := al.Sessions.GetHistory(ctx, sessionKey)
 	msgs = PatchDanglingToolCalls(msgs)

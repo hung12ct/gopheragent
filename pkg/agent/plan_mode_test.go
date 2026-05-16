@@ -231,7 +231,7 @@ type sessionRoutingProviderPM struct {
 }
 
 func (p *sessionRoutingProviderPM) GenerateStream(ctx context.Context, _ []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
-	sessionKey, _ := ctx.Value(SessionKeyCtx("sessionKey")).(string)
+	sessionKey, _ := SessionKeyFromContext(ctx)
 	p.mu.Lock()
 	turns := p.routes[sessionKey]
 	idx := p.cursors[sessionKey]

@@ -10,7 +10,7 @@ import (
 )
 
 func memCtx(sessionKey string) context.Context {
-	return context.WithValue(context.Background(), agent.SessionKeyCtx("sessionKey"), sessionKey)
+	return agent.WithSessionKey(context.Background(), sessionKey)
 }
 
 func TestMemoryTools_SetGetRoundTrip(t *testing.T) {
