@@ -91,16 +91,49 @@ func PruneContextMessages(msgs []history.Message, protectedEnds int) []history.M
 	return result
 }
 
+// hasDanglingToolCalls walks msgs once and returns true if any assistant
+// tool_call lacks a matching tool response. Used as a cheap gate so the
+// allocating rebuild path in PatchDanglingToolCalls only runs when needed.
+func hasDanglingToolCalls(msgs []history.Message) bool {
+	for i := 0; i < len(msgs); i++ {
+		m := msgs[i]
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		responded := make(map[string]struct{}, len(m.ToolCalls))
+		j := i + 1
+		for j < len(msgs) {
+			if msgs[j].Role == "assistant" || msgs[j].Role == "user" {
+				break
+			}
+			if msgs[j].Role == "tool" && msgs[j].ToolCallID != "" {
+				responded[msgs[j].ToolCallID] = struct{}{}
+			}
+			j++
+		}
+		for _, tc := range m.ToolCalls {
+			if _, ok := responded[tc.ID]; !ok {
+				return true
+			}
+		}
+		i = j - 1
+	}
+	return false
+}
+
 // PatchDanglingToolCalls scans message history and injects synthetic tool
 // responses for any tool_call that never received a reply. Without this,
 // provider APIs (Anthropic / OpenAI) reject the request with a 400/500
 // because every tool_use must be paired with a tool_result before the next
 // user/assistant turn.
 //
-// Synthetic messages are appended *after* any existing tool responses for the
-// same assistant turn so call order matches the source tool_calls order.
+// Returns the input slice unchanged when no dangling call is detected (no
+// allocation), so the per-turn call from runLogicLoop is zero-cost in the
+// healthy case. When patching is required, synthetic messages are appended
+// *after* any existing tool responses for the same assistant turn so call
+// order matches the source tool_calls order.
 func PatchDanglingToolCalls(msgs []history.Message) []history.Message {
-	if len(msgs) == 0 {
+	if len(msgs) == 0 || !hasDanglingToolCalls(msgs) {
 		return msgs
 	}
 	patched := make([]history.Message, 0, len(msgs))
