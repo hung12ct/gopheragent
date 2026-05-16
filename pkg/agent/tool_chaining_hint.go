@@ -40,7 +40,7 @@ func (al *AgentLoop) withToolChainingHint(msgs []history.Message) []history.Mess
 	if al.DisableToolChainingHint {
 		return msgs
 	}
-	if al.Tools == nil || len(al.Tools.GetAll()) < 2 {
+	if al.Tools == nil || al.Tools.Len() < 2 {
 		return msgs
 	}
 	for _, m := range msgs {

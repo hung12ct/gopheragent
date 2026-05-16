@@ -204,6 +204,15 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, true
 }
 
+// Len returns the number of registered tools. Cheap branch for hot-path
+// gates that only need to know "how many" — avoids the sort+slice+copy
+// cost of GetAll.
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.tools)
+}
+
 // GetAll returns all registered tools in deterministic alphabetical order.
 // Debug wrapping is applied when enabled.
 func (r *Registry) GetAll() []Tool {
