@@ -19,7 +19,7 @@ type iterationState struct {
 	msgs       *[]history.Message
 	specMap    map[string]*speculativeExec
 	specMu     *sync.Mutex
-	tracker    *LoopDetector
+	tracker    *loopDetector
 }
 
 // waveState carries the per-wave shared mutable state used by the

@@ -23,7 +23,7 @@ import (
 //  5. tool-call budget split + assistant msg append
 //  6. tool-wave execution
 //  7. fatal-error gate / dropped-call synthesis / tool-result drain
-func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs *[]history.Message, iteration int, tracker *LoopDetector) (int, bool) {
+func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs *[]history.Message, iteration int, tracker *loopDetector) (int, bool) {
 	if ctx.Err() != nil {
 		// Persist before signaling so adopters that read history on the
 		// terminal event observe the durable state, not a partial in-memory

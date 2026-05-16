@@ -6,7 +6,7 @@ import (
 )
 
 func TestLoopDetector_NoFalsePositiveBelowThreshold(t *testing.T) {
-	ld := NewLoopDetector()
+	ld := newLoopDetector()
 	ld.AddCall("tool1", `{"a":1}`, "result1")
 	ld.AddCall("tool1", `{"a":1}`, "result1")
 
@@ -20,8 +20,8 @@ func TestLoopDetector_NoFalsePositiveBelowThreshold(t *testing.T) {
 }
 
 func TestLoopDetector_WarnOnIdenticalLoop(t *testing.T) {
-	ld := NewLoopDetector()
-	for i := 0; i < LoopWarnThreshold; i++ {
+	ld := newLoopDetector()
+	for i := 0; i < loopWarnThreshold; i++ {
 		ld.AddCall("tool1", `{"a":1}`, "same_result")
 	}
 
@@ -35,8 +35,8 @@ func TestLoopDetector_WarnOnIdenticalLoop(t *testing.T) {
 }
 
 func TestLoopDetector_KillOnIdenticalLoop(t *testing.T) {
-	ld := NewLoopDetector()
-	for i := 0; i < LoopKillThreshold; i++ {
+	ld := newLoopDetector()
+	for i := 0; i < loopKillThreshold; i++ {
 		ld.AddCall("tool1", `{"a":1}`, "same_result")
 	}
 
@@ -47,10 +47,10 @@ func TestLoopDetector_KillOnIdenticalLoop(t *testing.T) {
 }
 
 func TestLoopDetector_WarnOnSameResultDifferentArgs(t *testing.T) {
-	ld := NewLoopDetector()
-	// Need LoopWarnThreshold+1 calls: the last call's self-match counts as "identical" not "sameResult",
-	// so sameResultCount is (total - 1). We need sameResultCount >= LoopWarnThreshold.
-	for i := 0; i < LoopWarnThreshold+1; i++ {
+	ld := newLoopDetector()
+	// Need loopWarnThreshold+1 calls: the last call's self-match counts as "identical" not "sameResult",
+	// so sameResultCount is (total - 1). We need sameResultCount >= loopWarnThreshold.
+	for i := 0; i < loopWarnThreshold+1; i++ {
 		ld.AddCall("tool1", fmt.Sprintf(`{"attempt":%d,"padding":"unique-%d"}`, i, i*1000), "brick_wall")
 	}
 
@@ -64,7 +64,7 @@ func TestLoopDetector_WarnOnSameResultDifferentArgs(t *testing.T) {
 }
 
 func TestLoopDetector_BreakOnDifferentTool(t *testing.T) {
-	ld := NewLoopDetector()
+	ld := newLoopDetector()
 	ld.AddCall("tool_a", `{"a":1}`, "r1")
 	ld.AddCall("tool_a", `{"a":1}`, "r1")
 	ld.AddCall("tool_a", `{"a":1}`, "r1")
@@ -80,7 +80,7 @@ func TestLoopDetector_BreakOnDifferentTool(t *testing.T) {
 }
 
 func TestLoopDetector_MaxCapacity(t *testing.T) {
-	ld := NewLoopDetector()
+	ld := newLoopDetector()
 	for i := 0; i < 50; i++ {
 		ld.AddCall("tool1", `{}`, "r")
 	}
@@ -94,7 +94,7 @@ func TestLoopDetector_MaxCapacity(t *testing.T) {
 func BenchmarkLoopDetector_AddAndDetect(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ld := NewLoopDetector()
+		ld := newLoopDetector()
 		for j := 0; j < 10; j++ {
 			ld.AddCall("tool1", `{"q":"search"}`, "some result text")
 		}
@@ -103,7 +103,7 @@ func BenchmarkLoopDetector_AddAndDetect(b *testing.B) {
 }
 
 func BenchmarkLoopDetector_DetectNoLoop(b *testing.B) {
-	ld := NewLoopDetector()
+	ld := newLoopDetector()
 	for i := 0; i < 10; i++ {
 		ld.AddCall(fmt.Sprintf("tool%d", i), `{"q":"search"}`, fmt.Sprintf("result%d", i))
 	}

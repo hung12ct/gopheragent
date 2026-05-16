@@ -702,7 +702,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 // terminal frame — final answer, fatal error, cap exhaustion, or
 // MaxIters — and never returns without emitting one.
 func (al *AgentLoop) iterateMessages(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs []history.Message) {
-	loopTracker := NewLoopDetector()
+	loopTracker := newLoopDetector()
 	totalToolCalls := 0
 	for iteration := 0; iteration < al.MaxIters; iteration++ {
 		scheduled, done := al.runIteration(ctx, sessionKey, streamChan, &msgs, iteration, loopTracker)
