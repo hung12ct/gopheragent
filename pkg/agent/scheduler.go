@@ -69,16 +69,30 @@ type Resolver func(id string) (string, bool)
 // whose path does not exist in the output resolves to the JSON `null` literal
 // — preserves best-effort chaining instead of aborting the wave.
 func Substitute(argsJSON string, resolve Resolver) (string, error) {
+	matches := refPattern.FindAllStringSubmatchIndex(argsJSON, -1)
+	if len(matches) == 0 {
+		return argsJSON, nil
+	}
+
 	var firstErr error
-	out := refPattern.ReplaceAllStringFunc(argsJSON, func(token string) string {
-		m := refPattern.FindStringSubmatch(token)
-		id, path := m[1], m[2]
+	var sb strings.Builder
+	sb.Grow(len(argsJSON))
+	cursor := 0
+	for _, m := range matches {
+		sb.WriteString(argsJSON[cursor:m[0]])
+		id := argsJSON[m[2]:m[3]]
+		path := ""
+		if m[4] >= 0 {
+			path = argsJSON[m[4]:m[5]]
+		}
 		raw, ok := resolve(id)
 		if !ok {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("agent: Substitute: unknown tool-call reference %q", id)
 			}
-			return token
+			sb.WriteString(argsJSON[m[0]:m[1]])
+			cursor = m[1]
+			continue
 		}
 		val := extractPath(raw, path)
 		encoded, err := json.Marshal(val)
@@ -86,11 +100,15 @@ func Substitute(argsJSON string, resolve Resolver) (string, error) {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("agent: Substitute: encode %q.%q: %w", id, path, err)
 			}
-			return token
+			sb.WriteString(argsJSON[m[0]:m[1]])
+			cursor = m[1]
+			continue
 		}
-		return string(encoded)
-	})
-	return out, firstErr
+		sb.Write(encoded)
+		cursor = m[1]
+	}
+	sb.WriteString(argsJSON[cursor:])
+	return sb.String(), firstErr
 }
 
 // extractPath returns the JSON-decoded node at path inside raw. If raw is not

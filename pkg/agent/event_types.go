@@ -367,161 +367,243 @@ func (RegeneratedEvent) isEventPayload()     {}
 func (ContinuedEvent) isEventPayload()       {}
 func (UnknownEvent) isEventPayload()         {}
 
+// Per-type constructors. Each returns the concrete payload struct so callers
+// can stay unboxed when they know which payload they want — Visit dispatches
+// through these without ever paying the EventPayload interface allocation.
+
+func (ev StreamEvent) base() BaseEvent {
+	return BaseEvent{Source: ev.Source, ParentID: ev.ParentID}
+}
+
+func (ev StreamEvent) asContent() ContentEvent {
+	return ContentEvent{BaseEvent: ev.base(), Text: ev.Content}
+}
+
+func (ev StreamEvent) asThought() ThoughtEvent {
+	return ThoughtEvent{BaseEvent: ev.base(), Message: ev.Content}
+}
+
+func (ev StreamEvent) asToolCall() ToolCallEvent {
+	name := ev.Name
+	if name == "" {
+		name = parseExecutingName(ev.Content)
+	}
+	return ToolCallEvent{
+		BaseEvent:   ev.base(),
+		ID:          ev.ToolCallID,
+		Name:        name,
+		ArgsJSON:    ev.ArgsJSON,
+		Reused:      ev.Reused,
+		Description: ev.Content,
+	}
+}
+
+func (ev StreamEvent) asToolProgress() ToolProgressEvent {
+	return ToolProgressEvent{
+		BaseEvent:  ev.base(),
+		Name:       ev.Name,
+		ToolCallID: ev.ToolCallID,
+		Message:    ev.Content,
+	}
+}
+
+func (ev StreamEvent) asActionRequired() ActionRequiredEvent {
+	out := ActionRequiredEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
+	var decoded struct {
+		Tool string `json:"tool"`
+		Args string `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(ev.Content), &decoded); err == nil {
+		out.Tool = decoded.Tool
+		out.Args = decoded.Args
+	}
+	return out
+}
+
+func (ev StreamEvent) asUsage() UsageEvent {
+	out := UsageEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
+	_ = json.Unmarshal([]byte(ev.Content), &out.Usage) // zero-value on failure
+	return out
+}
+
+func (ev StreamEvent) asError() ErrorEvent {
+	msg := ev.Content
+	err := ev.Err
+	if err == nil && msg != "" {
+		err = fmt.Errorf("agent: %s", msg)
+	}
+	return ErrorEvent{BaseEvent: ev.base(), Err: err, Message: msg}
+}
+
+func (ev StreamEvent) asDone() DoneEvent {
+	return DoneEvent{BaseEvent: ev.base()}
+}
+
+func (ev StreamEvent) asReflected() ReflectedEvent {
+	out := ReflectedEvent{BaseEvent: ev.base()}
+	var decoded struct {
+		Text  string `json:"text"`
+		Round int    `json:"round"`
+	}
+	if err := json.Unmarshal([]byte(ev.Content), &decoded); err == nil && decoded.Text != "" {
+		out.Text = decoded.Text
+		out.Round = decoded.Round
+	} else {
+		// Fallback for callers that emitted the raw text.
+		out.Text = ev.Content
+	}
+	return out
+}
+
+func (ev StreamEvent) asToolCallReady() ToolCallReadyEvent {
+	out := ToolCallReadyEvent{BaseEvent: ev.base()}
+	var decoded struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Args string `json:"args"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded)
+	out.ID = decoded.ID
+	out.Name = decoded.Name
+	out.ArgsJSON = decoded.Args
+	return out
+}
+
+func (ev StreamEvent) asTaskList() TaskListEvent {
+	out := TaskListEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
+	_ = json.Unmarshal([]byte(ev.Content), &out.Tasks) // empty slice on failure
+	return out
+}
+
+func (ev StreamEvent) asMaxItersReached() MaxItersReachedEvent {
+	out := MaxItersReachedEvent{BaseEvent: ev.base()}
+	var decoded struct {
+		Limit int `json:"limit"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded) // zero on failure
+	out.Limit = decoded.Limit
+	return out
+}
+
+func (ev StreamEvent) asSessionCreated() SessionCreatedEvent {
+	out := SessionCreatedEvent{BaseEvent: ev.base()}
+	var decoded struct {
+		SessionKey string `json:"session_key"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded)
+	out.SessionKey = decoded.SessionKey
+	return out
+}
+
+func (ev StreamEvent) asLimitExhausted() LimitExhaustedEvent {
+	out := LimitExhaustedEvent{BaseEvent: ev.base()}
+	var decoded struct {
+		Kind  string `json:"kind"`
+		Limit int    `json:"limit"`
+		Used  int    `json:"used"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded)
+	out.Kind = LimitKind(decoded.Kind)
+	out.Limit = decoded.Limit
+	out.Used = decoded.Used
+	return out
+}
+
+func (ev StreamEvent) asHITLDenied() HITLDeniedEvent {
+	out := HITLDeniedEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
+	var decoded struct {
+		Tool string `json:"tool"`
+		Args string `json:"args"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded)
+	out.Tool = decoded.Tool
+	out.Args = decoded.Args
+	return out
+}
+
+func (ev StreamEvent) asHITLTimedOut() HITLTimedOutEvent {
+	out := HITLTimedOutEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
+	var decoded struct {
+		Tool      string `json:"tool"`
+		Args      string `json:"args"`
+		TimeoutMs int64  `json:"timeout_ms"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded)
+	out.Tool = decoded.Tool
+	out.Args = decoded.Args
+	out.Timeout = time.Duration(decoded.TimeoutMs) * time.Millisecond
+	return out
+}
+
+func (ev StreamEvent) asRegenerated() RegeneratedEvent {
+	out := RegeneratedEvent{BaseEvent: ev.base()}
+	var decoded struct {
+		PreviousAssistantIndex int `json:"previous_assistant_index"`
+		TruncatedAt            int `json:"truncated_at"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded)
+	out.PreviousAssistantIndex = decoded.PreviousAssistantIndex
+	out.TruncatedAt = decoded.TruncatedAt
+	return out
+}
+
+func (ev StreamEvent) asContinued() ContinuedEvent {
+	out := ContinuedEvent{BaseEvent: ev.base()}
+	var decoded struct {
+		ContinuedFromIndex int `json:"continued_from_index"`
+	}
+	_ = json.Unmarshal([]byte(ev.Content), &decoded)
+	out.ContinuedFromIndex = decoded.ContinuedFromIndex
+	return out
+}
+
+func (ev StreamEvent) asUnknown() UnknownEvent {
+	return UnknownEvent{BaseEvent: ev.base(), Type: ev.Type, Content: ev.Content}
+}
+
 // Payload returns a typed view of ev. It never returns nil — unknown types
 // round-trip through UnknownEvent so callers can log or forward them without
 // a nil check.
 func (ev StreamEvent) Payload() EventPayload {
-	base := BaseEvent{Source: ev.Source, ParentID: ev.ParentID}
-
 	switch ev.Type {
 	case EventTypeContent:
-		return ContentEvent{BaseEvent: base, Text: ev.Content}
+		return ev.asContent()
 	case EventTypeThought:
-		return ThoughtEvent{BaseEvent: base, Message: ev.Content}
+		return ev.asThought()
 	case EventTypeToolCall:
-		name := ev.Name
-		if name == "" {
-			name = parseExecutingName(ev.Content)
-		}
-		return ToolCallEvent{
-			BaseEvent:   base,
-			ID:          ev.ToolCallID,
-			Name:        name,
-			ArgsJSON:    ev.ArgsJSON,
-			Reused:      ev.Reused,
-			Description: ev.Content,
-		}
+		return ev.asToolCall()
 	case EventTypeToolProgress:
-		return ToolProgressEvent{
-			BaseEvent:  base,
-			Name:       ev.Name,
-			ToolCallID: ev.ToolCallID,
-			Message:    ev.Content,
-		}
+		return ev.asToolProgress()
 	case EventTypeActionRequired:
-		out := ActionRequiredEvent{BaseEvent: base, RawJSON: ev.Content}
-		var decoded struct {
-			Tool string `json:"tool"`
-			Args string `json:"args"`
-		}
-		if err := json.Unmarshal([]byte(ev.Content), &decoded); err == nil {
-			out.Tool = decoded.Tool
-			out.Args = decoded.Args
-		}
-		return out
+		return ev.asActionRequired()
 	case EventTypeUsage:
-		out := UsageEvent{BaseEvent: base, RawJSON: ev.Content}
-		_ = json.Unmarshal([]byte(ev.Content), &out.Usage) // zero-value on failure
-		return out
+		return ev.asUsage()
 	case EventTypeError:
-		msg := ev.Content
-		err := ev.Err
-		if err == nil && msg != "" {
-			err = fmt.Errorf("agent: %s", msg)
-		}
-		return ErrorEvent{BaseEvent: base, Err: err, Message: msg}
+		return ev.asError()
 	case EventTypeDone:
-		return DoneEvent{BaseEvent: base}
+		return ev.asDone()
 	case EventTypeReflected:
-		out := ReflectedEvent{BaseEvent: base}
-		var decoded struct {
-			Text  string `json:"text"`
-			Round int    `json:"round"`
-		}
-		if err := json.Unmarshal([]byte(ev.Content), &decoded); err == nil && decoded.Text != "" {
-			out.Text = decoded.Text
-			out.Round = decoded.Round
-		} else {
-			// Fallback for callers that emitted the raw text.
-			out.Text = ev.Content
-		}
-		return out
+		return ev.asReflected()
 	case EventTypeToolCallReady:
-		out := ToolCallReadyEvent{BaseEvent: base}
-		var decoded struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Args string `json:"args"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded)
-		out.ID = decoded.ID
-		out.Name = decoded.Name
-		out.ArgsJSON = decoded.Args
-		return out
+		return ev.asToolCallReady()
 	case EventTypeTaskList:
-		out := TaskListEvent{BaseEvent: base, RawJSON: ev.Content}
-		_ = json.Unmarshal([]byte(ev.Content), &out.Tasks) // empty slice on failure
-		return out
+		return ev.asTaskList()
 	case EventTypeMaxItersReached:
-		out := MaxItersReachedEvent{BaseEvent: base}
-		var decoded struct {
-			Limit int `json:"limit"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded) // zero on failure
-		out.Limit = decoded.Limit
-		return out
+		return ev.asMaxItersReached()
 	case EventTypeSessionCreated:
-		out := SessionCreatedEvent{BaseEvent: base}
-		var decoded struct {
-			SessionKey string `json:"session_key"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded)
-		out.SessionKey = decoded.SessionKey
-		return out
+		return ev.asSessionCreated()
 	case EventTypeLimitExhausted:
-		out := LimitExhaustedEvent{BaseEvent: base}
-		var decoded struct {
-			Kind  string `json:"kind"`
-			Limit int    `json:"limit"`
-			Used  int    `json:"used"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded)
-		out.Kind = LimitKind(decoded.Kind)
-		out.Limit = decoded.Limit
-		out.Used = decoded.Used
-		return out
+		return ev.asLimitExhausted()
 	case EventTypeHITLDenied:
-		out := HITLDeniedEvent{BaseEvent: base, RawJSON: ev.Content}
-		var decoded struct {
-			Tool string `json:"tool"`
-			Args string `json:"args"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded)
-		out.Tool = decoded.Tool
-		out.Args = decoded.Args
-		return out
+		return ev.asHITLDenied()
 	case EventTypeHITLTimedOut:
-		out := HITLTimedOutEvent{BaseEvent: base, RawJSON: ev.Content}
-		var decoded struct {
-			Tool      string `json:"tool"`
-			Args      string `json:"args"`
-			TimeoutMs int64  `json:"timeout_ms"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded)
-		out.Tool = decoded.Tool
-		out.Args = decoded.Args
-		out.Timeout = time.Duration(decoded.TimeoutMs) * time.Millisecond
-		return out
+		return ev.asHITLTimedOut()
 	case EventTypeRegenerated:
-		out := RegeneratedEvent{BaseEvent: base}
-		var decoded struct {
-			PreviousAssistantIndex int `json:"previous_assistant_index"`
-			TruncatedAt            int `json:"truncated_at"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded)
-		out.PreviousAssistantIndex = decoded.PreviousAssistantIndex
-		out.TruncatedAt = decoded.TruncatedAt
-		return out
+		return ev.asRegenerated()
 	case EventTypeContinued:
-		out := ContinuedEvent{BaseEvent: base}
-		var decoded struct {
-			ContinuedFromIndex int `json:"continued_from_index"`
-		}
-		_ = json.Unmarshal([]byte(ev.Content), &decoded)
-		out.ContinuedFromIndex = decoded.ContinuedFromIndex
-		return out
+		return ev.asContinued()
 	default:
-		return UnknownEvent{BaseEvent: base, Type: ev.Type, Content: ev.Content}
+		return ev.asUnknown()
 	}
 }
 
@@ -554,48 +636,48 @@ type EventVisitor interface {
 	VisitUnknown(UnknownEvent)
 }
 
-// Visit dispatches ev to the correct method on v. It is a thin wrapper over
-// Payload() — the two APIs are interchangeable; pick whichever reads clearer
-// at the call site.
+// Visit dispatches ev to the correct method on v. Switches on ev.Type and
+// invokes the visitor with the concrete payload struct — no EventPayload
+// interface allocation and no second type switch on a boxed value.
 func (ev StreamEvent) Visit(v EventVisitor) {
-	switch p := ev.Payload().(type) {
-	case ContentEvent:
-		v.VisitContent(p)
-	case ThoughtEvent:
-		v.VisitThought(p)
-	case ToolCallEvent:
-		v.VisitToolCall(p)
-	case ToolProgressEvent:
-		v.VisitToolProgress(p)
-	case ActionRequiredEvent:
-		v.VisitActionRequired(p)
-	case UsageEvent:
-		v.VisitUsage(p)
-	case ErrorEvent:
-		v.VisitError(p)
-	case DoneEvent:
-		v.VisitDone(p)
-	case ReflectedEvent:
-		v.VisitReflected(p)
-	case ToolCallReadyEvent:
-		v.VisitToolCallReady(p)
-	case TaskListEvent:
-		v.VisitTaskList(p)
-	case MaxItersReachedEvent:
-		v.VisitMaxItersReached(p)
-	case SessionCreatedEvent:
-		v.VisitSessionCreated(p)
-	case LimitExhaustedEvent:
-		v.VisitLimitExhausted(p)
-	case HITLDeniedEvent:
-		v.VisitHITLDenied(p)
-	case HITLTimedOutEvent:
-		v.VisitHITLTimedOut(p)
-	case RegeneratedEvent:
-		v.VisitRegenerated(p)
-	case ContinuedEvent:
-		v.VisitContinued(p)
-	case UnknownEvent:
-		v.VisitUnknown(p)
+	switch ev.Type {
+	case EventTypeContent:
+		v.VisitContent(ev.asContent())
+	case EventTypeThought:
+		v.VisitThought(ev.asThought())
+	case EventTypeToolCall:
+		v.VisitToolCall(ev.asToolCall())
+	case EventTypeToolProgress:
+		v.VisitToolProgress(ev.asToolProgress())
+	case EventTypeActionRequired:
+		v.VisitActionRequired(ev.asActionRequired())
+	case EventTypeUsage:
+		v.VisitUsage(ev.asUsage())
+	case EventTypeError:
+		v.VisitError(ev.asError())
+	case EventTypeDone:
+		v.VisitDone(ev.asDone())
+	case EventTypeReflected:
+		v.VisitReflected(ev.asReflected())
+	case EventTypeToolCallReady:
+		v.VisitToolCallReady(ev.asToolCallReady())
+	case EventTypeTaskList:
+		v.VisitTaskList(ev.asTaskList())
+	case EventTypeMaxItersReached:
+		v.VisitMaxItersReached(ev.asMaxItersReached())
+	case EventTypeSessionCreated:
+		v.VisitSessionCreated(ev.asSessionCreated())
+	case EventTypeLimitExhausted:
+		v.VisitLimitExhausted(ev.asLimitExhausted())
+	case EventTypeHITLDenied:
+		v.VisitHITLDenied(ev.asHITLDenied())
+	case EventTypeHITLTimedOut:
+		v.VisitHITLTimedOut(ev.asHITLTimedOut())
+	case EventTypeRegenerated:
+		v.VisitRegenerated(ev.asRegenerated())
+	case EventTypeContinued:
+		v.VisitContinued(ev.asContinued())
+	default:
+		v.VisitUnknown(ev.asUnknown())
 	}
 }

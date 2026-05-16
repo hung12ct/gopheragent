@@ -116,7 +116,7 @@ func (t *CheckAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (str
 		return "", fmt.Errorf("tools: invalid json: %w", err)
 	}
 
-	tasks := t.manager.SyncTasks(sessionKey)
+	tasks := t.manager.SyncTasks(ctx, sessionKey)
 	task, ok := tasks[input.TaskID]
 	if !ok {
 		return "", fmt.Errorf("tools: task_id %s not found", input.TaskID)
@@ -160,7 +160,7 @@ func (t *CancelAsyncTaskTool) Execute(ctx context.Context, inputJSON string) (st
 		return "", fmt.Errorf("tools: invalid json: %w", err)
 	}
 
-	if err := t.manager.CancelTask(sessionKey, input.TaskID); err != nil {
+	if err := t.manager.CancelTask(ctx, sessionKey, input.TaskID); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Task %s has been cancelled.", input.TaskID), nil
@@ -245,7 +245,7 @@ func (t *ListAsyncTasksTool) Execute(ctx context.Context, inputJSON string) (str
 	if !ok {
 		return "", fmt.Errorf("tools: sessionKey not found in context")
 	}
-	tasks := t.manager.SyncTasks(sessionKey)
+	tasks := t.manager.SyncTasks(ctx, sessionKey)
 	if len(tasks) == 0 {
 		return "No async tasks found in this session.", nil
 	}

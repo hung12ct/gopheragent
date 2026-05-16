@@ -144,11 +144,12 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: "Human APPROVED tool execution."})
 	}
 
-	cacheKey := toolCacheKey(tCall.Name, tCall.ArgsJSON)
+	var cacheKey string
 	cacheOK := false
 	if al.Cache != nil {
 		if c, ok := tool.(tools.Cacheable); ok && c.Cacheable() {
 			cacheOK = true
+			cacheKey = toolCacheKey(tCall.Name, tCall.ArgsJSON)
 		}
 	}
 

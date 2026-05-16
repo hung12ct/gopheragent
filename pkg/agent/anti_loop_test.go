@@ -84,8 +84,8 @@ func TestLoopDetector_MaxCapacity(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		ld.AddCall("tool1", `{}`, "r")
 	}
-	if len(ld.RecentCalls) > 30 {
-		t.Fatalf("expected max 30 entries, got %d", len(ld.RecentCalls))
+	if got := ld.Len(); got > 30 {
+		t.Fatalf("expected max 30 entries, got %d", got)
 	}
 }
 

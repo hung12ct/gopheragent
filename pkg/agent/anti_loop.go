@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"crypto/sha256"
 	"fmt"
+	"hash/fnv"
 	"sync"
 )
 
@@ -12,44 +12,70 @@ const LoopKillThreshold = 5
 // LoopWarnThreshold is the number of identical consecutive calls before a warning is injected.
 const LoopWarnThreshold = 3
 
-// CallEntry records a single tool invocation for loop detection.
+// maxRecentCalls bounds the ring buffer holding the most recent tool calls
+// inspected for loop detection. 30 is empirically enough to catch every
+// pattern the detector cares about while keeping the struct cache-friendly.
+const maxRecentCalls = 30
+
+// CallEntry records a single tool invocation for loop detection. Hashes are
+// FNV-64 sums of args/result — equality is the only operation performed on
+// them, so cryptographic strength buys nothing.
 type CallEntry struct {
 	ToolName   string
-	ArgsHash   string
-	ResultHash string
+	ArgsHash   uint64
+	ResultHash uint64
 }
 
-func hashStr(s string) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
+func hashStr(s string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum64()
 }
 
 // LoopDetector acts as an Agent Supervisor watching for infinite spirals.
-// Safe for concurrent use.
+// Safe for concurrent use. The ring buffer is fixed-size so AddCall never
+// allocates; eviction is implicit (newest write overwrites oldest entry).
 type LoopDetector struct {
-	mu          sync.Mutex
-	RecentCalls []CallEntry
+	mu    sync.Mutex
+	ring  [maxRecentCalls]CallEntry
+	head  int // index of the next write
+	count int // number of valid entries (capped at maxRecentCalls)
 }
 
 // NewLoopDetector creates a fresh loop detector. Create one per agent run.
 func NewLoopDetector() *LoopDetector {
-	return &LoopDetector{
-		RecentCalls: make([]CallEntry, 0, 30),
-	}
+	return &LoopDetector{}
 }
 
 // AddCall records a tool invocation with hashed args and result for pattern detection.
 func (ld *LoopDetector) AddCall(toolName, argsJSON, result string) {
-	ld.mu.Lock()
-	defer ld.mu.Unlock()
-
-	ld.RecentCalls = append(ld.RecentCalls, CallEntry{
+	entry := CallEntry{
 		ToolName:   toolName,
 		ArgsHash:   hashStr(argsJSON),
 		ResultHash: hashStr(result),
-	})
-	if len(ld.RecentCalls) > 30 {
-		ld.RecentCalls = ld.RecentCalls[1:]
 	}
+	ld.mu.Lock()
+	ld.ring[ld.head] = entry
+	ld.head = (ld.head + 1) % maxRecentCalls
+	if ld.count < maxRecentCalls {
+		ld.count++
+	}
+	ld.mu.Unlock()
+}
+
+// Len returns the number of entries currently held by the ring buffer.
+// Useful for tests and observability; caps at maxRecentCalls.
+func (ld *LoopDetector) Len() int {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	return ld.count
+}
+
+// at returns the entry k positions before the most recent write.
+// Caller must hold ld.mu.
+func (ld *LoopDetector) at(k int) CallEntry {
+	idx := (ld.head - 1 - k + maxRecentCalls) % maxRecentCalls
+	return ld.ring[idx]
 }
 
 // Detect returns a warning string to inject to the LLM, or an error if it should kill the run.
@@ -57,17 +83,17 @@ func (ld *LoopDetector) Detect() (warning string, killErr error) {
 	ld.mu.Lock()
 	defer ld.mu.Unlock()
 
-	n := len(ld.RecentCalls)
+	n := ld.count
 	if n < LoopWarnThreshold {
 		return "", nil
 	}
 
-	lastCall := ld.RecentCalls[n-1]
+	lastCall := ld.at(0)
 	identicalCount := 0
 	sameResultCount := 0
 
-	for i := n - 1; i >= 0; i-- {
-		prev := ld.RecentCalls[i]
+	for k := range n {
+		prev := ld.at(k)
 		if prev.ToolName != lastCall.ToolName {
 			break
 		}
