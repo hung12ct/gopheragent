@@ -17,6 +17,23 @@ func usageEvent(t *testing.T, pt, ct, tt int) StreamEvent {
 	return StreamEvent{Type: "usage", Content: string(payload)}
 }
 
+func TestBudgetTracker_Snapshot_IsDetachedCopy(t *testing.T) {
+	bt := NewBudgetTracker(0)
+	bt.Handler()(context.Background(), "s1", usageEvent(t, 100, 50, 150))
+
+	snap := bt.Snapshot()
+	snap["s1"] = TokenUsage{TotalTokens: 9999}
+	snap["new"] = TokenUsage{TotalTokens: 42}
+
+	live := bt.Usage("s1")
+	if live.TotalTokens != 150 {
+		t.Fatalf("tracker state leaked through snapshot: got %+v", live)
+	}
+	if bt.Usage("new").TotalTokens != 0 {
+		t.Fatalf("snapshot write leaked into tracker")
+	}
+}
+
 func TestBudgetTracker_HandlerAccumulates(t *testing.T) {
 	bt := NewBudgetTracker(0) // track-only, no enforcement
 	h := bt.Handler()

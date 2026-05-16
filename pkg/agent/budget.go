@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -43,6 +44,17 @@ func NewBudgetTracker(budget int) *BudgetTracker {
 		Budget: budget,
 		usage:  make(map[string]TokenUsage),
 	}
+}
+
+// Snapshot returns a copy of the per-session token usage recorded by the
+// tracker. The returned map is safe for the caller to read and mutate; it
+// reflects the state at the moment of the call.
+func (bt *BudgetTracker) Snapshot() map[string]TokenUsage {
+	bt.mu.RLock()
+	defer bt.mu.RUnlock()
+	out := make(map[string]TokenUsage, len(bt.usage))
+	maps.Copy(out, bt.usage)
+	return out
 }
 
 // Handler returns an EventHandler that accumulates token usage for each

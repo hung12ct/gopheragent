@@ -1,31 +1,30 @@
-package agent
+// Package agentmetrics exposes a Prometheus / OpenMetrics HTTP handler for a
+// gopheragent BudgetTracker. It lives outside pkg/agent so applications that
+// embed the agent loop in a CLI or batch tool do not transitively import
+// net/http.
+//
+// Usage:
+//
+//	bt := agent.NewBudgetTracker(100_000)
+//	loop.OnEvent(bt.Handler())
+//	http.Handle("/metrics", agentmetrics.Handler(bt))
+//
+// The output is valid OpenMetrics 1.0 (and therefore Prometheus text format),
+// so any Prometheus-compatible scraper can ingest it directly.
+package agentmetrics
 
 import (
 	"bytes"
 	"fmt"
-	"maps"
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/hung12ct/gopheragent/pkg/agent"
 )
 
-// Snapshot returns a copy of the per-session token usage recorded by the
-// tracker. The returned map is safe for the caller to read and mutate; it
-// reflects the state at the moment of the call.
-func (bt *BudgetTracker) Snapshot() map[string]TokenUsage {
-	bt.mu.RLock()
-	defer bt.mu.RUnlock()
-	out := make(map[string]TokenUsage, len(bt.usage))
-	maps.Copy(out, bt.usage)
-	return out
-}
-
-// MetricsHandler returns an http.Handler that exposes the tracker's per-session
-// token usage in OpenMetrics text format. The output is also valid Prometheus
-// text format, so any Prometheus-compatible scraper (including Grafana Agent,
-// Grafana Cloud, VictoriaMetrics, etc.) can ingest it directly:
-//
-//	http.Handle("/metrics", bt.MetricsHandler())
+// Handler returns an http.Handler that renders the tracker's per-session token
+// usage in OpenMetrics text format.
 //
 // Metrics emitted:
 //
@@ -36,18 +35,19 @@ func (bt *BudgetTracker) Snapshot() map[string]TokenUsage {
 //   - gopheragent_session_budget_remaining_tokens{session_key} (gauge, budget - total; omitted when Budget == 0)
 //
 // Cardinality note: every distinct session_key produces its own series. If the
-// tracker is used with short-lived per-request keys, call Reset when a session
-// ends so the exporter does not carry a growing label set.
-func (bt *BudgetTracker) MetricsHandler() http.Handler {
+// tracker is used with short-lived per-request keys, the caller should reset
+// or evict entries when a session ends so the exporter does not carry a
+// growing label set.
+func Handler(bt *agent.BudgetTracker) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/openmetrics-text; version=1.0.0; charset=utf-8")
-		_, _ = w.Write(bt.renderOpenMetrics())
+		_, _ = w.Write(render(bt))
 	})
 }
 
-// renderOpenMetrics produces the scrape body. Kept separate from the handler
-// so tests can assert on the exact text without spinning up an HTTP server.
-func (bt *BudgetTracker) renderOpenMetrics() []byte {
+// render produces the scrape body. Kept separate from Handler so tests can
+// assert on the exact text without spinning up an HTTP server.
+func render(bt *agent.BudgetTracker) []byte {
 	snap := bt.Snapshot()
 	budget := bt.Budget
 
@@ -65,28 +65,28 @@ func (bt *BudgetTracker) renderOpenMetrics() []byte {
 		"counter",
 		"Cumulative prompt tokens consumed by the session.",
 		keys, snap,
-		func(u TokenUsage) int { return u.PromptTokens },
+		func(u agent.TokenUsage) int { return u.PromptTokens },
 	)
 	writeFamily(&buf,
 		"gopheragent_session_completion_tokens_total",
 		"counter",
 		"Cumulative completion tokens produced for the session.",
 		keys, snap,
-		func(u TokenUsage) int { return u.CompletionTokens },
+		func(u agent.TokenUsage) int { return u.CompletionTokens },
 	)
 	writeFamily(&buf,
 		"gopheragent_session_tokens_total",
 		"counter",
 		"Cumulative total tokens (prompt + completion) accounted against the session budget.",
 		keys, snap,
-		func(u TokenUsage) int { return u.TotalTokens },
+		func(u agent.TokenUsage) int { return u.TotalTokens },
 	)
 	writeFamily(&buf,
 		"gopheragent_session_budget_tokens",
 		"gauge",
 		"Configured token budget for the session (0 means enforcement is disabled).",
 		keys, snap,
-		func(_ TokenUsage) int { return budget },
+		func(_ agent.TokenUsage) int { return budget },
 	)
 
 	if budget > 0 {
@@ -95,7 +95,7 @@ func (bt *BudgetTracker) renderOpenMetrics() []byte {
 			"gauge",
 			"Tokens remaining before the budget is exhausted (negative when over).",
 			keys, snap,
-			func(u TokenUsage) int { return budget - u.TotalTokens },
+			func(u agent.TokenUsage) int { return budget - u.TotalTokens },
 		)
 	}
 
@@ -106,8 +106,8 @@ func (bt *BudgetTracker) renderOpenMetrics() []byte {
 func writeFamily(
 	buf *bytes.Buffer,
 	name, metricType, help string,
-	keys []string, snap map[string]TokenUsage,
-	value func(TokenUsage) int,
+	keys []string, snap map[string]agent.TokenUsage,
+	value func(agent.TokenUsage) int,
 ) {
 	fmt.Fprintf(buf, "# HELP %s %s\n", name, help)
 	fmt.Fprintf(buf, "# TYPE %s %s\n", name, metricType)
