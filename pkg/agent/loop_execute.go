@@ -27,7 +27,7 @@ func newToolCallID() string {
 // recorded by any goroutine (e.g. anti-loop detector) breaks out of
 // the wave loop.
 func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, scheduled []PendingToolCall) *waveState {
-	waves, schedErr := ScheduleToolCalls(scheduled)
+	waves, schedErr := scheduleToolCalls(scheduled)
 	if schedErr != nil {
 		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
 			Type:    "thought",
