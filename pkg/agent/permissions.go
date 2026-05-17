@@ -66,25 +66,57 @@ type permissionRule struct {
 	ArgGlob  string // "" means "match any args"
 }
 
-// NewPermissionRuleSet returns an empty policy. Chain Allow / Deny to
-// populate it.
-func NewPermissionRuleSet() *PermissionRuleSet {
-	return &PermissionRuleSet{}
+// NewPermissionRuleSet parses allow + deny pattern slices and returns a
+// ready-to-use ruleset. Returns an error when any pattern is malformed —
+// adopters loading rules from YAML / env / API input get a typed failure
+// instead of a panic.
+//
+// Patterns use the shape "ToolName" or "ToolName(glob)" where glob accepts
+// * (any sequence) and ? (any single character). Empty input slices produce
+// an empty ruleset that Check always evaluates to PermissionPrompt.
+//
+//	rs, err := agent.NewPermissionRuleSet(
+//	    []string{"read_file:/etc/*"},
+//	    []string{"write_file:*"},
+//	)
+//	if err != nil { return err }
+func NewPermissionRuleSet(allow, deny []string) (*PermissionRuleSet, error) {
+	rs := &PermissionRuleSet{}
+	parsed, err := parseRules(allow)
+	if err != nil {
+		return nil, fmt.Errorf("agent: NewPermissionRuleSet: allow: %w", err)
+	}
+	rs.allow = parsed
+	parsed, err = parseRules(deny)
+	if err != nil {
+		return nil, fmt.Errorf("agent: NewPermissionRuleSet: deny: %w", err)
+	}
+	rs.deny = parsed
+	return rs, nil
 }
 
-// Allow registers one or more patterns that bypass HITL.
-// Invalid patterns panic — rules are typically defined at startup and a
-// malformed rule is a programmer error, not runtime input.
-func (r *PermissionRuleSet) Allow(patterns ...string) *PermissionRuleSet {
-	r.allow = append(r.allow, mustParseRules(patterns)...)
-	return r
+// AddAllow appends one or more patterns to the allow list. Returns an error
+// when any pattern is malformed. Concurrency note: safe to call before the
+// ruleset is shared with an AgentLoop; callers mutating live policies should
+// guard their own writes.
+func (r *PermissionRuleSet) AddAllow(patterns ...string) error {
+	parsed, err := parseRules(patterns)
+	if err != nil {
+		return fmt.Errorf("agent: AddAllow: %w", err)
+	}
+	r.allow = append(r.allow, parsed...)
+	return nil
 }
 
-// Deny registers one or more patterns that reject the call before it
-// runs. Deny takes precedence over Allow.
-func (r *PermissionRuleSet) Deny(patterns ...string) *PermissionRuleSet {
-	r.deny = append(r.deny, mustParseRules(patterns)...)
-	return r
+// AddDeny appends one or more patterns to the deny list. Deny takes
+// precedence over Allow at Check time.
+func (r *PermissionRuleSet) AddDeny(patterns ...string) error {
+	parsed, err := parseRules(patterns)
+	if err != nil {
+		return fmt.Errorf("agent: AddDeny: %w", err)
+	}
+	r.deny = append(r.deny, parsed...)
+	return nil
 }
 
 // Check returns PermissionDeny / PermissionAllow / PermissionPrompt for
@@ -137,16 +169,16 @@ func parsePermissionRule(s string) (permissionRule, error) {
 	return permissionRule{ToolName: name, ArgGlob: s[open+1 : len(s)-1]}, nil
 }
 
-func mustParseRules(patterns []string) []permissionRule {
+func parseRules(patterns []string) ([]permissionRule, error) {
 	out := make([]permissionRule, 0, len(patterns))
 	for _, p := range patterns {
 		rule, err := parsePermissionRule(p)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		out = append(out, rule)
 	}
-	return out
+	return out, nil
 }
 
 // globMatch reports whether s matches pattern. Supports * (any
