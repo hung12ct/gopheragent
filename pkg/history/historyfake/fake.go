@@ -32,6 +32,7 @@ type SessionManager struct {
 	mu       sync.RWMutex
 	messages map[string][]history.Message
 	asyncMap map[string]map[string]history.AsyncTask
+	titles   map[string]string
 
 	// SaveErr, if set, is returned from every SaveHistory / SaveAsyncTasks call.
 	SaveErr error
@@ -58,6 +59,7 @@ func NewSessionManager() *SessionManager {
 	return &SessionManager{
 		messages: make(map[string][]history.Message),
 		asyncMap: make(map[string]map[string]history.AsyncTask),
+		titles:   make(map[string]string),
 	}
 }
 
@@ -181,12 +183,25 @@ func (sm *SessionManager) Query(_ context.Context, prefix string, opts history.S
 		if prefix != "" && !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		out = append(out, history.SessionMeta{Key: key, MessageCount: len(msgs)})
+		out = append(out, history.SessionMeta{Key: key, MessageCount: len(msgs), Title: sm.titles[key]})
 	}
 	if opts.Limit > 0 && opts.Limit < len(out) {
 		out = out[:opts.Limit]
 	}
 	return out, nil
+}
+
+// SetTitle implements agent.SessionTitler. Stores the title in-memory so
+// the fake's Query results carry it. Empty title clears the entry.
+func (sm *SessionManager) SetTitle(_ context.Context, sessionKey string, title string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if title == "" {
+		delete(sm.titles, sessionKey)
+	} else {
+		sm.titles[sessionKey] = title
+	}
+	return nil
 }
 
 // SoftDelete implements agent.SessionManager. The fake forwards to Delete —

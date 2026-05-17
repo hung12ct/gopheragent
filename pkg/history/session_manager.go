@@ -20,6 +20,7 @@ type FileSessionManager struct {
 	lastSumLen   map[string]int
 	updatedAt    map[string]time.Time
 	deletedAt    map[string]time.Time
+	titles       map[string]string
 	storage      string
 	mu           sync.RWMutex
 	SystemPrompt    string
@@ -36,13 +37,14 @@ func (sm *FileSessionManager) WithPromptVersion(version string) *FileSessionMana
 }
 
 // fileSessionWrapper is the persisted JSON shape on disk. Behavior /
-// UpdatedAt / DeletedAt sit alongside the Session blob so they survive
-// process restarts without needing a Session struct change.
+// UpdatedAt / DeletedAt / Title sit alongside the Session blob so they
+// survive process restarts without needing a Session struct change.
 type fileSessionWrapper struct {
 	Session   Session    `json:"session"`
 	Behavior  string     `json:"behavior,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at,omitempty"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	Title     string     `json:"title,omitempty"`
 }
 
 // NewFileSessionManager creates a file-backed session manager.
@@ -64,6 +66,7 @@ func NewFileSessionManager(storagePath string, systemPrompt ...string) (*FileSes
 		lastSumLen: make(map[string]int),
 		updatedAt:  make(map[string]time.Time),
 		deletedAt:  make(map[string]time.Time),
+		titles:     make(map[string]string),
 		storage:    storagePath,
 		SystemPrompt: sp,
 	}, nil
@@ -139,6 +142,9 @@ func (sm *FileSessionManager) History(_ context.Context, sessionKey string) ([]M
 	}
 	if stored.DeletedAt != nil && !stored.DeletedAt.IsZero() {
 		sm.deletedAt[sessionKey] = *stored.DeletedAt
+	}
+	if stored.Title != "" {
+		sm.titles[sessionKey] = stored.Title
 	}
 	sm.mu.Unlock()
 
@@ -281,6 +287,38 @@ func (sm *FileSessionManager) purgeKeyLocked(sessionKey string) {
 	delete(sm.lastSumLen, sessionKey)
 	delete(sm.updatedAt, sessionKey)
 	delete(sm.deletedAt, sessionKey)
+	delete(sm.titles, sessionKey)
+}
+
+// SetTitle implements agent.SessionTitler. The title is persisted to the
+// session's JSON sidecar so it survives process restarts. Empty title
+// clears any previously-recorded label. Setting a title before
+// SaveHistory creates only the in-memory entry; once a session is
+// persisted the title is folded in on every persist via the wrapper.
+func (sm *FileSessionManager) SetTitle(ctx context.Context, sessionKey string, title string) error {
+	// Lazy-load the session so a setter call against an on-disk session
+	// (no live cache entry yet, e.g. after process restart) still writes
+	// the updated title back to the sidecar instead of silently no-op'ing.
+	// History() degrades to "empty session" on disk errors and logs them
+	// internally — dropping the error here matches every other call site
+	// in this file that triggers a lazy load (SoftDelete, Restore, Fork).
+	_, _ = sm.History(ctx, sessionKey)
+
+	sm.mu.Lock()
+	if title == "" {
+		delete(sm.titles, sessionKey)
+	} else {
+		sm.titles[sessionKey] = title
+	}
+	_, hasSession := sm.sessions[sessionKey]
+	sm.mu.Unlock()
+	if !hasSession {
+		// No session row exists yet — title is held in memory and will
+		// be folded into the wrapper when SaveHistory fires for the
+		// first time. Skip the persist to avoid creating an empty sidecar.
+		return nil
+	}
+	return sm.persist(ctx, sessionKey)
 }
 
 // Query lists sessions stored on disk under storagePath. Result includes
@@ -313,6 +351,7 @@ func (sm *FileSessionManager) Query(_ context.Context, prefix string, opts Sessi
 			Key:          key,
 			UpdatedAt:    sm.updatedAt[key],
 			MessageCount: len(sess.Messages),
+			Title:        sm.titles[key],
 			DeletedAt:    deleted,
 		})
 	}
@@ -379,6 +418,7 @@ func (sm *FileSessionManager) readMetaFromDisk(sessionKey string) (SessionMeta, 
 		Key:          sessionKey,
 		UpdatedAt:    stored.UpdatedAt,
 		MessageCount: len(stored.Session.Messages),
+		Title:        stored.Title,
 	}
 	if stored.DeletedAt != nil && !stored.DeletedAt.IsZero() {
 		dt := *stored.DeletedAt
@@ -483,11 +523,12 @@ func (sm *FileSessionManager) persist(_ context.Context, sessionKey string) erro
 	sm.mu.RLock()
 	updatedAt := sm.updatedAt[sessionKey]
 	deletedAt := sm.deletedAt[sessionKey]
+	title := sm.titles[sessionKey]
 	sm.mu.RUnlock()
 	if updatedAt.IsZero() {
 		updatedAt = time.Now()
 	}
-	stored := fileSessionWrapper{Session: snapshot, Behavior: behavior, UpdatedAt: updatedAt}
+	stored := fileSessionWrapper{Session: snapshot, Behavior: behavior, UpdatedAt: updatedAt, Title: title}
 	if !deletedAt.IsZero() {
 		dt := deletedAt
 		stored.DeletedAt = &dt

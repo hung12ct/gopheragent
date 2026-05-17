@@ -66,3 +66,45 @@ func TestFileSessionManager_Fork_RejectsMissingSource(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestFileSessionManager_SetTitle_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	sm, err := NewFileSessionManager(dir, "sys")
+	if err != nil {
+		t.Fatalf("NewFileSessionManager: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := sm.SaveHistory(ctx, "s1", []Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "hi"},
+	}); err != nil {
+		t.Fatalf("SaveHistory: %v", err)
+	}
+	if err := sm.SetTitle(ctx, "s1", "Customer revenue audit"); err != nil {
+		t.Fatalf("SetTitle: %v", err)
+	}
+
+	// Re-open from disk to prove the title persists in the sidecar.
+	sm2, err := NewFileSessionManager(dir, "sys")
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	got, _ := sm2.Query(ctx, "", SessionQueryOpts{})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(got))
+	}
+	if got[0].Title != "Customer revenue audit" {
+		t.Fatalf("title not persisted, got %q", got[0].Title)
+	}
+
+	// Empty title clears the sidecar entry.
+	if err := sm2.SetTitle(ctx, "s1", ""); err != nil {
+		t.Fatalf("SetTitle clear: %v", err)
+	}
+	sm3, _ := NewFileSessionManager(dir, "sys")
+	got, _ = sm3.Query(ctx, "", SessionQueryOpts{})
+	if len(got) != 1 || got[0].Title != "" {
+		t.Fatalf("empty SetTitle did not clear, got %+v", got)
+	}
+}

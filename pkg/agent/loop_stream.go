@@ -93,6 +93,23 @@ type SessionQueryable interface {
 	Query(ctx context.Context, prefix string, opts history.SessionQueryOpts) ([]history.SessionMeta, error)
 }
 
+// SessionTitler is the optional capability for backends that can attach a
+// human-readable title to a session — typically the auto-generated label
+// from builtin.GenerateTitle rendered in a sidebar / picker UI. Backends
+// that have no place to store metadata (ephemeral in-process caches)
+// simply skip this capability; the SessionMeta.Title field stays empty.
+//
+// Adopters call SetTitle once per session, usually from the handler that
+// receives EventTypeSessionCreated. The title is then surfaced on every
+// subsequent Query result for that session.
+type SessionTitler interface {
+	// SetTitle records title against sessionKey. Calling with an empty
+	// string clears any previously-recorded title. Setting a title on a
+	// session the backend has not yet seen is permitted (the title is
+	// retained and joined to the session record once it is created).
+	SetTitle(ctx context.Context, sessionKey string, title string) error
+}
+
 // SoftDeletable is the optional capability for backends that support
 // reversible deletion via a tombstone. Backends that only do hard deletes
 // (e.g. ephemeral in-process caches) do not need to implement this.

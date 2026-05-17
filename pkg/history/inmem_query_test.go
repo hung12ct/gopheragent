@@ -85,6 +85,57 @@ func TestInMem_SoftDelete_HiddenByDefaultRevealedByFlag(t *testing.T) {
 	}
 }
 
+func TestInMem_SetTitle_PopulatedInQuery(t *testing.T) {
+	sm := NewInMemSessionManager("sys")
+	seedQuerySessions(t, sm, "s1", "s2")
+
+	if err := sm.SetTitle(context.Background(), "s1", "Top customers by revenue"); err != nil {
+		t.Fatalf("SetTitle: %v", err)
+	}
+	got, _ := sm.Query(context.Background(), "", SessionQueryOpts{})
+	var titled, untitled *SessionMeta
+	for i := range got {
+		switch got[i].Key {
+		case "s1":
+			titled = &got[i]
+		case "s2":
+			untitled = &got[i]
+		}
+	}
+	if titled == nil || titled.Title != "Top customers by revenue" {
+		t.Fatalf("titled session Query result missing title, got %+v", titled)
+	}
+	if untitled == nil || untitled.Title != "" {
+		t.Fatalf("untitled session must have empty Title, got %+v", untitled)
+	}
+}
+
+func TestInMem_SetTitle_EmptyClears(t *testing.T) {
+	sm := NewInMemSessionManager("sys")
+	seedQuerySessions(t, sm, "s1")
+	_ = sm.SetTitle(context.Background(), "s1", "Some title")
+	_ = sm.SetTitle(context.Background(), "s1", "")
+	got, _ := sm.Query(context.Background(), "", SessionQueryOpts{})
+	if len(got) != 1 || got[0].Title != "" {
+		t.Fatalf("empty SetTitle should clear, got %+v", got)
+	}
+}
+
+func TestInMem_SetTitle_BeforeFirstSave(t *testing.T) {
+	// Setting a title for a session that hasn't been saved yet is permitted —
+	// the typical event-handler path is to call SetTitle concurrently with
+	// the first SaveHistory and race outcomes shouldn't matter.
+	sm := NewInMemSessionManager("sys")
+	if err := sm.SetTitle(context.Background(), "fresh", "Early title"); err != nil {
+		t.Fatalf("SetTitle on unseen key: %v", err)
+	}
+	_ = sm.SaveHistory(context.Background(), "fresh", []Message{{Role: "system", Content: "sys"}})
+	got, _ := sm.Query(context.Background(), "", SessionQueryOpts{})
+	if len(got) != 1 || got[0].Title != "Early title" {
+		t.Fatalf("title set before save not surfaced, got %+v", got)
+	}
+}
+
 func TestInMem_Restore_ClearsTombstone(t *testing.T) {
 	sm := NewInMemSessionManager("sys")
 	seedQuerySessions(t, sm, "s1")
