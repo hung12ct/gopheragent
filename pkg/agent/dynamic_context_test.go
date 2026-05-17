@@ -167,7 +167,7 @@ func TestDynamicContext_NotPersisted(t *testing.T) {
 	// LLM must have received the augmentation somewhere in the message stream.
 	// The provider captures only the system message in capturedSP; verify
 	// instead via the session history NOT containing the sentinel.
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	for _, m := range stored {
 		if strings.Contains(m.Content, dynamicContextSentinel) {
 			t.Fatalf("dynamic context leaked into session history: %+v", m)

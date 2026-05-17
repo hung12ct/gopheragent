@@ -80,14 +80,14 @@ func TestInMemSessionManager_Fork_AutoSnapsOnDanglingAssistant(t *testing.T) {
 	sm := NewInMemSessionManager("sys")
 	ctx := t.Context()
 
-	msgs := sm.GetHistory(ctx, "parent")
+	msgs, _ := sm.History(ctx, "parent")
 	msgs = append(msgs,
 		Message{Role: "user", Content: "search something"},
 		Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "search"}}},
 		Message{Role: "tool", ToolCallID: "c1", Content: "results"},
 		Message{Role: "assistant", Content: "final"},
 	)
-	sm.SetHistory(ctx, "parent", msgs)
+	sm.SaveHistory(ctx, "parent", msgs)
 
 	// Ask to fork at index 3 (right after the assistant-with-tool-calls).
 	// Snap should back off to 2 so the fork doesn't carry a dangling tool_call.
@@ -95,7 +95,7 @@ func TestInMemSessionManager_Fork_AutoSnapsOnDanglingAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
-	forked := sm.GetHistory(ctx, newKey)
+	forked, _ := sm.History(ctx, newKey)
 	if len(forked) != 2 {
 		t.Fatalf("expected 2 messages after snap, got %d: %+v", len(forked), forked)
 	}

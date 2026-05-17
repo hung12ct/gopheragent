@@ -147,7 +147,7 @@ func TestPlanMode_DeniedPlanStaysInModeAndBlocksTools(t *testing.T) {
 		t.Fatal("PlanMode should remain true after denial")
 	}
 
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	var toolMsg history.Message
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID == "tp" {
@@ -191,7 +191,7 @@ func TestPlanMode_BlocksOtherToolsAndAllowsExitPlanMode(t *testing.T) {
 	}
 
 	// First turn should have recorded a blocked tool result for t1.
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	var blocked history.Message
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID == "t1" {
@@ -300,7 +300,7 @@ func TestPlanMode_MultiSessionLoopIsolatesApproval(t *testing.T) {
 		}
 	}
 	// Bob's blocked tool call must have produced an error tool result.
-	bobHist := sm.GetHistory(context.Background(), "bob")
+	bobHist, _ := sm.History(context.Background(), "bob")
 	var blocked history.Message
 	for _, m := range bobHist {
 		if m.Role == "tool" && m.ToolCallID == "tb" {

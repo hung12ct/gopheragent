@@ -181,7 +181,7 @@ func TestAgentLoop_SubstitutionFailureSkipsExecution(t *testing.T) {
 	}
 
 	// History must contain a tool-error result for t1.
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	var toolMsg history.Message
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID == "t1" {

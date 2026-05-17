@@ -38,17 +38,26 @@ type EventHandler func(ctx context.Context, sessionKey string, ev StreamEvent)
 // not need. This keeps the core interface within the project's "small
 // interface" budget (CLAUDE.md: 3–6 methods).
 type SessionManager interface {
-	GetHistory(ctx context.Context, sessionKey string) []history.Message
-	SetHistory(ctx context.Context, sessionKey string, messages []history.Message)
-	GetAsyncTasks(ctx context.Context, sessionKey string) map[string]history.AsyncTask
-	SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]history.AsyncTask)
-	Save(ctx context.Context, sessionKey string) error
-	// DeleteSession removes all in-memory and persisted state for sessionKey.
-	// Used to clean up ephemeral sub-agent and async-worker sessions after they
+	// History returns the persisted message log for sessionKey. Backends that
+	// cannot read return the error; an unseen session returns (nil, nil).
+	History(ctx context.Context, sessionKey string) ([]history.Message, error)
+	// SaveHistory atomically replaces the persisted log with msgs. Combines
+	// what used to be SetHistory + Save into one call so backends with real
+	// transactions (MySQL) can commit in a single round trip.
+	SaveHistory(ctx context.Context, sessionKey string, msgs []history.Message) error
+	// AsyncTasks returns the snapshot of background tasks parked on sessionKey.
+	// Backends that cannot read return the error; an unseen session returns
+	// (empty map, nil).
+	AsyncTasks(ctx context.Context, sessionKey string) (map[string]history.AsyncTask, error)
+	// SaveAsyncTasks atomically replaces the task snapshot. Same atomicity
+	// rationale as SaveHistory.
+	SaveAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]history.AsyncTask) error
+	// Delete removes all in-memory and persisted state for sessionKey. Used to
+	// clean up ephemeral sub-agent and async-worker sessions after they
 	// complete so they do not accumulate in storage. Deleting a non-existent
 	// session is a no-op (returns nil). For end-user "delete this conversation"
 	// flows that need undelete, prefer the SoftDeletable capability.
-	DeleteSession(ctx context.Context, sessionKey string) error
+	Delete(ctx context.Context, sessionKey string) error
 }
 
 // SessionForker is the optional capability for backends that support
@@ -653,8 +662,7 @@ func estimateTokens(msgs []history.Message) int {
 // backends but a cancelled request ctx will not abort persistence.
 func (al *AgentLoop) saveSession(ctx context.Context, sessionKey string, msgs []history.Message) {
 	saveCtx := context.WithoutCancel(ctx)
-	al.Sessions.SetHistory(saveCtx, sessionKey, msgs)
-	if err := al.Sessions.Save(saveCtx, sessionKey); err != nil {
+	if err := al.Sessions.SaveHistory(saveCtx, sessionKey, msgs); err != nil {
 		log.Printf("[gopheragent] session save error for %q: %v", sessionKey, err)
 	}
 }
@@ -681,7 +689,11 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 		}
 	}
 
-	existing := al.Sessions.GetHistory(ctx, sessionKey)
+	existing, err := al.Sessions.History(ctx, sessionKey)
+	if err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: load history: %w", err)))
+		return
+	}
 	if isFreshSessionHistory(existing) {
 		al.emit(ctx, sessionKey, streamChan, StreamEvent{
 			Type:    EventTypeSessionCreated,
@@ -690,7 +702,10 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	}
 	msgs := append(existing, userMsg)
 	msgs = patchDanglingToolCalls(msgs)
-	al.Sessions.SetHistory(ctx, sessionKey, msgs)
+	if err := al.Sessions.SaveHistory(ctx, sessionKey, msgs); err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: save history: %w", err)))
+		return
+	}
 
 	al.iterateMessages(ctx, sessionKey, streamChan, msgs)
 }

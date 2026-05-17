@@ -64,7 +64,7 @@ func TestSoftLanding_NotPersistedToHistory(t *testing.T) {
 
 	_, _ = loop.RunIteration(context.Background(), "s1", "go")
 
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	for _, m := range hist {
 		if strings.Contains(m.Content, softLandingSentinel) {
 			t.Fatalf("soft-landing sentinel persisted to saved history: %+v", m)

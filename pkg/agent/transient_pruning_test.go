@@ -30,13 +30,13 @@ func TestPruning_DoesNotPersistTrimmedMessages(t *testing.T) {
 		{Role: "user", Content: "first"},
 		{Role: "assistant", Content: "ok"},
 	}
-	sm.SetHistory(context.Background(), "s1", seed)
+	sm.SaveHistory(context.Background(), "s1", seed)
 
 	if _, err := loop.RunIteration(context.Background(), "s1", "next turn"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	var foundFull bool
 	for _, m := range stored {
 		if m.Role == "tool" && m.ToolCallID == "c1" && len(m.Content) >= len(bigContent) {

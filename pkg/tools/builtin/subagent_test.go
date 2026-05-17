@@ -48,11 +48,11 @@ func newSpySessionManager(systemPrompt string) *spySessionManager {
 	}
 }
 
-func (s *spySessionManager) DeleteSession(ctx context.Context, sessionKey string) error {
+func (s *spySessionManager) Delete(ctx context.Context, sessionKey string) error {
 	s.mu.Lock()
 	s.deletes = append(s.deletes, sessionKey)
 	s.mu.Unlock()
-	return s.InMemSessionManager.DeleteSession(ctx, sessionKey)
+	return s.InMemSessionManager.Delete(ctx, sessionKey)
 }
 
 func (s *spySessionManager) deletedKeys() []string {
@@ -66,7 +66,7 @@ func (s *spySessionManager) deletedKeys() []string {
 func TestCallSubAgentTool_IsolatedSession(t *testing.T) {
 	sm := newSpySessionManager("main-sys")
 
-	sm.SetHistory(context.Background(), "parent", []history.Message{
+	sm.SaveHistory(context.Background(), "parent", []history.Message{
 		{Role: "system", Content: "main-sys"},
 		{Role: "user", Content: "earlier question"},
 		{Role: "assistant", Content: "earlier answer"},

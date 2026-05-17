@@ -11,9 +11,9 @@ import (
 // append a user message, and store back.
 func seedSession(sm *InMemSessionManager, key string, userMsg string) {
 	ctx := context.Background()
-	msgs := sm.GetHistory(ctx, key) // gets [system] for new session
+	msgs, _ := sm.History(ctx, key) // gets [system] for new session
 	msgs = append(msgs, Message{Role: "user", Content: userMsg})
-	sm.SetHistory(ctx, key, msgs)
+	sm.SaveHistory(ctx, key, msgs)
 }
 
 func TestInMemSessionManager_BasicGetSet(t *testing.T) {
@@ -21,7 +21,7 @@ func TestInMemSessionManager_BasicGetSet(t *testing.T) {
 	ctx := context.Background()
 
 	seedSession(sm, "s1", "hello")
-	msgs := sm.GetHistory(ctx, "s1")
+	msgs, _ := sm.History(ctx, "s1")
 	if len(msgs) < 2 { // system + user
 		t.Fatalf("expected system+user, got %d messages", len(msgs))
 	}
@@ -41,7 +41,7 @@ func TestInMemSessionManager_TTL_Eviction(t *testing.T) {
 	seedSession(sm, "s1", "hi")
 
 	// Session should exist immediately
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	if len(msgs) < 2 {
 		t.Fatal("session should exist before TTL")
 	}
@@ -50,7 +50,7 @@ func TestInMemSessionManager_TTL_Eviction(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Session should have been evicted — returns fresh system-only message
-	msgs = sm.GetHistory(context.Background(), "s1")
+	msgs, _ = sm.History(context.Background(), "s1")
 	if len(msgs) != 1 || msgs[0].Role != "system" {
 		t.Fatalf("expected evicted session to return only system message, got %d msgs", len(msgs))
 	}
@@ -69,7 +69,7 @@ func TestInMemSessionManager_TTL_TouchOnRead_PreventsExpiry(t *testing.T) {
 	// Keep reading every 40ms — each read resets idle timer, preventing eviction
 	for i := 0; i < 4; i++ {
 		time.Sleep(40 * time.Millisecond)
-		msgs := sm.GetHistory(context.Background(), "s1")
+		msgs, _ := sm.History(context.Background(), "s1")
 		if len(msgs) < 2 {
 			t.Fatalf("session should NOT be evicted while actively read (iteration %d)", i)
 		}
@@ -86,7 +86,7 @@ func TestInMemSessionManager_TTL_Zero_NeverExpires(t *testing.T) {
 	seedSession(sm, "s1", "hi")
 	time.Sleep(50 * time.Millisecond)
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	if len(msgs) < 2 {
 		t.Fatal("session with TTL=0 should never expire")
 	}
@@ -97,14 +97,14 @@ func TestInMemSessionManager_Fork_CopiesPrefixAndIsolates(t *testing.T) {
 	ctx := context.Background()
 
 	// Build a session: [system, user "a", assistant "A", user "b", assistant "B"]
-	msgs := sm.GetHistory(ctx, "parent")
+	msgs, _ := sm.History(ctx, "parent")
 	msgs = append(msgs,
 		Message{Role: "user", Content: "a"},
 		Message{Role: "assistant", Content: "A"},
 		Message{Role: "user", Content: "b"},
 		Message{Role: "assistant", Content: "B"},
 	)
-	sm.SetHistory(ctx, "parent", msgs)
+	sm.SaveHistory(ctx, "parent", msgs)
 
 	// Fork after the first user/assistant exchange: keep 3 messages (system, user "a", assistant "A").
 	newKey, err := sm.Fork(ctx, "parent", 3)
@@ -115,7 +115,7 @@ func TestInMemSessionManager_Fork_CopiesPrefixAndIsolates(t *testing.T) {
 		t.Fatalf("unexpected fork key format: %q", newKey)
 	}
 
-	forked := sm.GetHistory(ctx, newKey)
+	forked, _ := sm.History(ctx, newKey)
 	if len(forked) != 3 {
 		t.Fatalf("forked session: expected 3 messages, got %d", len(forked))
 	}
@@ -125,9 +125,9 @@ func TestInMemSessionManager_Fork_CopiesPrefixAndIsolates(t *testing.T) {
 
 	// Mutating the forked branch must not leak into the parent.
 	forked = append(forked, Message{Role: "user", Content: "different"})
-	sm.SetHistory(ctx, newKey, forked)
+	sm.SaveHistory(ctx, newKey, forked)
 
-	parent := sm.GetHistory(ctx, "parent")
+	parent, _ := sm.History(ctx, "parent")
 	if len(parent) != 5 {
 		t.Fatalf("parent session tampered: expected 5 messages, got %d", len(parent))
 	}
@@ -146,7 +146,7 @@ func TestInMemSessionManager_Fork_ClampsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fork with oversized atIndex: %v", err)
 	}
-	forked := sm.GetHistory(ctx, newKey)
+	forked, _ := sm.History(ctx, newKey)
 	if len(forked) != 2 {
 		t.Fatalf("expected full copy (2 msgs), got %d", len(forked))
 	}
@@ -156,7 +156,7 @@ func TestInMemSessionManager_Fork_ClampsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fork with atIndex=1: %v", err)
 	}
-	systemOnly := sm.GetHistory(ctx, systemKey)
+	systemOnly, _ := sm.History(ctx, systemKey)
 	if len(systemOnly) != 1 || systemOnly[0].Role != "system" {
 		t.Fatalf("expected system-only, got %+v", systemOnly)
 	}
@@ -186,7 +186,7 @@ func TestInMemSessionManager_Fork_CopiesBehaviorSummary(t *testing.T) {
 		t.Fatalf("Fork: %v", err)
 	}
 
-	forked := sm.GetHistory(ctx, newKey)
+	forked, _ := sm.History(ctx, newKey)
 	if !strings.Contains(forked[0].Content, "terse answers") {
 		t.Fatalf("behavior summary not carried into fork; system content=%q", forked[0].Content)
 	}
@@ -205,7 +205,7 @@ func TestInMemSessionManager_ConcurrentEvictionAndAccess(t *testing.T) {
 		defer close(done)
 		for i := 0; i < 100; i++ {
 			seedSession(sm, "s1", "msg")
-			sm.GetHistory(context.Background(), "s1")
+			_, _ = sm.History(context.Background(), "s1")
 			time.Sleep(time.Millisecond)
 		}
 	}()

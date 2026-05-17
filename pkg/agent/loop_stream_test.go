@@ -244,7 +244,7 @@ func TestSessionHistoryPersisted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	if len(msgs) < 3 { // system + user + assistant
 		t.Fatalf("expected at least 3 messages in history, got %d", len(msgs))
 	}
@@ -311,7 +311,7 @@ func TestRunIterationStream_HITLTimedOutEmitsTypedEvent(t *testing.T) {
 	}
 
 	// Final tool message should carry the timeout directive (not a denial).
-	msgs := loop.Sessions.GetHistory(context.Background(), "s1")
+	msgs, _ := loop.Sessions.History(context.Background(), "s1")
 	var sawTimeoutDirective bool
 	for _, m := range msgs {
 		if m.Role == "tool" && strings.Contains(m.Content, "approval prompt expired") {
@@ -404,7 +404,7 @@ func TestRunIteration_LLMError(t *testing.T) {
 		t.Fatalf("expected LLM error propagation, got: %v", err)
 	}
 	// History should be saved even on LLM error (user message preserved)
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	if len(msgs) < 2 { // system + user
 		t.Fatalf("expected history to be saved on LLM error, got %d messages", len(msgs))
 	}

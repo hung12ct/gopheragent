@@ -112,7 +112,7 @@ func TestAsyncTaskManager_CancelTaskStopsWorker(t *testing.T) {
 	// Wait for the worker goroutine to exit and persist status.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		tasks := sm.GetAsyncTasks(context.Background(), "parent")
+		tasks, _ := sm.AsyncTasks(context.Background(), "parent")
 		if task, ok := tasks[id]; ok && task.Status == "cancelled" {
 			return
 		}
@@ -168,7 +168,7 @@ func TestAsyncTaskManager_CleansUpWorkerSession(t *testing.T) {
 	// Wait for the worker to finish and clean up.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		tasks := sm.GetAsyncTasks(context.Background(), "parent")
+		tasks, _ := sm.AsyncTasks(context.Background(), "parent")
 		if task, ok := tasks[id]; ok && task.Status == "success" {
 			break
 		}
@@ -178,7 +178,7 @@ func TestAsyncTaskManager_CleansUpWorkerSession(t *testing.T) {
 	// GetHistory returns a fresh system-prompt-only slice when a session is
 	// unknown, so length==1 with role "system" indicates the worker session
 	// was deleted (not persisted state).
-	hist := sm.GetHistory(context.Background(), id)
+	hist, _ := sm.History(context.Background(), id)
 	if len(hist) != 1 || hist[0].Role != "system" {
 		t.Fatalf("expected worker session to be deleted, got %d msgs: %+v", len(hist), hist)
 	}
@@ -240,7 +240,7 @@ func TestAsyncTaskManager_SyncTasksMarksOrphanedAsInterrupted(t *testing.T) {
 	tasks := map[string]history.AsyncTask{
 		"orphan-1": {TaskID: "orphan-1", AgentName: "w", Status: "running"},
 	}
-	sm.SetAsyncTasks(context.Background(), "parent", tasks)
+	sm.SaveAsyncTasks(context.Background(), "parent", tasks)
 
 	got := mgr.SyncTasks(context.Background(), "parent")
 	if got["orphan-1"].Status != "interrupted" {

@@ -120,7 +120,7 @@ func TestStructuredResult_HookCanRewriteUsingTypedFields(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var found bool
 	for _, m := range msgs {
 		if m.Role == "tool" && strings.Contains(m.Content, "[id,name]") {

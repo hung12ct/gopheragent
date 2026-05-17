@@ -32,7 +32,7 @@ func TestRegenerate_ReplaysLastUserAndEmitsTransitionFrame(t *testing.T) {
 	if _, err := loop.RunIteration(context.Background(), "s1", "tell me a joke"); err != nil {
 		t.Fatalf("seed turn: %v", err)
 	}
-	before := sm.GetHistory(context.Background(), "s1")
+	before, _ := sm.History(context.Background(), "s1")
 	if got := len(before); got != 3 {
 		t.Fatalf("expected 3 seeded messages, got %d: %+v", got, before)
 	}
@@ -61,7 +61,7 @@ func TestRegenerate_ReplaysLastUserAndEmitsTransitionFrame(t *testing.T) {
 	}
 
 	// History must now end with the new assistant answer.
-	after := sm.GetHistory(context.Background(), "s1")
+	after, _ := sm.History(context.Background(), "s1")
 	if last := after[len(after)-1]; last.Role != "assistant" || !strings.Contains(last.Content, "regenerated") {
 		t.Fatalf("expected new assistant answer to be persisted, got %+v", last)
 	}
@@ -99,7 +99,7 @@ func TestContinue_ResumesFromInterruptedHistory(t *testing.T) {
 		{Role: "assistant", ToolCalls: []history.ToolCall{{ID: "c1", Name: "echo", Arguments: `"a"`}}},
 		{Role: "tool", ToolCallID: "c1", Content: "echo:a"},
 	}
-	sm.SetHistory(ctx, "s1", seed)
+	sm.SaveHistory(ctx, "s1", seed)
 
 	ch := make(chan StreamEvent, 16)
 	if err := loop.Continue(ctx, "s1", ch); err != nil {
@@ -117,7 +117,7 @@ func TestContinue_ResumesFromInterruptedHistory(t *testing.T) {
 		t.Errorf("expected ContinuedFromIndex=3 (index of trailing tool result), got %d", payload.ContinuedFromIndex)
 	}
 
-	after := sm.GetHistory(ctx, "s1")
+	after, _ := sm.History(ctx, "s1")
 	last := after[len(after)-1]
 	if last.Role != "assistant" || !strings.Contains(last.Content, "finishing") {
 		t.Fatalf("expected final assistant answer appended, got %+v", last)
@@ -130,7 +130,7 @@ func TestContinue_CleanFinalReturnsSentinel(t *testing.T) {
 	ctx := context.Background()
 
 	// Clean final-assistant ending — no dangling tool_calls, no tool tail.
-	sm.SetHistory(ctx, "s1", []history.Message{
+	sm.SaveHistory(ctx, "s1", []history.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "all done"},
@@ -177,7 +177,7 @@ func TestRegenerate_TruncationIsToolPairSafe(t *testing.T) {
 	loop, sm := setup(provider)
 	ctx := context.Background()
 
-	sm.SetHistory(ctx, "s1", []history.Message{
+	sm.SaveHistory(ctx, "s1", []history.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "older"},
 		{Role: "assistant", ToolCalls: []history.ToolCall{{ID: "c1", Name: "echo"}}},
@@ -197,7 +197,7 @@ func TestRegenerate_TruncationIsToolPairSafe(t *testing.T) {
 	// After the rewind + replay the persisted history must keep the older
 	// completed tool group [assistant tool_use, tool, assistant final] intact
 	// and never contain a dangling tool_use without its tool_result.
-	after := sm.GetHistory(ctx, "s1")
+	after, _ := sm.History(ctx, "s1")
 	for i, m := range after {
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			// Verify every tool_call has a matching tool result later in history.

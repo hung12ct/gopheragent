@@ -66,7 +66,9 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 	}
 
 	*msgs = appendAssistantToolCallMsg(*msgs, finalContent, result.ToolCalls)
-	al.Sessions.SetHistory(ctx, sessionKey, *msgs)
+	if err := al.Sessions.SaveHistory(ctx, sessionKey, *msgs); err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: save history: %w", err)))
+	}
 
 	ws := al.executeToolWaves(ctx, st, scheduled)
 	if ws.fatalErr != nil {
@@ -77,6 +79,8 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 
 	synthesizeDroppedToolErrors(ws.toolMsgs, droppedCalls, al.MaxToolCallsPerTurn)
 	*msgs = appendToolResultsInOrder(*msgs, result.ToolCalls, ws.toolMsgs)
-	al.Sessions.SetHistory(ctx, sessionKey, *msgs)
+	if err := al.Sessions.SaveHistory(ctx, sessionKey, *msgs); err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: save history: %w", err)))
+	}
 	return len(scheduled), false
 }

@@ -79,7 +79,7 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 	defer func() {
 		// Always clean up the worker's ephemeral session; ignore error —
 		// the tool's primary result is more important than cleanup failure.
-		_ = t.Sessions.DeleteSession(context.Background(), workerSessionKey)
+		_ = t.Sessions.Delete(context.Background(), workerSessionKey)
 	}()
 
 	workerLoop := agent.NewAgentLoop(t.Sessions, t.Tools, t.LLM)

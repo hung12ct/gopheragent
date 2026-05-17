@@ -45,7 +45,7 @@ func TestInlineResultTool_PersistedRowCarriesIsInlineResultFlag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	var found bool
 	for _, m := range stored {
 		if m.Role == "tool" && m.ToolCallID == "c1" {
@@ -71,7 +71,7 @@ func TestPlainTool_PersistedRowDoesNotCarryIsInlineResultFlag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	for _, m := range stored {
 		if m.Role == "tool" && m.IsInlineResult {
 			t.Fatalf("plain tool row should not have IsInlineResult set: %+v", m)
@@ -93,7 +93,7 @@ func TestInlineResultTool_FailingExecuteDoesNotSetFlag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	for _, m := range stored {
 		if m.Role == "tool" && m.IsInlineResult {
 			t.Fatalf("failing inline tool must not be flagged inline: %+v", m)

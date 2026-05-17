@@ -29,7 +29,7 @@ func TestOnToolResult_RewritesSuccessResult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var seenRewritten bool
 	for _, m := range msgs {
 		if m.Role == "tool" && strings.HasPrefix(m.Content, "rewritten:") {
@@ -58,7 +58,7 @@ func TestOnToolResult_VetoConvertsToToolError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var sawError bool
 	for _, m := range msgs {
 		if m.Role == "tool" && m.IsError && strings.Contains(m.Content, "post-validation rejected") {
@@ -140,7 +140,7 @@ func TestOnToolResult_HookCanRecoverError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var recovered bool
 	for _, m := range msgs {
 		if m.Role == "tool" && !m.IsError && strings.Contains(m.Content, "fallback") {
@@ -318,7 +318,7 @@ func TestOnToolResult_NilHookIsZeroCost(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var sawOk bool
 	for _, m := range msgs {
 		if m.Role == "tool" && strings.HasPrefix(m.Content, "ok:") {

@@ -9,7 +9,7 @@ import (
 func seedQuerySessions(t *testing.T, sm *InMemSessionManager, keys ...string) {
 	t.Helper()
 	for _, k := range keys {
-		sm.SetHistory(context.Background(), k, []Message{
+		sm.SaveHistory(context.Background(), k, []Message{
 			{Role: "system", Content: "you are…"},
 			{Role: "user", Content: "msg from " + k},
 		})

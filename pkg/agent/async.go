@@ -114,14 +114,17 @@ func (m *AsyncTaskManager) StartTask(parentCtx context.Context, sessionKey, agen
 	}
 	m.mu.Unlock()
 
-	tasks := m.Sessions.GetAsyncTasks(detachedCtx, sessionKey)
+	tasks, err := m.Sessions.AsyncTasks(detachedCtx, sessionKey)
+	if err != nil {
+		log.Printf("[async] read tasks failed for %q: %v", sessionKey, err)
+		tasks = map[string]history.AsyncTask{}
+	}
 	tasks[taskID] = history.AsyncTask{
 		TaskID:    taskID,
 		AgentName: agentName,
 		Status:    "running",
 	}
-	m.Sessions.SetAsyncTasks(detachedCtx, sessionKey, tasks)
-	if err := m.Sessions.Save(detachedCtx, sessionKey); err != nil {
+	if err := m.Sessions.SaveAsyncTasks(detachedCtx, sessionKey, tasks); err != nil {
 		log.Printf("[async] save failed for %q: %v", sessionKey, err)
 	}
 
@@ -147,7 +150,7 @@ func (m *AsyncTaskManager) runLoop(ctx context.Context, taskID, sessionKey, agen
 		// Cleanup ctx must outlive the worker's own cancellation but should
 		// keep ctx-stored values (e.g., a session-manager middleware that
 		// reads request_id for logging). WithoutCancel does both.
-		if err := m.Sessions.DeleteSession(context.WithoutCancel(ctx), workerSessionKey); err != nil {
+		if err := m.Sessions.Delete(context.WithoutCancel(ctx), workerSessionKey); err != nil {
 			log.Printf("[async] worker session cleanup failed for %q: %v", workerSessionKey, err)
 		}
 	}()
@@ -176,11 +179,17 @@ func (m *AsyncTaskManager) runLoop(ctx context.Context, taskID, sessionKey, agen
 			}
 		}
 		if len(collected) > 0 {
-			msgs := m.Sessions.GetHistory(hookCtx, workerSessionKey)
+			msgs, herr := m.Sessions.History(hookCtx, workerSessionKey)
+			if herr != nil {
+				log.Printf("[async] history read failed for worker %q: %v", workerSessionKey, herr)
+				return nil
+			}
 			for _, inst := range collected {
 				msgs = append(msgs, history.Message{Role: "user", Content: "[Update from Main Agent]: " + inst})
 			}
-			m.Sessions.SetHistory(hookCtx, workerSessionKey, msgs)
+			if serr := m.Sessions.SaveHistory(hookCtx, workerSessionKey, msgs); serr != nil {
+				log.Printf("[async] history save failed for worker %q: %v", workerSessionKey, serr)
+			}
 		}
 		return nil
 	})
@@ -204,13 +213,15 @@ func (m *AsyncTaskManager) runLoop(ctx context.Context, taskID, sessionKey, agen
 	// cancelled mid-run. WithoutCancel keeps the caller-supplied values
 	// (user_id etc.) so a value-aware session manager still sees them.
 	persistCtx := context.WithoutCancel(ctx)
-	tasks := m.Sessions.GetAsyncTasks(persistCtx, sessionKey)
+	tasks, err := m.Sessions.AsyncTasks(persistCtx, sessionKey)
+	if err != nil {
+		log.Printf("[async] read tasks failed for %q: %v", sessionKey, err)
+	}
 	if task, exists := tasks[taskID]; exists {
 		task.Status = finalStatus
 		task.Result = finalResult
 		tasks[taskID] = task
-		m.Sessions.SetAsyncTasks(persistCtx, sessionKey, tasks)
-		if err := m.Sessions.Save(persistCtx, sessionKey); err != nil {
+		if err := m.Sessions.SaveAsyncTasks(persistCtx, sessionKey, tasks); err != nil {
 			log.Printf("[async] save failed for %q: %v", sessionKey, err)
 		}
 	}
@@ -239,12 +250,15 @@ func (m *AsyncTaskManager) CancelTask(ctx context.Context, sessionKey, taskID st
 	}
 
 	persistCtx := context.WithoutCancel(ctx)
-	tasks := m.Sessions.GetAsyncTasks(persistCtx, sessionKey)
+	tasks, err := m.Sessions.AsyncTasks(persistCtx, sessionKey)
+	if err != nil {
+		log.Printf("[async] read tasks failed for %q: %v", sessionKey, err)
+		return nil
+	}
 	if task, exists := tasks[taskID]; exists {
 		task.Status = "cancelled"
 		tasks[taskID] = task
-		m.Sessions.SetAsyncTasks(persistCtx, sessionKey, tasks)
-		if err := m.Sessions.Save(persistCtx, sessionKey); err != nil {
+		if err := m.Sessions.SaveAsyncTasks(persistCtx, sessionKey, tasks); err != nil {
 			log.Printf("[async] save failed for %q: %v", sessionKey, err)
 		}
 	}
@@ -275,7 +289,11 @@ func (m *AsyncTaskManager) UpdateTask(taskID, instruction string) error {
 // outlives request-scoped teardown.
 func (m *AsyncTaskManager) SyncTasks(ctx context.Context, sessionKey string) map[string]history.AsyncTask {
 	persistCtx := context.WithoutCancel(ctx)
-	tasks := m.Sessions.GetAsyncTasks(persistCtx, sessionKey)
+	tasks, err := m.Sessions.AsyncTasks(persistCtx, sessionKey)
+	if err != nil {
+		log.Printf("[async] read tasks failed for %q: %v", sessionKey, err)
+		return map[string]history.AsyncTask{}
+	}
 	changed := false
 	m.mu.RLock()
 	for id, t := range tasks {
@@ -290,8 +308,7 @@ func (m *AsyncTaskManager) SyncTasks(ctx context.Context, sessionKey string) map
 	}
 	m.mu.RUnlock()
 	if changed {
-		m.Sessions.SetAsyncTasks(persistCtx, sessionKey, tasks)
-		if err := m.Sessions.Save(persistCtx, sessionKey); err != nil {
+		if err := m.Sessions.SaveAsyncTasks(persistCtx, sessionKey, tasks); err != nil {
 			log.Printf("[async] save failed for %q: %v", sessionKey, err)
 		}
 	}

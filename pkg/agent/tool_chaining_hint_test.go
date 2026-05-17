@@ -153,7 +153,7 @@ func TestAgentLoop_HintReachesLLM_ButNotPersistedSession(t *testing.T) {
 
 	// Persisted session does NOT contain the hint — only the original prompt
 	// plus the user turn and assistant reply.
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	for _, m := range stored {
 		if m.Role == "system" && strings.Contains(m.Content, toolChainingSentinel) {
 			t.Fatalf("persisted session leaked the hint: %q", m.Content)

@@ -84,7 +84,7 @@ func TestReflect_RevisesFinalAnswer(t *testing.T) {
 		}
 	}
 	// History should carry the revised answer, not the draft.
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	last := hist[len(hist)-1]
 	if last.Role != "assistant" || last.Content != "revised twice" {
 		t.Fatalf("history last msg: %+v", last)

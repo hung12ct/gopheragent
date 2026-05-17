@@ -79,7 +79,7 @@ func TestAutoCacheSystem_DoesNotLeakIntoSessionHistory(t *testing.T) {
 		t.Fatalf("RunIteration: %v", err)
 	}
 
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	for i, m := range stored {
 		if m.CacheHint {
 			t.Fatalf("session history message %d (%s) carries CacheHint=true; the flag should be ephemeral to the LLM call",

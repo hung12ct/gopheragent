@@ -73,7 +73,7 @@ func TestMaxToolCallsPerTurn_Truncates(t *testing.T) {
 		t.Fatalf("expected 2 executions, got %d", n)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	dropped := 0
 	for _, m := range msgs {
 		if m.Role == "tool" && m.IsError && strings.Contains(m.Content, "dropped by per-turn tool-call budget") {

@@ -30,7 +30,11 @@ import (
 // track per-turn token usage themselves should call BudgetTracker.Reset or
 // a custom rewind before invoking Regenerate.
 func (al *AgentLoop) Regenerate(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) error {
-	existing := al.Sessions.GetHistory(ctx, sessionKey)
+	existing, err := al.Sessions.History(ctx, sessionKey)
+	if err != nil {
+		close(streamChan)
+		return fmt.Errorf("agent: regenerate: load history: %w", err)
+	}
 	userIdx := lastUserIndex(existing)
 	if userIdx < 0 {
 		close(streamChan)
@@ -67,7 +71,11 @@ func (al *AgentLoop) Regenerate(ctx context.Context, sessionKey string, streamCh
 // error results — without this, providers reject the next call with a
 // tool_use-without-tool_result 400.
 func (al *AgentLoop) Continue(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) error {
-	existing := al.Sessions.GetHistory(ctx, sessionKey)
+	existing, err := al.Sessions.History(ctx, sessionKey)
+	if err != nil {
+		close(streamChan)
+		return fmt.Errorf("agent: continue: load history: %w", err)
+	}
 	if !canContinue(existing) {
 		close(streamChan)
 		return ErrNothingToContinue
@@ -90,9 +98,16 @@ func (al *AgentLoop) continueLogicLoop(ctx context.Context, sessionKey string, s
 	defer close(streamChan)
 	ctx = WithSessionKey(ctx, sessionKey)
 
-	msgs := al.Sessions.GetHistory(ctx, sessionKey)
+	msgs, err := al.Sessions.History(ctx, sessionKey)
+	if err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: continue: load history: %w", err)))
+		return
+	}
 	msgs = patchDanglingToolCalls(msgs)
-	al.Sessions.SetHistory(ctx, sessionKey, msgs)
+	if err := al.Sessions.SaveHistory(ctx, sessionKey, msgs); err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: continue: save history: %w", err)))
+		return
+	}
 
 	al.iterateMessages(ctx, sessionKey, streamChan, msgs)
 }

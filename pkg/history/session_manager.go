@@ -69,9 +69,12 @@ func NewFileSessionManager(storagePath string, systemPrompt ...string) (*FileSes
 	}, nil
 }
 
-// GetHistory returns the session history, injecting system prompt + behavior summary.
+// History returns the session history, injecting system prompt + behavior summary.
 // On cache miss, it attempts to load from disk (storagePath/<sessionKey>.json).
-func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) []Message {
+// The error return is part of the SessionManager contract; this backend
+// degrades to "empty session" on disk errors rather than propagating them,
+// matching the documented best-effort semantics.
+func (sm *FileSessionManager) History(_ context.Context, sessionKey string) ([]Message, error) {
 	sm.mu.RLock()
 	session, ok := sm.sessions[sessionKey]
 	behavior := sm.behaviors[sessionKey]
@@ -89,16 +92,16 @@ func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) [
 		if len(result) > 0 && result[0].Role == "system" {
 			result[0].Content = systemPrompt
 		}
-		return result
+		return result, nil
 	}
 
 	if sm.storage == "" {
-		return []Message{{Role: "system", Content: systemPrompt}}
+		return []Message{{Role: "system", Content: systemPrompt}}, nil
 	}
 
 	data, err := os.ReadFile(filepath.Join(sm.storage, sessionKey+".json"))
 	if err != nil {
-		return []Message{{Role: "system", Content: systemPrompt}}
+		return []Message{{Role: "system", Content: systemPrompt}}, nil
 	}
 
 	var stored fileSessionWrapper
@@ -107,7 +110,7 @@ func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) [
 		var legacy Session
 		if err2 := json.Unmarshal(data, &legacy); err2 != nil {
 			log.Printf("[FileSessionManager] failed to unmarshal %s.json: %v", sessionKey, err)
-			return []Message{{Role: "system", Content: systemPrompt}}
+			return []Message{{Role: "system", Content: systemPrompt}}, nil
 		}
 		stored.Session = legacy
 	}
@@ -139,33 +142,38 @@ func (sm *FileSessionManager) GetHistory(_ context.Context, sessionKey string) [
 	}
 	sm.mu.Unlock()
 
-	return result
+	return result, nil
 }
 
-// SetHistory stores a copy of the messages for the given session key (in-memory cache only).
-func (sm *FileSessionManager) SetHistory(_ context.Context, sessionKey string, history []Message) {
+// SaveHistory atomically updates the in-memory cache and persists the wrapper
+// to disk. Combines what used to be SetHistory + Save into a single atomic
+// operation. Triggers background summarization when configured.
+func (sm *FileSessionManager) SaveHistory(ctx context.Context, sessionKey string, msgs []Message) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	session, ok := sm.sessions[sessionKey]
 	if !ok {
 		session = &Session{Key: sessionKey}
 		sm.sessions[sessionKey] = session
 	}
-	messages := make([]Message, len(history))
-	copy(messages, history)
+	messages := make([]Message, len(msgs))
+	copy(messages, msgs)
 	session.Messages = messages
 	sm.updatedAt[sessionKey] = time.Now()
+	sm.mu.Unlock()
+	return sm.persist(ctx, sessionKey)
 }
 
-func (sm *FileSessionManager) GetAsyncTasks(ctx context.Context, sessionKey string) map[string]AsyncTask {
+// AsyncTasks returns a copy of the background tasks parked on sessionKey.
+// Lazy-loads from disk via History when the session is not cached.
+func (sm *FileSessionManager) AsyncTasks(ctx context.Context, sessionKey string) (map[string]AsyncTask, error) {
 	sm.mu.RLock()
 	session, ok := sm.sessions[sessionKey]
 	sm.mu.RUnlock()
 
 	if !ok {
-		// Just call GetHistory to load the full session into memory cache
-		sm.GetHistory(ctx, sessionKey)
+		if _, err := sm.History(ctx, sessionKey); err != nil {
+			return nil, err
+		}
 		sm.mu.RLock()
 		session, ok = sm.sessions[sessionKey]
 		sm.mu.RUnlock()
@@ -176,15 +184,16 @@ func (sm *FileSessionManager) GetAsyncTasks(ctx context.Context, sessionKey stri
 		for k, v := range session.AsyncTasks {
 			cp[k] = v
 		}
-		return cp
+		return cp, nil
 	}
 
-	return map[string]AsyncTask{}
+	return map[string]AsyncTask{}, nil
 }
 
-func (sm *FileSessionManager) SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) {
+// SaveAsyncTasks atomically updates the in-memory cache and persists the
+// wrapper to disk.
+func (sm *FileSessionManager) SaveAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	session, ok := sm.sessions[sessionKey]
 	if !ok {
 		session = &Session{Key: sessionKey}
@@ -195,6 +204,8 @@ func (sm *FileSessionManager) SetAsyncTasks(ctx context.Context, sessionKey stri
 		cp[k] = v
 	}
 	session.AsyncTasks = cp
+	sm.mu.Unlock()
+	return sm.persist(ctx, sessionKey)
 }
 
 // UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer.
@@ -214,7 +225,7 @@ func (sm *FileSessionManager) Fork(ctx context.Context, sessionKey string, atInd
 	}
 
 	// Ensure the source is loaded into the cache.
-	sm.GetHistory(ctx, sessionKey)
+	_, _ = sm.History(ctx, sessionKey)
 
 	sm.mu.Lock()
 	src, ok := sm.sessions[sessionKey]
@@ -240,15 +251,15 @@ func (sm *FileSessionManager) Fork(ctx context.Context, sessionKey string, atInd
 	}
 	sm.mu.Unlock()
 
-	if err := sm.Save(ctx, newKey); err != nil {
+	if err := sm.persist(ctx, newKey); err != nil {
 		return "", fmt.Errorf("history: fork persist %q: %w", newKey, err)
 	}
 	return newKey, nil
 }
 
-// DeleteSession removes the session from the in-memory cache and deletes the
-// backing JSON file (if configured). Deleting a non-existent session is a no-op.
-func (sm *FileSessionManager) DeleteSession(_ context.Context, sessionKey string) error {
+// Delete removes the session from the in-memory cache and deletes the backing
+// JSON file (if configured). Deleting a non-existent session is a no-op.
+func (sm *FileSessionManager) Delete(_ context.Context, sessionKey string) error {
 	sm.mu.Lock()
 	sm.purgeKeyLocked(sessionKey)
 	sm.mu.Unlock()
@@ -379,7 +390,7 @@ func (sm *FileSessionManager) readMetaFromDisk(sessionKey string) (SessionMeta, 
 // SoftDelete tombstones the session in-memory and persists the wrapper.
 func (sm *FileSessionManager) SoftDelete(ctx context.Context, sessionKey string) error {
 	// Ensure cache is populated so Save has something to persist.
-	sm.GetHistory(ctx, sessionKey)
+	_, _ = sm.History(ctx, sessionKey)
 	sm.mu.Lock()
 	if _, ok := sm.sessions[sessionKey]; !ok {
 		sm.mu.Unlock()
@@ -391,12 +402,12 @@ func (sm *FileSessionManager) SoftDelete(ctx context.Context, sessionKey string)
 	}
 	sm.deletedAt[sessionKey] = time.Now()
 	sm.mu.Unlock()
-	return sm.Save(ctx, sessionKey)
+	return sm.persist(ctx, sessionKey)
 }
 
 // Restore clears the tombstone in-memory and persists the wrapper.
 func (sm *FileSessionManager) Restore(ctx context.Context, sessionKey string) error {
-	sm.GetHistory(ctx, sessionKey)
+	_, _ = sm.History(ctx, sessionKey)
 	sm.mu.Lock()
 	if _, ok := sm.sessions[sessionKey]; !ok {
 		sm.mu.Unlock()
@@ -404,7 +415,7 @@ func (sm *FileSessionManager) Restore(ctx context.Context, sessionKey string) er
 	}
 	delete(sm.deletedAt, sessionKey)
 	sm.mu.Unlock()
-	return sm.Save(ctx, sessionKey)
+	return sm.persist(ctx, sessionKey)
 }
 
 // PurgeDeletedBefore hard-deletes every soft-deleted session whose
@@ -419,7 +430,7 @@ func (sm *FileSessionManager) PurgeDeletedBefore(ctx context.Context, before tim
 		if m.DeletedAt == nil || !m.DeletedAt.Before(before) {
 			continue
 		}
-		if err := sm.DeleteSession(ctx, m.Key); err != nil {
+		if err := sm.Delete(ctx, m.Key); err != nil {
 			return purged, err
 		}
 		purged++
@@ -427,8 +438,11 @@ func (sm *FileSessionManager) PurgeDeletedBefore(ctx context.Context, before tim
 	return purged, nil
 }
 
-// Save persists the session to disk and triggers background summarization if conditions met.
-func (sm *FileSessionManager) Save(ctx context.Context, sessionKey string) error {
+// persist writes the in-memory wrapper to disk and triggers background
+// summarization if conditions are met. Internal helper invoked by
+// SaveHistory, SaveAsyncTasks, SoftDelete, Restore, and Fork — the
+// SessionManager interface no longer exposes a standalone Save.
+func (sm *FileSessionManager) persist(_ context.Context, sessionKey string) error {
 	sm.mu.Lock()
 	session, ok := sm.sessions[sessionKey]
 	if !ok {

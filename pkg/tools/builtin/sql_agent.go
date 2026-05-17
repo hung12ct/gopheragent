@@ -312,7 +312,7 @@ func (t *CallSQLAgentTool) Execute(ctx context.Context, argsJSON string) (string
 func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) sqlCandidate {
 	subSessionKey := fmt.Sprintf("sub_agent_sql_%d_%d", time.Now().UnixNano(), idx)
 	defer func() {
-		if err := t.sessionManager.DeleteSession(context.Background(), subSessionKey); err != nil && t.onSQL != nil {
+		if err := t.sessionManager.Delete(context.Background(), subSessionKey); err != nil && t.onSQL != nil {
 			t.onSQL(ctx, SQLQueryEvent{
 				SessionKey: subSessionKey,
 				Error:      fmt.Sprintf("session cleanup failed: %v", err),
@@ -341,9 +341,14 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 	subAgent.ConfirmHITL = agent.ConfirmHITLFromContext(ctx)
 	subAgent.ConfirmHITLTimeout = agent.ConfirmHITLTimeoutFromContext(ctx)
 
-	t.sessionManager.SetHistory(ctx, subSessionKey, []history.Message{
+	if err := t.sessionManager.SaveHistory(ctx, subSessionKey, []history.Message{
 		{Role: "system", Content: t.buildSystemPrompt()},
-	})
+	}); err != nil && t.onSQL != nil {
+		t.onSQL(ctx, SQLQueryEvent{
+			SessionKey: subSessionKey,
+			Error:      fmt.Sprintf("seed history failed: %v", err),
+		})
+	}
 
 	streamChan := make(chan agent.StreamEvent, 100)
 	go subAgent.RunIterationStream(ctx, subSessionKey, query, streamChan)
