@@ -201,7 +201,7 @@ func main() {
 			defer channelMu.Unlock()
 			for _, ch := range channels {
 				select {
-				case ch <- agent.StreamEvent{Type: "approval_required", Content: string(payload)}:
+				case ch <- agent.Event(agent.ActionRequiredEvent{Tool: toolName, Args: string(payload)}):
 				default:
 				}
 			}

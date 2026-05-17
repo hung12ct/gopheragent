@@ -49,9 +49,9 @@ func TestRegenerate_ReplaysLastUserAndEmitsTransitionFrame(t *testing.T) {
 	if len(events) == 0 || events[0].Type != EventTypeRegenerated {
 		t.Fatalf("expected first frame to be %q, got %+v", EventTypeRegenerated, events)
 	}
-	payload, ok := events[0].Payload().(RegeneratedEvent)
+	payload, ok := events[0].Payload.(RegeneratedEvent)
 	if !ok {
-		t.Fatalf("expected RegeneratedEvent payload, got %T", events[0].Payload())
+		t.Fatalf("expected RegeneratedEvent payload, got %T", events[0].Payload)
 	}
 	if payload.PreviousAssistantIndex != 2 {
 		t.Errorf("expected PreviousAssistantIndex=2, got %d", payload.PreviousAssistantIndex)
@@ -109,9 +109,9 @@ func TestContinue_ResumesFromInterruptedHistory(t *testing.T) {
 	if len(events) == 0 || events[0].Type != EventTypeContinued {
 		t.Fatalf("expected first frame %q, got %+v", EventTypeContinued, events)
 	}
-	payload, ok := events[0].Payload().(ContinuedEvent)
+	payload, ok := events[0].Payload.(ContinuedEvent)
 	if !ok {
-		t.Fatalf("expected ContinuedEvent payload, got %T", events[0].Payload())
+		t.Fatalf("expected ContinuedEvent payload, got %T", events[0].Payload)
 	}
 	if payload.ContinuedFromIndex != 3 {
 		t.Errorf("expected ContinuedFromIndex=3 (index of trailing tool result), got %d", payload.ContinuedFromIndex)

@@ -167,11 +167,12 @@ func TestOnToolResult_CallIDMatchesEvent(t *testing.T) {
 	var eventID, hookID string
 	var mu sync.Mutex
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type != EventTypeToolCall {
+		p, ok := ev.Payload.(ToolCallEvent)
+		if !ok {
 			return
 		}
 		mu.Lock()
-		eventID = ev.ToolCallID
+		eventID = p.ID
 		mu.Unlock()
 	})
 	loop.OnToolResult = func(_ context.Context, callID, _, _, _ string, _ any, _ error) (string, error) {
@@ -279,12 +280,12 @@ func TestToolProgress_EventCarriesCallID(t *testing.T) {
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
 		mu.Lock()
 		defer mu.Unlock()
-		switch ev.Type {
-		case EventTypeToolCall:
-			callEventID = ev.ToolCallID
-		case EventTypeToolProgress:
-			progressEventID = ev.ToolCallID
-			progressEventName = ev.Name
+		switch p := ev.Payload.(type) {
+		case ToolCallEvent:
+			callEventID = p.ID
+		case ToolProgressEvent:
+			progressEventID = p.ToolCallID
+			progressEventName = p.Name
 		}
 	})
 

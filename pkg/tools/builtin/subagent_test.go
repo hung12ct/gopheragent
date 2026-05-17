@@ -31,7 +31,7 @@ func (p *capturingProvider) GenerateStream(_ context.Context, msgs []history.Mes
 	if p.err != nil {
 		return agent.LLMResult{}, p.err
 	}
-	ch <- agent.StreamEvent{Type: "content", Content: p.reply}
+	ch <- agent.Event(agent.ContentEvent{Text: p.reply})
 	return agent.LLMResult{Content: p.reply}, nil
 }
 
@@ -166,12 +166,13 @@ func TestCallSubAgentTool_ForwardsEventsWhenEmitterPresent(t *testing.T) {
 		if ev.ParentID != "parent-session" {
 			t.Fatalf("forwarded event must carry ParentID=parent-session, got %q", ev.ParentID)
 		}
-		switch ev.Type {
-		case "content":
-			if ev.Content == "worker report" {
+		switch p := ev.Payload.(type) {
+		case agent.ContentEvent:
+			if p.Text == "worker report" {
 				sawContent = true
 			}
-		case "done":
+		case agent.DoneEvent:
+			_ = p
 			sawDone = true
 		}
 	}
@@ -217,7 +218,7 @@ func (p *scriptedProvider) GenerateStream(_ context.Context, _ []history.Message
 	r := p.turns[p.idx]
 	p.idx++
 	if len(r.ToolCalls) == 0 && r.Content != "" {
-		ch <- agent.StreamEvent{Type: "content", Content: r.Content}
+		ch <- agent.Event(agent.ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }

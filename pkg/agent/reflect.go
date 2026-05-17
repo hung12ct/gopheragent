@@ -57,8 +57,8 @@ func (al *AgentLoop) reflectOnce(
 	go func() {
 		defer close(done)
 		for ev := range pChan {
-			if ev.Type == EventTypeContent {
-				buf.WriteString(ev.Content)
+			if p, ok := ev.Payload.(ContentEvent); ok {
+				buf.WriteString(p.Text)
 			}
 			// Don't forward usage/done from the nested call — the outer loop
 			// owns the "done" lifecycle; nested usage can be confusing when

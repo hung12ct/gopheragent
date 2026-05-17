@@ -22,7 +22,7 @@ func (p *recordingProvider) GenerateStream(_ context.Context, _ []history.Messag
 		names = append(names, t.Name())
 	}
 	p.seenToolNames = append(p.seenToolNames, names)
-	ch <- StreamEvent{Type: "content", Content: p.reply}
+	ch <- Event(ContentEvent{Text: p.reply})
 	return LLMResult{Content: p.reply}, nil
 }
 

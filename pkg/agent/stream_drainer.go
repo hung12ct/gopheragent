@@ -43,8 +43,8 @@ func (d *streamDrainer) drain(pChan <-chan StreamEvent, done chan<- struct{}) {
 // handleEvent processes one event and forwards it. Returns false when
 // ctx has cancelled and the caller should stop forwarding.
 func (d *streamDrainer) handleEvent(ev StreamEvent) bool {
-	if ev.Type == EventTypeContent {
-		d.buf.WriteString(ev.Content)
+	if p, ok := ev.Payload.(ContentEvent); ok {
+		d.buf.WriteString(p.Text)
 		d.emitted = true
 	}
 	d.maybeSpeculate(ev)
@@ -62,10 +62,7 @@ func (d *streamDrainer) handleEvent(ev StreamEvent) bool {
 // maybeSpeculate dispatches spawnSpeculative for eligible
 // tool_call_ready events. Pure dispatch; never blocks.
 func (d *streamDrainer) maybeSpeculate(ev StreamEvent) {
-	if ev.Type != EventTypeToolCallReady {
-		return
-	}
-	p, ok := ev.Payload().(ToolCallReadyEvent)
+	p, ok := ev.Payload.(ToolCallReadyEvent)
 	if !ok {
 		return
 	}

@@ -25,7 +25,7 @@ func (p *cacheHintCapturingProvider) GenerateStream(_ context.Context, msgs []hi
 	}
 	p.seenStamps = append(p.seenStamps, stamp)
 	p.mu.Unlock()
-	ch <- StreamEvent{Type: "content", Content: "ok"}
+	ch <- Event(ContentEvent{Text: "ok"})
 	return LLMResult{Content: "ok"}, nil
 }
 

@@ -155,13 +155,11 @@ func buildConfirmPlan() agent.ConfirmPlanFunc {
 
 		sessionKey, _ := agent.SessionKeyFromContext(ctx)
 
-		payload, _ := json.Marshal(map[string]any{
-			"approval_id": approvalID,
-			"tool":        "exit_plan_mode",
-			"plan":        plan,
-		})
 		if sseStream := getStream(sessionKey); sseStream != nil {
-			sseStream <- agent.StreamEvent{Type: "action_required", Content: string(payload)}
+			sseStream <- agent.Event(agent.ActionRequiredEvent{
+				Tool: "exit_plan_mode",
+				Args: fmt.Sprintf(`{"approval_id":%q,"plan":%q}`, approvalID, plan),
+			})
 		}
 
 		select {
@@ -265,12 +263,8 @@ func populateTasksFromPlan(ctx context.Context, sessionKey, plan string) {
 			Notes:  t.Notes,
 		})
 	}
-	body, err := json.Marshal(items)
-	if err != nil {
-		return
-	}
 	if sseStream := getStream(sessionKey); sseStream != nil {
-		sseStream <- agent.StreamEvent{Type: agent.EventTypeTaskList, Content: string(body)}
+		sseStream <- agent.Event(agent.TaskListEvent{Tasks: items})
 	}
 }
 
@@ -296,15 +290,11 @@ func buildHITL() agent.ConfirmFunc {
 		// right SSE connection.
 		sessionKey, _ := agent.SessionKeyFromContext(ctx)
 
-		var rawArgs any
-		_ = json.Unmarshal([]byte(argsJSON), &rawArgs)
-		payload, _ := json.Marshal(map[string]any{
-			"approval_id": approvalID,
-			"tool":        toolName,
-			"args":        rawArgs,
-		})
 		if sseStream := getStream(sessionKey); sseStream != nil {
-			sseStream <- agent.StreamEvent{Type: "action_required", Content: string(payload)}
+			sseStream <- agent.Event(agent.ActionRequiredEvent{
+				Tool: toolName,
+				Args: fmt.Sprintf(`{"approval_id":%q,"args":%s}`, approvalID, argsJSON),
+			})
 		}
 
 		select {
@@ -513,9 +503,9 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 		// disconnect or any future code path that bypasses the terminal
 		// emit). Prefer an error frame when our request ctx is cancelled
 		// so the UI can show "stopped" rather than "completed".
-		ev := agent.StreamEvent{Type: agent.EventTypeDone}
+		ev := agent.Event(agent.DoneEvent{})
 		if err := r.Context().Err(); err != nil {
-			ev = agent.StreamEvent{Type: agent.EventTypeError, Content: "cancelled: " + err.Error()}
+			ev = agent.Event(agent.ErrorEvent{Err: err, Message: "cancelled: " + err.Error()})
 		}
 		b, _ := json.Marshal(ev)
 		fmt.Fprintf(w, "data: %s\n\n", b)

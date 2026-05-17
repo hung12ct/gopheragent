@@ -41,7 +41,7 @@ func (p *scriptProvider) GenerateStream(_ context.Context, _ []history.Message, 
 	r := p.turns[p.idx]
 	p.idx++
 	if len(r.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: r.Content}
+		ch <- Event(ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }
@@ -185,8 +185,8 @@ func TestRunIterationStream_ForwardsErrorOnCancelledCtx(t *testing.T) {
 			continue
 		}
 		sawTerminal = true
-		if ev.Type == EventTypeError && !errors.Is(ev.Err, ErrContextCancelled) {
-			t.Fatalf("expected ErrContextCancelled, got %v", ev.Err)
+		if p, ok := ev.Payload.(ErrorEvent); ok && !errors.Is(p.Err, ErrContextCancelled) {
+			t.Fatalf("expected ErrContextCancelled, got %v", p.Err)
 		}
 	}
 	if !sawTerminal {
@@ -295,9 +295,9 @@ func TestRunIterationStream_HITLTimedOutEmitsTypedEvent(t *testing.T) {
 			continue
 		}
 		sawTimedOut = true
-		p, ok := ev.Payload().(HITLTimedOutEvent)
+		p, ok := ev.Payload.(HITLTimedOutEvent)
 		if !ok {
-			t.Fatalf("expected HITLTimedOutEvent payload, got %T", ev.Payload())
+			t.Fatalf("expected HITLTimedOutEvent payload, got %T", ev.Payload)
 		}
 		if p.Tool != "dangerous" {
 			t.Errorf("expected payload.Tool=dangerous, got %q", p.Tool)
@@ -600,7 +600,7 @@ func TestRunIteration_TokenBudgetPrune(t *testing.T) {
 	loop, _ := setup(provider)
 	loop.MaxTokenBudget = 1 // ridiculously low → always triggers
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type == "thought" && strings.Contains(ev.Content, "Token budget") {
+		if p, ok := ev.Payload.(ThoughtEvent); ok && strings.Contains(p.Message, "Token budget") {
 			pruneTriggered = true
 		}
 	})
@@ -638,7 +638,7 @@ func (p *countingErrorProvider) GenerateStream(_ context.Context, _ []history.Me
 		return LLMResult{}, fmt.Errorf("transient error #%d", p.calls)
 	}
 	if len(p.successResult.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: p.successResult.Content}
+		ch <- Event(ContentEvent{Text: p.successResult.Content})
 	}
 	return p.successResult, nil
 }

@@ -356,17 +356,19 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 	var finalResult strings.Builder
 	var hitlEvent agent.StreamEvent
 	for event := range streamChan {
-		switch event.Type {
-		case agent.EventTypeContent:
-			finalResult.WriteString(event.Content)
-		case agent.EventTypeHITLDenied, agent.EventTypeHITLTimedOut:
+		if event.Source != "" {
+			continue
+		}
+		switch p := event.Payload.(type) {
+		case agent.ContentEvent:
+			finalResult.WriteString(p.Text)
+		case agent.HITLDeniedEvent, agent.HITLTimedOutEvent:
+			_ = p
 			// Latch the most recent HITL signal so the candidate report
 			// surfaces it explicitly to the outer agent instead of letting
 			// the inner sub-agent's paraphrase ("the query was not
 			// executed") absorb the cause.
-			if event.Source == "" {
-				hitlEvent = event
-			}
+			hitlEvent = event
 		}
 	}
 
@@ -382,16 +384,13 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 // agent sees the cause directly rather than the worker's paraphrase. Pass
 // through unchanged when no HITL event was observed.
 func hitlBlockedReport(hitlEvent agent.StreamEvent, innerSummary string) string {
-	if hitlEvent.Type == "" {
-		return innerSummary
-	}
-	switch hitlEvent.Type {
-	case agent.EventTypeHITLTimedOut:
-		p, _ := hitlEvent.Payload().(agent.HITLTimedOutEvent)
+	switch p := hitlEvent.Payload.(type) {
+	case agent.HITLTimedOutEvent:
 		return fmt.Sprintf("HITL_BLOCKED: timeout — the human approval prompt for tool %q expired after %s before the operator responded. The user did NOT refuse. Tell the user the approval window closed and ask them to retry when they are ready to confirm; do not paraphrase this as a denial or seek a workaround. Inner agent summary (may be misleading): %s", p.Tool, p.Timeout, innerSummary)
-	default:
-		p, _ := hitlEvent.Payload().(agent.HITLDeniedEvent)
+	case agent.HITLDeniedEvent:
 		return fmt.Sprintf("HITL_BLOCKED: denied — the human operator denied approval for tool %q. Tell the user directly that they have not granted the permission this action requires, and ask whether they have an alternative approach; do not silently rephrase or work around the gate. Inner agent summary (may be misleading): %s", p.Tool, innerSummary)
+	default:
+		return innerSummary
 	}
 }
 

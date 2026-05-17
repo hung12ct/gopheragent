@@ -39,7 +39,7 @@ func (p *systemCapturingProviderPM) GenerateStream(_ context.Context, msgs []his
 	r := p.turns[p.idx]
 	p.idx++
 	if len(r.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: r.Content}
+		ch <- Event(ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }
@@ -242,7 +242,7 @@ func (p *sessionRoutingProviderPM) GenerateStream(ctx context.Context, _ []histo
 	}
 	r := turns[idx]
 	if len(r.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: r.Content}
+		ch <- Event(ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }

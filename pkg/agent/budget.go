@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"sync"
@@ -61,13 +60,11 @@ func (bt *BudgetTracker) Snapshot() map[string]TokenUsage {
 // "usage" StreamEvent. Register it with loop.OnEvent.
 func (bt *BudgetTracker) Handler() EventHandler {
 	return func(_ context.Context, sessionKey string, ev StreamEvent) {
-		if ev.Type != "usage" {
+		p, ok := ev.Payload.(UsageEvent)
+		if !ok {
 			return
 		}
-		var delta TokenUsage
-		if err := json.Unmarshal([]byte(ev.Content), &delta); err != nil {
-			return
-		}
+		delta := p.Usage
 		bt.mu.Lock()
 		cur := bt.usage[sessionKey]
 		cur.PromptTokens += delta.PromptTokens

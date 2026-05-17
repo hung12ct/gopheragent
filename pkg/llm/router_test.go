@@ -18,7 +18,7 @@ type stubProvider struct {
 
 func (p *stubProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, ch chan<- agent.StreamEvent) (agent.LLMResult, error) {
 	*p.called = p.name
-	ch <- agent.StreamEvent{Type: "content", Content: p.name + "_response"}
+	ch <- agent.Event(agent.ContentEvent{Text: p.name + "_response"})
 	return agent.LLMResult{Content: p.name + "_response"}, nil
 }
 

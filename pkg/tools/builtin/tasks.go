@@ -168,11 +168,7 @@ func emitTaskList(ctx context.Context, store TaskStore, sessionKey string) {
 			Notes:  t.Notes,
 		})
 	}
-	payload, err := json.Marshal(items)
-	if err != nil {
-		return
-	}
-	emit(agent.StreamEvent{Type: agent.EventTypeTaskList, Content: string(payload)})
+	emit(agent.Event(agent.TaskListEvent{Tasks: items}))
 }
 
 // ---- CreateTaskTool ----

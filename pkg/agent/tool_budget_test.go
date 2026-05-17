@@ -96,7 +96,7 @@ func TestMaxToolCallsPerTurn_EmitsThought(t *testing.T) {
 
 	var thoughtHits int
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type == "thought" && strings.Contains(ev.Content, "Tool-call budget exceeded") {
+		if p, ok := ev.Payload.(ThoughtEvent); ok && strings.Contains(p.Message, "Tool-call budget exceeded") {
 			thoughtHits++
 		}
 	})
@@ -120,7 +120,7 @@ func TestMaxToolCallsPerTurn_ExactMatch(t *testing.T) {
 
 	var thoughtHits int
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type == "thought" && strings.Contains(ev.Content, "Tool-call budget exceeded") {
+		if p, ok := ev.Payload.(ThoughtEvent); ok && strings.Contains(p.Message, "Tool-call budget exceeded") {
 			thoughtHits++
 		}
 	})

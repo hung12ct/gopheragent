@@ -2,7 +2,6 @@ package agentmetrics
 
 import (
 	"context"
-	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -12,11 +11,7 @@ import (
 
 func usageEvent(t *testing.T, pt, ct, tt int) agent.StreamEvent {
 	t.Helper()
-	payload, err := json.Marshal(agent.TokenUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt})
-	if err != nil {
-		t.Fatalf("marshal usage: %v", err)
-	}
-	return agent.StreamEvent{Type: agent.EventTypeUsage, Content: string(payload)}
+	return agent.Event(agent.UsageEvent{Usage: agent.TokenUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt}})
 }
 
 func TestHandler_EmitsUsageAndBudget(t *testing.T) {

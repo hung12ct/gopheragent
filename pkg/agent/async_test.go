@@ -18,7 +18,7 @@ import (
 type immediateProvider struct{ content string }
 
 func (p *immediateProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
-	ch <- StreamEvent{Type: "content", Content: p.content}
+	ch <- Event(ContentEvent{Text: p.content})
 	return LLMResult{Content: p.content}, nil
 }
 
@@ -33,7 +33,7 @@ func (p *slowProvider) GenerateStream(ctx context.Context, _ []history.Message, 
 	case <-ctx.Done():
 		return LLMResult{}, ctx.Err()
 	case <-time.After(5 * time.Second):
-		ch <- StreamEvent{Type: "content", Content: "slow done"}
+		ch <- Event(ContentEvent{Text: "slow done"})
 		return LLMResult{Content: "slow done"}, nil
 	}
 }
@@ -52,7 +52,7 @@ func (p *historyCapturingProvider) GenerateStream(_ context.Context, msgs []hist
 	copy(snapshot, msgs)
 	p.inputs = append(p.inputs, snapshot)
 	p.mu.Unlock()
-	ch <- StreamEvent{Type: "content", Content: p.content}
+	ch <- Event(ContentEvent{Text: p.content})
 	return LLMResult{Content: p.content}, nil
 }
 

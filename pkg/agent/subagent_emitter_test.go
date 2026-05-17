@@ -14,8 +14,11 @@ import (
 type injectingProvider struct{}
 
 func (injectingProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
-	ch <- StreamEvent{Type: "content", Content: "parent-answer"}
-	ch <- StreamEvent{Type: "content", Content: "subagent-chatter", Source: "subagent:child", ParentID: "p"}
+	ch <- Event(ContentEvent{Text: "parent-answer"})
+	sub := Event(ContentEvent{Text: "subagent-chatter"})
+	sub.Source = "subagent:child"
+	sub.ParentID = "p"
+	ch <- sub
 	return LLMResult{Content: "parent-answer"}, nil
 }
 
@@ -26,9 +29,9 @@ func TestWithSubAgentEmitter_RoundTrip(t *testing.T) {
 	if fn == nil {
 		t.Fatal("emitter not retrievable from ctx")
 	}
-	fn(StreamEvent{Type: "content", Content: "hello"})
-	if got.Content != "hello" {
-		t.Fatalf("emitter not invoked: got %+v", got)
+	fn(Event(ContentEvent{Text: "hello"}))
+	if p, ok := got.Payload.(ContentEvent); !ok || p.Text != "hello" {
+		t.Fatalf("emitter not invoked or payload wrong: got %+v", got)
 	}
 }
 
@@ -39,7 +42,7 @@ func TestSubAgentEmitterFromContext_NilWhenAbsent(t *testing.T) {
 }
 
 func TestDecorateForwardedEvent_SetsSourceAndParentID(t *testing.T) {
-	ev := DecorateForwardedEvent(StreamEvent{Type: "content", Content: "x"}, "subagent:A", "sess-1")
+	ev := DecorateForwardedEvent(Event(ContentEvent{Text: "x"}), "subagent:A", "sess-1")
 	if ev.Source != "subagent:A" {
 		t.Fatalf("Source: got %q", ev.Source)
 	}

@@ -118,8 +118,8 @@ func GenerateTitle(ctx context.Context, provider agent.LLMProvider, opts TitleOp
 		resultContent = res.Content
 	}()
 	for ev := range ch {
-		if ev.Type == agent.EventTypeContent {
-			streamBuf.WriteString(ev.Content)
+		if p, ok := ev.Payload.(agent.ContentEvent); ok {
+			streamBuf.WriteString(p.Text)
 		}
 	}
 	<-done

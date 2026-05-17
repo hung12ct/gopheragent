@@ -30,7 +30,7 @@ func (p *partsCapturingProviderRegistry) GenerateStream(_ context.Context, msgs 
 		default:
 		}
 	}
-	ch <- StreamEvent{Type: EventTypeContent, Content: "ok"}
+	ch <- Event(ContentEvent{Text: "ok"})
 	return LLMResult{Content: "ok"}, nil
 }
 

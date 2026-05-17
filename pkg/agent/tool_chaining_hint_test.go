@@ -115,7 +115,7 @@ func (p *systemCapturingProvider) GenerateStream(_ context.Context, memory []his
 	p.mu.Unlock()
 
 	if len(toolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: p.reply}
+		ch <- Event(ContentEvent{Text: p.reply})
 		return LLMResult{Content: p.reply}, nil
 	}
 	return LLMResult{ToolCalls: toolCalls}, nil

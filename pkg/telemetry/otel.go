@@ -58,38 +58,40 @@ func NewOTelHandler(tracer trace.Tracer) agent.EventHandler {
 	}
 
 	return func(ctx context.Context, sessionKey string, ev agent.StreamEvent) {
-		switch ev.Type {
-		case "thought", "content":
+		switch p := ev.Payload.(type) {
+		case agent.ThoughtEvent, agent.ContentEvent:
+			_ = p
 			// Lazy-create the root span on the first event of the iteration.
 			getOrCreate(ctx, sessionKey)
 
-		case "tool_call":
+		case agent.ToolCallEvent:
 			if s := getOrCreate(ctx, sessionKey); s != nil {
 				s.span.AddEvent("tool.execute",
-					trace.WithAttributes(attribute.String("tool.call", ev.Content)),
+					trace.WithAttributes(attribute.String("tool.call", p.Name)),
 				)
 			}
 
-		case "action_required":
+		case agent.ActionRequiredEvent:
 			if s := getOrCreate(ctx, sessionKey); s != nil {
 				s.span.AddEvent("hitl.action_required",
-					trace.WithAttributes(attribute.String("payload", ev.Content)),
+					trace.WithAttributes(attribute.String("tool", p.Tool)),
 				)
 			}
 
-		case "error":
+		case agent.ErrorEvent:
 			if val, ok := spans.LoadAndDelete(sessionKey); ok {
 				s := val.(*iterSpan)
-				if ev.Err != nil {
-					s.span.RecordError(ev.Err)
-					s.span.SetStatus(codes.Error, ev.Err.Error())
+				if p.Err != nil {
+					s.span.RecordError(p.Err)
+					s.span.SetStatus(codes.Error, p.Err.Error())
 				} else {
-					s.span.SetStatus(codes.Error, ev.Content)
+					s.span.SetStatus(codes.Error, p.Message)
 				}
 				s.span.End()
 			}
 
-		case "done":
+		case agent.DoneEvent:
+			_ = p
 			if val, ok := spans.LoadAndDelete(sessionKey); ok {
 				s := val.(*iterSpan)
 				s.span.SetStatus(codes.Ok, "")

@@ -153,19 +153,13 @@ func drainBestEffort(streamChan chan<- StreamEvent, internalChan <-chan StreamEv
 // a Regenerate stream. JSON-encoded into Content so wire consumers can parse
 // without an Anthropic SDK dependency.
 func regeneratedEvent(previousAssistantIndex, truncatedAt int) StreamEvent {
-	return StreamEvent{
-		Type:    EventTypeRegenerated,
-		Content: fmt.Sprintf(`{"previous_assistant_index":%d,"truncated_at":%d}`, previousAssistantIndex, truncatedAt),
-	}
+	return Event(RegeneratedEvent{PreviousAssistantIndex: previousAssistantIndex, TruncatedAt: truncatedAt})
 }
 
 // continuedEvent builds the typed transition frame emitted at the start of a
 // Continue stream.
 func continuedEvent(continuedFromIndex int) StreamEvent {
-	return StreamEvent{
-		Type:    EventTypeContinued,
-		Content: fmt.Sprintf(`{"continued_from_index":%d}`, continuedFromIndex),
-	}
+	return Event(ContinuedEvent{ContinuedFromIndex: continuedFromIndex})
 }
 
 // lastUserIndex returns the highest index of a "user" message, or -1.

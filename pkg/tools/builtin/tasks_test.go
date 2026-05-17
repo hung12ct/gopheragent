@@ -284,12 +284,12 @@ func TestTaskTools_EmitsTaskListOnMutation(t *testing.T) {
 
 	// The second event must reflect the completed status — this is the
 	// state the frontend will render with strikethrough.
-	var items []agent.TaskListItem
-	if err := json.Unmarshal([]byte(emitted[1].Content), &items); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	p, ok := emitted[1].Payload.(agent.TaskListEvent)
+	if !ok {
+		t.Fatalf("expected TaskListEvent payload, got %T", emitted[1].Payload)
 	}
-	if len(items) != 1 || items[0].Status != string(TaskCompleted) {
-		t.Fatalf("expected single completed task, got %+v", items)
+	if len(p.Tasks) != 1 || p.Tasks[0].Status != string(TaskCompleted) {
+		t.Fatalf("expected single completed task, got %+v", p.Tasks)
 	}
 }
 

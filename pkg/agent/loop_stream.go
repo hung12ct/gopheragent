@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -471,30 +472,65 @@ func safeCallHandler(h EventHandler, ctx context.Context, sessionKey string, ev 
 //
 // An event whose Source is empty originates from the receiving agent itself.
 type StreamEvent struct {
-	Type    StreamEventType `json:"type"` // use the EventType* constants
-	Content string          `json:"content,omitempty"`
-	// Name is the bare tool name on EventTypeToolCall events. Consumers
-	// should prefer this over parsing Content. Empty for non-tool events.
-	Name string `json:"name,omitempty"`
-	// ToolCallID is the agent-generated per-Execute correlation ID on
-	// EventTypeToolCall events — pairs entry events to OnToolResult hook
-	// invocations and downstream log lines. Empty for non-tool events.
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	// ArgsJSON is the raw tool arguments on EventTypeToolCall events.
-	// Empty for non-tool events.
-	ArgsJSON string `json:"args,omitempty"`
-	// Reused is true on EventTypeToolCall events when the wave executor is
-	// about to consume a speculative result rather than dispatch the tool
-	// again. Adopters use it to attribute speculation savings.
-	Reused   bool   `json:"reused,omitempty"`
-	Source   string `json:"source,omitempty"`
+	// Type tags the kind of event. Always matches Payload's eventType().
+	Type StreamEventType `json:"type"`
+	// Source is the emitter tag for forwarded events (e.g. "subagent:foo").
+	// Empty for events originating from the receiving agent itself.
+	Source string `json:"source,omitempty"`
+	// ParentID is the parent session key at the top of the forwarding chain,
+	// useful for correlating every event back to the user-facing session.
 	ParentID string `json:"parent_id,omitempty"`
-	Err      error  `json:"-"`
+	// Payload carries the typed event data. Never nil for events produced by
+	// the framework; consumers reaching across the wire should still tolerate
+	// nil from a malformed envelope.
+	Payload EventPayload `json:"-"`
 }
 
-// errEvent is a convenience constructor for error StreamEvents with a typed error.
+// MarshalJSON serializes the event using a tagged-union envelope. Wire shape:
+//
+//	{"type":"content","source":"...","parent_id":"...","payload":{"text":"hi"}}
+//
+// SSE consumers can read `type` to dispatch and `payload` to decode the
+// inner structure with one round trip per event.
+func (ev StreamEvent) MarshalJSON() ([]byte, error) {
+	envelope := struct {
+		Type     StreamEventType `json:"type"`
+		Source   string          `json:"source,omitempty"`
+		ParentID string          `json:"parent_id,omitempty"`
+		Payload  EventPayload    `json:"payload,omitempty"`
+	}{
+		Type:     ev.Type,
+		Source:   ev.Source,
+		ParentID: ev.ParentID,
+		Payload:  ev.Payload,
+	}
+	return json.Marshal(envelope)
+}
+
+// UnmarshalJSON decodes the envelope and routes the payload bytes through
+// decodePayload. Unknown event types round-trip via UnknownEvent so
+// forward-compatible consumers do not crash.
+func (ev *StreamEvent) UnmarshalJSON(data []byte) error {
+	var envelope struct {
+		Type     StreamEventType `json:"type"`
+		Source   string          `json:"source"`
+		ParentID string          `json:"parent_id"`
+		Payload  json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	ev.Type = envelope.Type
+	ev.Source = envelope.Source
+	ev.ParentID = envelope.ParentID
+	ev.Payload = decodePayload(envelope.Type, envelope.Payload)
+	return nil
+}
+
+// errEvent is a convenience constructor for ErrorEvent stream events with a
+// typed error.
 func errEvent(err error) StreamEvent {
-	return StreamEvent{Type: EventTypeError, Content: err.Error(), Err: err}
+	return Event(ErrorEvent{Err: err, Message: err.Error()})
 }
 
 // isFreshSessionHistory reports whether the slice returned by
@@ -534,23 +570,23 @@ func (al *AgentLoop) RunIterationMessage(ctx context.Context, sessionKey string,
 		if ev.Source != "" {
 			continue
 		}
-		switch ev.Type {
-		case "content":
-			buf.WriteString(ev.Content)
-		case EventTypeReflected:
+		switch p := ev.Payload.(type) {
+		case ContentEvent:
+			buf.WriteString(p.Text)
+		case ReflectedEvent:
 			// A reflection round produced a canonical revised answer — it
 			// replaces whatever Source="" content was streamed earlier this
 			// iteration so RunIteration always returns the final post-critique
 			// text.
-			if p, ok := ev.Payload().(ReflectedEvent); ok && p.Text != "" {
+			if p.Text != "" {
 				buf.Reset()
 				buf.WriteString(p.Text)
 			}
-		case "error":
-			if ev.Err != nil {
-				lastErr = ev.Err
-			} else {
-				lastErr = fmt.Errorf("agent: %s", ev.Content)
+		case ErrorEvent:
+			if p.Err != nil {
+				lastErr = p.Err
+			} else if p.Message != "" {
+				lastErr = fmt.Errorf("agent: %s", p.Message)
 			}
 		}
 	}
@@ -695,10 +731,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 		return
 	}
 	if isFreshSessionHistory(existing) {
-		al.emit(ctx, sessionKey, streamChan, StreamEvent{
-			Type:    EventTypeSessionCreated,
-			Content: fmt.Sprintf(`{"session_key":%q}`, sessionKey),
-		})
+		al.emit(ctx, sessionKey, streamChan, Event(SessionCreatedEvent{SessionKey: sessionKey}))
 	}
 	msgs := append(existing, userMsg)
 	msgs = patchDanglingToolCalls(msgs)
@@ -734,10 +767,7 @@ func (al *AgentLoop) iterateMessages(ctx context.Context, sessionKey string, str
 	}
 
 	al.saveSession(ctx, sessionKey, msgs)
-	al.emit(ctx, sessionKey, streamChan, StreamEvent{
-		Type:    EventTypeMaxItersReached,
-		Content: fmt.Sprintf(`{"limit":%d}`, al.MaxIters),
-	})
+	al.emit(ctx, sessionKey, streamChan, Event(MaxItersReachedEvent{Limit: al.MaxIters}))
 	al.emit(ctx, sessionKey, streamChan, limitExhaustedEvent(LimitKindMaxIters, al.MaxIters, al.MaxIters))
 	al.emit(ctx, sessionKey, streamChan, errEvent(ErrMaxIterations))
 }
@@ -746,10 +776,7 @@ func (al *AgentLoop) iterateMessages(ctx context.Context, sessionKey string, str
 // Kept as a free function so providers (which import pkg/agent) can call it
 // without going through an AgentLoop receiver.
 func limitExhaustedEvent(kind LimitKind, limit, used int) StreamEvent {
-	return StreamEvent{
-		Type:    EventTypeLimitExhausted,
-		Content: fmt.Sprintf(`{"kind":%q,"limit":%d,"used":%d}`, string(kind), limit, used),
-	}
+	return Event(LimitExhaustedEvent{Kind: kind, Limit: limit, Used: used})
 }
 
 // LimitExhaustedStreamEvent is the public constructor for adopters or

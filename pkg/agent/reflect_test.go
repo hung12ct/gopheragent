@@ -36,7 +36,7 @@ func (p *reflectProvider) GenerateStream(_ context.Context, msgs []history.Messa
 	}
 	p.mu.Unlock()
 	if text != "" {
-		ch <- StreamEvent{Type: EventTypeContent, Content: text}
+		ch <- Event(ContentEvent{Text: text})
 	}
 	return LLMResult{Content: text}, nil
 }
@@ -105,12 +105,13 @@ func TestReflect_NoOpRoundLeavesAnswerIntact(t *testing.T) {
 	var reflectedCount int
 	var finalContentBuf strings.Builder
 	for ev := range streamChan {
-		switch ev.Type {
-		case EventTypeReflected:
+		switch p := ev.Payload.(type) {
+		case ReflectedEvent:
+			_ = p
 			reflectedCount++
-		case EventTypeContent:
+		case ContentEvent:
 			if ev.Source == "" {
-				finalContentBuf.WriteString(ev.Content)
+				finalContentBuf.WriteString(p.Text)
 			}
 		}
 	}
@@ -142,7 +143,7 @@ func TestReflect_StreamsUnderReflectSource(t *testing.T) {
 		}
 		if ev.Type == EventTypeReflected {
 			sawReflectedEvent = true
-			if p, ok := ev.Payload().(ReflectedEvent); ok {
+			if p, ok := ev.Payload.(ReflectedEvent); ok {
 				reflectedPayload = p
 			}
 		}
@@ -217,7 +218,7 @@ func (p *capturingProvider) GenerateStream(_ context.Context, msgs []history.Mes
 		p.idx++
 	}
 	p.mu.Unlock()
-	ch <- StreamEvent{Type: EventTypeContent, Content: text}
+	ch <- Event(ContentEvent{Text: text})
 	return LLMResult{Content: text}, nil
 }
 
@@ -237,6 +238,6 @@ func (p *erroringReflectProvider) GenerateStream(_ context.Context, _ []history.
 	if n == p.errAt {
 		return LLMResult{}, fmt.Errorf("erroringReflectProvider: %w", p.err)
 	}
-	ch <- StreamEvent{Type: EventTypeContent, Content: p.draft}
+	ch <- Event(ContentEvent{Text: p.draft})
 	return LLMResult{Content: p.draft}, nil
 }

@@ -3,29 +3,13 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
-
-// parseExecutingName recovers the tool name from the legacy
-// "Executing: <name>" Content shape used by older emitters. New emitters
-// populate StreamEvent.Name directly; this is the back-compat fallback for
-// events that were serialized before the Name field existed.
-func parseExecutingName(content string) string {
-	if rest, ok := strings.CutPrefix(content, "Executing: "); ok {
-		return strings.TrimSpace(rest)
-	}
-	return ""
-}
 
 // StreamEventType tags the kind of event carried by StreamEvent. It is a
 // distinct string type so the compiler catches bare-string comparisons and
 // emits against non-constant strings — use the EventType* constants below
 // for every emit and match.
-//
-// Wire format is unchanged from earlier versions: StreamEventType marshals
-// as a plain JSON string, so existing consumers continue to parse events
-// byte-identically.
 type StreamEventType string
 
 // Event type constants. Use these instead of string literals when emitting or
@@ -46,14 +30,10 @@ const (
 	EventTypeReflected StreamEventType = "reflected"
 	// EventTypeToolCallReady is emitted mid-stream by providers that
 	// surface a complete tool invocation before the overall response
-	// finishes streaming. It carries the fully-parsed {id,name,args} so
-	// the agent loop can start executing safe tools in parallel with the
-	// remaining stream, shaving one tail-latency round trip per tool.
+	// finishes streaming.
 	EventTypeToolCallReady StreamEventType = "tool_call_ready"
-	// EventTypeTaskList carries the current per-session task list as JSON
-	// (e.g. produced by builtin task tools). Consumers re-render the full
-	// list on every event — there is no diff format. Content is the JSON
-	// serialisation of TaskListEvent.Tasks.
+	// EventTypeTaskList carries the current per-session task list. Consumers
+	// re-render the full list on every event — there is no diff format.
 	EventTypeTaskList StreamEventType = "task_list"
 	// EventTypeMaxItersReached signals that the loop exhausted MaxIters
 	// without a final answer. Emitted right before the legacy error event
@@ -62,42 +42,22 @@ const (
 	// the cap" from generic errors.
 	EventTypeMaxItersReached StreamEventType = "max_iters_reached"
 	// EventTypeSessionCreated is emitted as the first frame of a stream
-	// when the loop is starting a previously-unseen session (history is a
-	// single system message). One-shot work — auto-titling, welcome
-	// payloads, budget allocation, analytics — should hang off this event
-	// instead of racing on history-empty checks.
+	// when the loop is starting a previously-unseen session.
 	EventTypeSessionCreated StreamEventType = "session_created"
 	// EventTypeLimitExhausted is the canonical signal that a configured
-	// cap fired — iteration cap, cumulative tool-call cap, provider
-	// max_tokens, etc. Adopters can render a user-friendly message based
-	// on Kind without parsing error strings. See LimitKind constants for
-	// the values currently emitted by the loop and built-in providers.
-	// MaxItersReachedEvent stays alongside this for back-compat but new
-	// consumers should prefer LimitExhaustedEvent.
+	// cap fired. Prefer it to the legacy error event for new consumers.
 	EventTypeLimitExhausted StreamEventType = "limit_exhausted"
 	// EventTypeHITLDenied is emitted when the HITL gate resolves to "user
-	// denied" — the ConfirmHITL callback returned false without a timeout
-	// firing. Observational; the per-tool denial directive is already
-	// recorded as a tool message by the loop. Sub-agent wrappers watch for
-	// this so they can surface a clear "HITL_BLOCKED: denied" signal to the
-	// outer agent instead of relying on the inner agent's paraphrased
-	// summary. Payload: HITLDeniedEvent.
+	// denied". Observational; the per-tool denial directive is already
+	// recorded as a tool message by the loop.
 	EventTypeHITLDenied StreamEventType = "hitl_denied"
 	// EventTypeHITLTimedOut is emitted when AgentLoop.ConfirmHITLTimeout
 	// fires before the operator responds. Distinct from EventTypeHITLDenied
-	// so sub-agent wrappers and UI layers can route differently — typically
-	// "ask the user to retry when ready" vs. "the user said no." Payload:
-	// HITLTimedOutEvent.
+	// so consumers can route differently.
 	EventTypeHITLTimedOut StreamEventType = "hitl_timed_out"
 	// EventTypeRegenerated marks the start of an AgentLoop.Regenerate replay.
-	// It is the first frame emitted on the regenerate stream — UIs use it to
-	// gray out / supersede the previous assistant turn before the replacement
-	// content starts arriving. Payload: RegeneratedEvent.
 	EventTypeRegenerated StreamEventType = "regenerated"
 	// EventTypeContinued marks the start of an AgentLoop.Continue resume.
-	// Emitted as the first frame so UIs can attach subsequent content to the
-	// existing assistant bubble rather than rendering a new turn. Payload:
-	// ContinuedEvent.
 	EventTypeContinued StreamEventType = "continued"
 )
 
@@ -112,21 +72,21 @@ const (
 	// LimitKindMaxToolCallsPerSession: cumulative tool-call cap exceeded.
 	LimitKindMaxToolCallsPerSession LimitKind = "max_tool_calls_per_session"
 	// LimitKindProviderMaxTokens: the LLM provider truncated the response
-	// because its per-call MaxTokens cap fired (Anthropic stop_reason
-	// "max_tokens"). The truncated text is still in the stream — adopters
-	// that need full output should bump the provider's MaxTokens.
+	// because its per-call MaxTokens cap fired.
 	LimitKindProviderMaxTokens LimitKind = "provider_max_tokens"
 )
 
-// EventPayload is a sealed interface implemented by every typed event. Use it
-// in a type switch to pattern-match a StreamEvent's payload:
+// EventPayload is a sealed interface implemented by every typed event payload.
+// Every payload reports its matching StreamEventType so the Event() helper
+// can build a self-consistent StreamEvent in one call. Use a type switch on
+// the Payload field of a StreamEvent to pattern-match concrete cases:
 //
-//	switch p := ev.Payload().(type) {
-//	case agent.ContentEvent:
+//	switch p := ev.Payload.(type) {
+//	case ContentEvent:
 //	    buf.WriteString(p.Text)
-//	case agent.UsageEvent:
+//	case UsageEvent:
 //	    total += p.Usage.TotalTokens
-//	case agent.ErrorEvent:
+//	case ErrorEvent:
 //	    return p.Err
 //	}
 //
@@ -134,112 +94,122 @@ const (
 // types — exhaustive matches stay stable across versions.
 type EventPayload interface {
 	isEventPayload()
+	eventType() StreamEventType
 }
 
-// BaseEvent carries the correlation fields shared by every event. It is
-// embedded into each payload type so consumers reach Source and ParentID
-// uniformly regardless of which concrete type they matched.
-type BaseEvent struct {
-	Source   string
-	ParentID string
+// Event constructs a StreamEvent for payload p, deriving the Type field from
+// the payload's static type. Source and ParentID default to empty; mutate the
+// returned value if the event needs sub-agent tagging.
+func Event(p EventPayload) StreamEvent {
+	return StreamEvent{Type: p.eventType(), Payload: p}
 }
 
 // ContentEvent is assistant-produced text shown to the user.
 type ContentEvent struct {
-	BaseEvent
-	Text string
+	Text string `json:"text"`
 }
+
+func (ContentEvent) isEventPayload()              {}
+func (ContentEvent) eventType() StreamEventType   { return EventTypeContent }
 
 // ThoughtEvent is internal reasoning / system narration. Suppressed from the
 // final answer by RunIteration; surfaced by RunIterationStream when
 // EmitThoughts is true.
 type ThoughtEvent struct {
-	BaseEvent
-	Message string
+	Message string `json:"message"`
 }
 
-// ToolCallEvent announces that the agent is about to execute a tool.
-// Name is the bare tool identifier (e.g. "web_search"). ID is the agent-
-// generated correlation ID — it matches the toolCallID parameter on
+func (ThoughtEvent) isEventPayload()              {}
+func (ThoughtEvent) eventType() StreamEventType   { return EventTypeThought }
+
+// ToolCallEvent announces that the agent is about to execute a tool. ID is
+// the agent-generated correlation ID — it matches the toolCallID parameter on
 // ToolResultHook so observability tooling can pair entry and exit events
 // reliably even when SpeculativeTools=true interleaves parallel calls.
-// ArgsJSON is the raw tool arguments. Reused is true when the wave executor
-// is consuming a speculative result instead of dispatching the tool again.
-// Description is a human-readable summary kept for log readers —
-// programmatic consumers should use the structured fields.
+// Reused is true when the wave executor consumes a speculative result
+// instead of dispatching the tool again.
 type ToolCallEvent struct {
-	BaseEvent
-	ID          string
-	Name        string
-	ArgsJSON    string
-	Reused      bool
-	Description string
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ArgsJSON string `json:"args,omitempty"`
+	Reused   bool   `json:"reused,omitempty"`
 }
+
+func (ToolCallEvent) isEventPayload()              {}
+func (ToolCallEvent) eventType() StreamEventType   { return EventTypeToolCall }
 
 // ToolProgressEvent is a mid-execution status update emitted by a tool via
 // tools.ReportProgress. Progress is lossy by design — consumers may drop
-// these safely. Name and ToolCallID match the preceding ToolCallEvent for
-// the same dispatch; with SpeculativeTools=true multiple tools can report
-// progress concurrently, so adopters need both to attribute the message.
+// these safely.
 type ToolProgressEvent struct {
-	BaseEvent
-	Name       string
-	ToolCallID string
-	Message    string
+	Name       string `json:"name"`
+	ToolCallID string `json:"tool_call_id"`
+	Message    string `json:"message"`
 }
+
+func (ToolProgressEvent) isEventPayload()            {}
+func (ToolProgressEvent) eventType() StreamEventType { return EventTypeToolProgress }
 
 // ActionRequiredEvent signals that a tool invocation needs human approval.
-// Tool and Args are extracted from the default payload; callers that emit a
-// richer envelope (e.g. an approval_id) can fall back to RawJSON.
+// Adopters typically gate this through an out-of-band channel (UI prompt,
+// Slack message, webhook) and resume the loop only after the operator
+// responds via the configured ConfirmHITL callback.
 type ActionRequiredEvent struct {
-	BaseEvent
-	Tool    string
-	Args    string
-	RawJSON string
+	Tool string `json:"tool"`
+	Args string `json:"args,omitempty"`
 }
 
-// UsageEvent reports token accounting from the most recent LLM call. Usage
-// holds the parsed struct; RawJSON is kept for callers that want the exact
-// bytes emitted on the wire.
+func (ActionRequiredEvent) isEventPayload()            {}
+func (ActionRequiredEvent) eventType() StreamEventType { return EventTypeActionRequired }
+
+// UsageEvent reports token accounting from the most recent LLM call.
 type UsageEvent struct {
-	BaseEvent
-	Usage   TokenUsage
-	RawJSON string
+	Usage TokenUsage `json:"usage"`
 }
+
+func (UsageEvent) isEventPayload()              {}
+func (UsageEvent) eventType() StreamEventType   { return EventTypeUsage }
 
 // ErrorEvent signals a terminal failure for the current iteration. Err holds
 // the structured error (usable with errors.Is / errors.As); Message is its
 // string form for callers that only need display text.
 type ErrorEvent struct {
-	BaseEvent
-	Err     error
-	Message string
+	Err     error  `json:"-"`
+	Message string `json:"message"`
 }
 
+func (ErrorEvent) isEventPayload()              {}
+func (ErrorEvent) eventType() StreamEventType   { return EventTypeError }
+
 // DoneEvent marks the end of the stream — no more events will arrive.
-type DoneEvent struct {
-	BaseEvent
-}
+type DoneEvent struct{}
+
+func (DoneEvent) isEventPayload()              {}
+func (DoneEvent) eventType() StreamEventType   { return EventTypeDone }
 
 // ReflectedEvent delivers a post-critique canonical answer. Round indicates
 // which self-critique pass produced it (1-indexed); consumers typically keep
 // the last seen payload as the authoritative response.
 type ReflectedEvent struct {
-	BaseEvent
-	Text  string
-	Round int
+	Text  string `json:"text"`
+	Round int    `json:"round"`
 }
+
+func (ReflectedEvent) isEventPayload()            {}
+func (ReflectedEvent) eventType() StreamEventType { return EventTypeReflected }
 
 // ToolCallReadyEvent announces that a tool invocation has been fully parsed
 // from the LLM stream and is eligible for execution even though the overall
 // response is still streaming. AgentLoop.SpeculativeTools turns this signal
 // into actual parallel execution for safe calls.
 type ToolCallReadyEvent struct {
-	BaseEvent
-	ID       string
-	Name     string
-	ArgsJSON string
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ArgsJSON string `json:"args,omitempty"`
 }
+
+func (ToolCallReadyEvent) isEventPayload()            {}
+func (ToolCallReadyEvent) eventType() StreamEventType { return EventTypeToolCallReady }
 
 // TaskListItem is the wire shape of a single task entry inside a
 // TaskListEvent. Mirrors builtin.Task minus timestamps so consumers do not
@@ -255,19 +225,21 @@ type TaskListItem struct {
 // a task tool mutates the list. The frontend re-renders the full list on
 // every event; there is no diff format.
 type TaskListEvent struct {
-	BaseEvent
-	Tasks   []TaskListItem
-	RawJSON string
+	Tasks []TaskListItem `json:"tasks"`
 }
+
+func (TaskListEvent) isEventPayload()              {}
+func (TaskListEvent) eventType() StreamEventType   { return EventTypeTaskList }
 
 // MaxItersReachedEvent signals that the loop exhausted its iteration cap
 // without a final answer. Limit echoes AgentLoop.MaxIters at the time of
-// the failure so consumers can render "ran 15/15 iterations" without
-// reaching back into agent state.
+// the failure.
 type MaxItersReachedEvent struct {
-	BaseEvent
-	Limit int
+	Limit int `json:"limit"`
 }
+
+func (MaxItersReachedEvent) isEventPayload()            {}
+func (MaxItersReachedEvent) eventType() StreamEventType { return EventTypeMaxItersReached }
 
 // SessionCreatedEvent is the first frame of a stream when the loop is
 // running a never-before-seen session. Carries the session key so SSE
@@ -275,335 +247,165 @@ type MaxItersReachedEvent struct {
 // integrators can hang one-shot work (auto-title, welcome payload,
 // budget allocation) off the event without racing on history-emptiness.
 type SessionCreatedEvent struct {
-	BaseEvent
-	SessionKey string
+	SessionKey string `json:"session_key"`
 }
+
+func (SessionCreatedEvent) isEventPayload()            {}
+func (SessionCreatedEvent) eventType() StreamEventType { return EventTypeSessionCreated }
 
 // LimitExhaustedEvent is the typed payload of EventTypeLimitExhausted.
 // Kind identifies which cap fired (see LimitKind constants); Limit is the
 // configured ceiling and Used is the actual count at the moment of the
-// trip. For provider truncation kinds, Limit is the provider's per-call
-// MaxTokens and Used is unset (the provider does not report token usage
-// in the same shape).
+// trip. For provider truncation kinds, Used is unset (the provider does
+// not report token usage in the same shape).
 type LimitExhaustedEvent struct {
-	BaseEvent
-	Kind  LimitKind
-	Limit int
-	Used  int
+	Kind  LimitKind `json:"kind"`
+	Limit int       `json:"limit"`
+	Used  int       `json:"used,omitempty"`
 }
 
-// HITLDeniedEvent is the typed payload of EventTypeHITLDenied. Carries the
-// tool the gate was guarding so consumers — typically sub-agent wrappers
-// rendering "HITL_BLOCKED" to the outer agent — can route on it without
-// parsing the raw JSON Content. RawJSON preserves the wire bytes for
-// forward-compatible adopters.
+func (LimitExhaustedEvent) isEventPayload()            {}
+func (LimitExhaustedEvent) eventType() StreamEventType { return EventTypeLimitExhausted }
+
+// HITLDeniedEvent is the typed payload of EventTypeHITLDenied. Sub-agent
+// wrappers watch for this so they can surface a clear "HITL_BLOCKED: denied"
+// signal to the outer agent.
 type HITLDeniedEvent struct {
-	BaseEvent
-	Tool    string
-	Args    string
-	RawJSON string
+	Tool string `json:"tool"`
+	Args string `json:"args,omitempty"`
 }
+
+func (HITLDeniedEvent) isEventPayload()            {}
+func (HITLDeniedEvent) eventType() StreamEventType { return EventTypeHITLDenied }
 
 // HITLTimedOutEvent is the typed payload of EventTypeHITLTimedOut. Mirrors
 // HITLDeniedEvent and additionally carries the configured Timeout so a UI
 // can show "approval expired after 2m" without reaching back into agent
 // state.
 type HITLTimedOutEvent struct {
-	BaseEvent
-	Tool    string
-	Args    string
-	Timeout time.Duration
-	RawJSON string
+	Tool    string        `json:"tool"`
+	Args    string        `json:"args,omitempty"`
+	Timeout time.Duration `json:"timeout"`
 }
+
+func (HITLTimedOutEvent) isEventPayload()            {}
+func (HITLTimedOutEvent) eventType() StreamEventType { return EventTypeHITLTimedOut }
 
 // RegeneratedEvent is the typed payload of EventTypeRegenerated.
 // PreviousAssistantIndex is the index of the final assistant message in the
 // pre-regenerate history — UIs mark that bubble as superseded. TruncatedAt is
 // the length of the rewound prefix (msgs[:TruncatedAt] is what survived the
-// safe-boundary truncation). Both indices refer to the history snapshot the
-// adopter held at the moment the call ran; downstream events update the
-// session beyond that point.
+// safe-boundary truncation).
 type RegeneratedEvent struct {
-	BaseEvent
-	PreviousAssistantIndex int
-	TruncatedAt            int
+	PreviousAssistantIndex int `json:"previous_assistant_index"`
+	TruncatedAt            int `json:"truncated_at"`
 }
+
+func (RegeneratedEvent) isEventPayload()            {}
+func (RegeneratedEvent) eventType() StreamEventType { return EventTypeRegenerated }
 
 // ContinuedEvent is the typed payload of EventTypeContinued.
 // ContinuedFromIndex is the index of the last persisted message at the moment
-// Continue was invoked — adopters can use it to anchor "resumed from here" UI
-// (e.g. attaching new content to the existing assistant bubble).
+// Continue was invoked.
 type ContinuedEvent struct {
-	BaseEvent
-	ContinuedFromIndex int
+	ContinuedFromIndex int `json:"continued_from_index"`
 }
+
+func (ContinuedEvent) isEventPayload()            {}
+func (ContinuedEvent) eventType() StreamEventType { return EventTypeContinued }
 
 // UnknownEvent wraps an event whose Type was not recognized. It preserves
-// the raw wire fields so forward-compatible consumers can still inspect
+// the raw wire bytes so forward-compatible consumers can still inspect
 // events produced by a newer version of the framework.
 type UnknownEvent struct {
-	BaseEvent
-	Type    StreamEventType
-	Content string
+	OriginalType StreamEventType `json:"type"`
+	RawJSON      string          `json:"raw"`
 }
 
-func (ContentEvent) isEventPayload()        {}
-func (ThoughtEvent) isEventPayload()        {}
-func (ToolCallEvent) isEventPayload()       {}
-func (ToolProgressEvent) isEventPayload()   {}
-func (ActionRequiredEvent) isEventPayload() {}
-func (UsageEvent) isEventPayload()          {}
-func (ErrorEvent) isEventPayload()          {}
-func (DoneEvent) isEventPayload()           {}
-func (ReflectedEvent) isEventPayload()      {}
-func (ToolCallReadyEvent) isEventPayload()  {}
-func (TaskListEvent) isEventPayload()        {}
-func (MaxItersReachedEvent) isEventPayload() {}
-func (SessionCreatedEvent) isEventPayload()  {}
-func (LimitExhaustedEvent) isEventPayload()  {}
-func (HITLDeniedEvent) isEventPayload()      {}
-func (HITLTimedOutEvent) isEventPayload()    {}
-func (RegeneratedEvent) isEventPayload()     {}
-func (ContinuedEvent) isEventPayload()       {}
-func (UnknownEvent) isEventPayload()         {}
+func (UnknownEvent) isEventPayload()              {}
+func (u UnknownEvent) eventType() StreamEventType { return u.OriginalType }
 
-// Per-type constructors. Each returns the concrete payload struct so callers
-// can stay unboxed when they know which payload they want — Visit dispatches
-// through these without ever paying the EventPayload interface allocation.
-
-func (ev StreamEvent) base() BaseEvent {
-	return BaseEvent{Source: ev.Source, ParentID: ev.ParentID}
-}
-
-func (ev StreamEvent) asContent() ContentEvent {
-	return ContentEvent{BaseEvent: ev.base(), Text: ev.Content}
-}
-
-func (ev StreamEvent) asThought() ThoughtEvent {
-	return ThoughtEvent{BaseEvent: ev.base(), Message: ev.Content}
-}
-
-func (ev StreamEvent) asToolCall() ToolCallEvent {
-	name := ev.Name
-	if name == "" {
-		name = parseExecutingName(ev.Content)
-	}
-	return ToolCallEvent{
-		BaseEvent:   ev.base(),
-		ID:          ev.ToolCallID,
-		Name:        name,
-		ArgsJSON:    ev.ArgsJSON,
-		Reused:      ev.Reused,
-		Description: ev.Content,
-	}
-}
-
-func (ev StreamEvent) asToolProgress() ToolProgressEvent {
-	return ToolProgressEvent{
-		BaseEvent:  ev.base(),
-		Name:       ev.Name,
-		ToolCallID: ev.ToolCallID,
-		Message:    ev.Content,
-	}
-}
-
-func (ev StreamEvent) asActionRequired() ActionRequiredEvent {
-	out := ActionRequiredEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
-	var decoded struct {
-		Tool string `json:"tool"`
-		Args string `json:"args"`
-	}
-	if err := json.Unmarshal([]byte(ev.Content), &decoded); err == nil {
-		out.Tool = decoded.Tool
-		out.Args = decoded.Args
-	}
-	return out
-}
-
-func (ev StreamEvent) asUsage() UsageEvent {
-	out := UsageEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
-	_ = json.Unmarshal([]byte(ev.Content), &out.Usage) // zero-value on failure
-	return out
-}
-
-func (ev StreamEvent) asError() ErrorEvent {
-	msg := ev.Content
-	err := ev.Err
-	if err == nil && msg != "" {
-		err = fmt.Errorf("agent: %s", msg)
-	}
-	return ErrorEvent{BaseEvent: ev.base(), Err: err, Message: msg}
-}
-
-func (ev StreamEvent) asDone() DoneEvent {
-	return DoneEvent{BaseEvent: ev.base()}
-}
-
-func (ev StreamEvent) asReflected() ReflectedEvent {
-	out := ReflectedEvent{BaseEvent: ev.base()}
-	var decoded struct {
-		Text  string `json:"text"`
-		Round int    `json:"round"`
-	}
-	if err := json.Unmarshal([]byte(ev.Content), &decoded); err == nil && decoded.Text != "" {
-		out.Text = decoded.Text
-		out.Round = decoded.Round
-	} else {
-		// Fallback for callers that emitted the raw text.
-		out.Text = ev.Content
-	}
-	return out
-}
-
-func (ev StreamEvent) asToolCallReady() ToolCallReadyEvent {
-	out := ToolCallReadyEvent{BaseEvent: ev.base()}
-	var decoded struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-		Args string `json:"args"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded)
-	out.ID = decoded.ID
-	out.Name = decoded.Name
-	out.ArgsJSON = decoded.Args
-	return out
-}
-
-func (ev StreamEvent) asTaskList() TaskListEvent {
-	out := TaskListEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
-	_ = json.Unmarshal([]byte(ev.Content), &out.Tasks) // empty slice on failure
-	return out
-}
-
-func (ev StreamEvent) asMaxItersReached() MaxItersReachedEvent {
-	out := MaxItersReachedEvent{BaseEvent: ev.base()}
-	var decoded struct {
-		Limit int `json:"limit"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded) // zero on failure
-	out.Limit = decoded.Limit
-	return out
-}
-
-func (ev StreamEvent) asSessionCreated() SessionCreatedEvent {
-	out := SessionCreatedEvent{BaseEvent: ev.base()}
-	var decoded struct {
-		SessionKey string `json:"session_key"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded)
-	out.SessionKey = decoded.SessionKey
-	return out
-}
-
-func (ev StreamEvent) asLimitExhausted() LimitExhaustedEvent {
-	out := LimitExhaustedEvent{BaseEvent: ev.base()}
-	var decoded struct {
-		Kind  string `json:"kind"`
-		Limit int    `json:"limit"`
-		Used  int    `json:"used"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded)
-	out.Kind = LimitKind(decoded.Kind)
-	out.Limit = decoded.Limit
-	out.Used = decoded.Used
-	return out
-}
-
-func (ev StreamEvent) asHITLDenied() HITLDeniedEvent {
-	out := HITLDeniedEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
-	var decoded struct {
-		Tool string `json:"tool"`
-		Args string `json:"args"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded)
-	out.Tool = decoded.Tool
-	out.Args = decoded.Args
-	return out
-}
-
-func (ev StreamEvent) asHITLTimedOut() HITLTimedOutEvent {
-	out := HITLTimedOutEvent{BaseEvent: ev.base(), RawJSON: ev.Content}
-	var decoded struct {
-		Tool      string `json:"tool"`
-		Args      string `json:"args"`
-		TimeoutMs int64  `json:"timeout_ms"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded)
-	out.Tool = decoded.Tool
-	out.Args = decoded.Args
-	out.Timeout = time.Duration(decoded.TimeoutMs) * time.Millisecond
-	return out
-}
-
-func (ev StreamEvent) asRegenerated() RegeneratedEvent {
-	out := RegeneratedEvent{BaseEvent: ev.base()}
-	var decoded struct {
-		PreviousAssistantIndex int `json:"previous_assistant_index"`
-		TruncatedAt            int `json:"truncated_at"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded)
-	out.PreviousAssistantIndex = decoded.PreviousAssistantIndex
-	out.TruncatedAt = decoded.TruncatedAt
-	return out
-}
-
-func (ev StreamEvent) asContinued() ContinuedEvent {
-	out := ContinuedEvent{BaseEvent: ev.base()}
-	var decoded struct {
-		ContinuedFromIndex int `json:"continued_from_index"`
-	}
-	_ = json.Unmarshal([]byte(ev.Content), &decoded)
-	out.ContinuedFromIndex = decoded.ContinuedFromIndex
-	return out
-}
-
-func (ev StreamEvent) asUnknown() UnknownEvent {
-	return UnknownEvent{BaseEvent: ev.base(), Type: ev.Type, Content: ev.Content}
-}
-
-// Payload returns a typed view of ev. It never returns nil — unknown types
-// round-trip through UnknownEvent so callers can log or forward them without
-// a nil check.
-func (ev StreamEvent) Payload() EventPayload {
-	switch ev.Type {
+// decodePayload constructs a typed payload from a JSON-encoded blob and the
+// declared event type. Errors during inner decoding fall through to an
+// UnknownEvent carrying the raw bytes, so adopters using a forward-compatible
+// reader never crash on an unfamiliar type.
+func decodePayload(t StreamEventType, raw []byte) EventPayload {
+	switch t {
 	case EventTypeContent:
-		return ev.asContent()
+		var p ContentEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeThought:
-		return ev.asThought()
+		var p ThoughtEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeToolCall:
-		return ev.asToolCall()
+		var p ToolCallEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeToolProgress:
-		return ev.asToolProgress()
+		var p ToolProgressEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeActionRequired:
-		return ev.asActionRequired()
+		var p ActionRequiredEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeUsage:
-		return ev.asUsage()
+		var p UsageEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeError:
-		return ev.asError()
+		var p ErrorEvent
+		_ = json.Unmarshal(raw, &p)
+		if p.Err == nil && p.Message != "" {
+			p.Err = fmt.Errorf("agent: %s", p.Message)
+		}
+		return p
 	case EventTypeDone:
-		return ev.asDone()
+		return DoneEvent{}
 	case EventTypeReflected:
-		return ev.asReflected()
+		var p ReflectedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeToolCallReady:
-		return ev.asToolCallReady()
+		var p ToolCallReadyEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeTaskList:
-		return ev.asTaskList()
+		var p TaskListEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeMaxItersReached:
-		return ev.asMaxItersReached()
+		var p MaxItersReachedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeSessionCreated:
-		return ev.asSessionCreated()
+		var p SessionCreatedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeLimitExhausted:
-		return ev.asLimitExhausted()
+		var p LimitExhaustedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeHITLDenied:
-		return ev.asHITLDenied()
+		var p HITLDeniedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeHITLTimedOut:
-		return ev.asHITLTimedOut()
+		var p HITLTimedOutEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeRegenerated:
-		return ev.asRegenerated()
+		var p RegeneratedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeContinued:
-		return ev.asContinued()
+		var p ContinuedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	default:
-		return ev.asUnknown()
+		return UnknownEvent{OriginalType: t, RawJSON: string(raw)}
 	}
 }
 
@@ -611,7 +413,7 @@ func (ev StreamEvent) Payload() EventPayload {
 // the compiler teeth: adding a new payload type forces every visitor in the
 // codebase to handle it.
 //
-// Prefer the type-switch on Payload() for ad-hoc consumers; prefer a visitor
+// Prefer the type-switch on ev.Payload for ad-hoc consumers; prefer a visitor
 // when the same handler logic lives across many call sites and you want
 // compiler-enforced exhaustiveness.
 type EventVisitor interface {
@@ -636,48 +438,49 @@ type EventVisitor interface {
 	VisitUnknown(UnknownEvent)
 }
 
-// Visit dispatches ev to the correct method on v. Switches on ev.Type and
-// invokes the visitor with the concrete payload struct — no EventPayload
-// interface allocation and no second type switch on a boxed value.
+// Visit dispatches ev to the correct method on v based on the concrete
+// payload type. Zero allocations — Payload is already typed.
 func (ev StreamEvent) Visit(v EventVisitor) {
-	switch ev.Type {
-	case EventTypeContent:
-		v.VisitContent(ev.asContent())
-	case EventTypeThought:
-		v.VisitThought(ev.asThought())
-	case EventTypeToolCall:
-		v.VisitToolCall(ev.asToolCall())
-	case EventTypeToolProgress:
-		v.VisitToolProgress(ev.asToolProgress())
-	case EventTypeActionRequired:
-		v.VisitActionRequired(ev.asActionRequired())
-	case EventTypeUsage:
-		v.VisitUsage(ev.asUsage())
-	case EventTypeError:
-		v.VisitError(ev.asError())
-	case EventTypeDone:
-		v.VisitDone(ev.asDone())
-	case EventTypeReflected:
-		v.VisitReflected(ev.asReflected())
-	case EventTypeToolCallReady:
-		v.VisitToolCallReady(ev.asToolCallReady())
-	case EventTypeTaskList:
-		v.VisitTaskList(ev.asTaskList())
-	case EventTypeMaxItersReached:
-		v.VisitMaxItersReached(ev.asMaxItersReached())
-	case EventTypeSessionCreated:
-		v.VisitSessionCreated(ev.asSessionCreated())
-	case EventTypeLimitExhausted:
-		v.VisitLimitExhausted(ev.asLimitExhausted())
-	case EventTypeHITLDenied:
-		v.VisitHITLDenied(ev.asHITLDenied())
-	case EventTypeHITLTimedOut:
-		v.VisitHITLTimedOut(ev.asHITLTimedOut())
-	case EventTypeRegenerated:
-		v.VisitRegenerated(ev.asRegenerated())
-	case EventTypeContinued:
-		v.VisitContinued(ev.asContinued())
+	switch p := ev.Payload.(type) {
+	case ContentEvent:
+		v.VisitContent(p)
+	case ThoughtEvent:
+		v.VisitThought(p)
+	case ToolCallEvent:
+		v.VisitToolCall(p)
+	case ToolProgressEvent:
+		v.VisitToolProgress(p)
+	case ActionRequiredEvent:
+		v.VisitActionRequired(p)
+	case UsageEvent:
+		v.VisitUsage(p)
+	case ErrorEvent:
+		v.VisitError(p)
+	case DoneEvent:
+		v.VisitDone(p)
+	case ReflectedEvent:
+		v.VisitReflected(p)
+	case ToolCallReadyEvent:
+		v.VisitToolCallReady(p)
+	case TaskListEvent:
+		v.VisitTaskList(p)
+	case MaxItersReachedEvent:
+		v.VisitMaxItersReached(p)
+	case SessionCreatedEvent:
+		v.VisitSessionCreated(p)
+	case LimitExhaustedEvent:
+		v.VisitLimitExhausted(p)
+	case HITLDeniedEvent:
+		v.VisitHITLDenied(p)
+	case HITLTimedOutEvent:
+		v.VisitHITLTimedOut(p)
+	case RegeneratedEvent:
+		v.VisitRegenerated(p)
+	case ContinuedEvent:
+		v.VisitContinued(p)
+	case UnknownEvent:
+		v.VisitUnknown(p)
 	default:
-		v.VisitUnknown(ev.asUnknown())
+		v.VisitUnknown(UnknownEvent{OriginalType: ev.Type})
 	}
 }
