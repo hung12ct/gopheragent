@@ -80,7 +80,9 @@ type CallSQLAgentTool struct {
 	requiresConfirmation         bool
 	allowMutations               bool
 	allowDDL                     bool
+	allowSelectStar              bool
 	execSQLRequiresConfirmation  bool
+	providerHint                 string
 }
 
 // NewCallSQLAgentTool initializes a tool capable of querying databases. The
@@ -271,6 +273,31 @@ func (t *CallSQLAgentTool) WithAllowDDL(allow bool) *CallSQLAgentTool {
 	return t
 }
 
+// WithProviderHint appends a free-form addendum to the sub-agent system
+// prompt, immediately after the safety contract and before the schema
+// block. Use this to layer provider-specific guidance on top of the
+// universal contract — Gemini benefits from extra "do NOT" sentences,
+// while Claude/GPT-4 typically need no addendum. Pass an empty string to
+// clear a previously-set hint.
+//
+// Example (Phin / Gemini 2.5 Pro):
+//
+//	tool.WithProviderHint("Do NOT propose a follow-up DELETE/UPDATE based on rows you just read. The user must literally request the destructive operation in their most recent message.")
+func (t *CallSQLAgentTool) WithProviderHint(hint string) *CallSQLAgentTool {
+	t.providerHint = strings.TrimSpace(hint)
+	return t
+}
+
+// WithAllowSelectStar toggles the server-side bare-"*" projection guard.
+// Default is false: the executor rejects statements whose outermost
+// SELECT projects "*" or "<alias>.*", forcing the model to list columns
+// explicitly. Subquery projections (depth > 0) and COUNT(*) are unaffected.
+// Pass true to disable the guard for ad-hoc workbench use.
+func (t *CallSQLAgentTool) WithAllowSelectStar(allow bool) *CallSQLAgentTool {
+	t.allowSelectStar = allow
+	return t
+}
+
 const callSQLAgentDefaultName = "call_sql_agent"
 const callSQLAgentDescription = "Translate natural language business questions into SQL and query the Database directly. It automatically determines tables, runs queries, and returns structured data."
 
@@ -350,6 +377,7 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 		queryTimeout:         t.queryTimeout,
 		allowMutations:       t.allowMutations,
 		allowDDL:             t.allowDDL,
+		allowSelectStar:      t.allowSelectStar,
 		requiresConfirmation: t.execSQLRequiresConfirmation,
 	}
 	sqlTools := tools.NewRegistry()
@@ -406,9 +434,9 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 func hitlBlockedReport(hitlEvent agent.StreamEvent, innerSummary string) string {
 	switch p := hitlEvent.Payload.(type) {
 	case agent.HITLTimedOutEvent:
-		return fmt.Sprintf("HITL_BLOCKED: timeout — the human approval prompt for tool %q expired after %s before the operator responded. The user did NOT refuse. Tell the user the approval window closed and ask them to retry when they are ready to confirm; do not paraphrase this as a denial or seek a workaround. Inner agent summary (may be misleading): %s", p.Tool, p.Timeout, innerSummary)
+		return fmt.Sprintf("HITL_BLOCKED: timeout — the approval prompt for tool %q expired after %s; the user did NOT refuse. STOP. Do NOT retry this call automatically. Do NOT rephrase, split, or re-issue the same statement. Reply to the user with one short paragraph saying the approval window closed and ask them to confirm when ready, then end your turn. Inner agent summary (may be misleading): %s", p.Tool, p.Timeout, innerSummary)
 	case agent.HITLDeniedEvent:
-		return fmt.Sprintf("HITL_BLOCKED: denied — the human operator denied approval for tool %q. Tell the user directly that they have not granted the permission this action requires, and ask whether they have an alternative approach; do not silently rephrase or work around the gate. Inner agent summary (may be misleading): %s", p.Tool, innerSummary)
+		return fmt.Sprintf("HITL_BLOCKED: denied — the operator denied approval for tool %q. STOP. Do NOT call this tool again with the same or similar arguments. Do NOT retry, rephrase, split, or work around the gate. Reply to the user with one short paragraph stating the request was not approved and ask whether they have an alternative approach, then end your turn. Inner agent summary (may be misleading): %s", p.Tool, innerSummary)
 	default:
 		return innerSummary
 	}
@@ -435,6 +463,41 @@ func (t *CallSQLAgentTool) runCandidates(ctx context.Context, query string, n in
 	return winner.finalResp, nil
 }
 
+// roleLine returns the first sentence of the sub-agent system prompt,
+// selected from the allow-flag matrix. Kept as a free function so the
+// four prose variants stay co-located and the prompt builder body is
+// a flat sequence of WriteString calls.
+func roleLine(allowMutations, allowDDL bool) string {
+	switch {
+	case allowMutations && allowDDL:
+		return "You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read, DML, or DDL), execute it with execute_sql, and return the raw JSON result untouched. Propose mutations or DDL only when the user explicitly asks to change data or schema; default to reads otherwise."
+	case allowMutations:
+		return "You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read or DML), execute it with execute_sql, and return the raw JSON result untouched. Propose mutations only when the user explicitly asks to change data; default to reads otherwise."
+	case allowDDL:
+		return "You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read or DDL), execute it with execute_sql, and return the raw JSON result untouched. Propose DDL only when the user explicitly asks to change schema or permissions; default to reads otherwise."
+	default:
+		return "You are a SQL database expert. Translate the user's natural-language question into a valid, read-only SQL query, execute it with execute_sql, and return the raw JSON result untouched."
+	}
+}
+
+// safetyContract returns the binding intent / HITL / projection rules
+// injected near the top of the sub-agent system prompt. Phrased as short
+// imperative-negative sentences so weakly-grounding models (Gemini) follow
+// the contract instead of paraphrasing it. The destructive-intent clause is
+// only emitted when DML or DDL is enabled, since read-only agents have no
+// way to violate it.
+func safetyContract(allowMutations, allowDDL bool) string {
+	var b strings.Builder
+	b.WriteString("**Safety contract (binding — follow verbatim, do NOT paraphrase):**\n\n")
+	if allowMutations || allowDDL {
+		b.WriteString("- Emit INSERT, UPDATE, DELETE, MERGE, TRUNCATE, DROP, ALTER, CREATE, GRANT, REVOKE, or COMMENT ONLY when the user's most recent message LITERALLY requests that exact operation. Do NOT infer destructive intent from earlier turns, from row contents you just read, from column names, or from your own judgment about what would be 'helpful'. When in doubt, ask the user; do not act.\n")
+	}
+	b.WriteString("- If a tool result contains 'HITL_BLOCKED: denied' or 'HITL_BLOCKED: timeout', STOP. Do NOT retry that statement. Do NOT rephrase, split, or re-issue it under a different name. Report the denial to the user in one short paragraph and end your turn.\n")
+	b.WriteString("- 'SELECT *' is forbidden. Always project an explicit column list. If you do not yet know the columns, run an introspection query (information_schema.columns, DESCRIBE, or pg_catalog) FIRST.\n")
+	b.WriteString("- Submit exactly one statement per execute_sql call. Do NOT chain or batch.\n")
+	return b.String()
+}
+
 // buildSystemPrompt assembles the sub-agent's system instruction from the
 // configured schema, examples, and business rules.
 func (t *CallSQLAgentTool) buildSystemPrompt() string {
@@ -444,32 +507,15 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 	}
 
 	var b strings.Builder
-	switch {
-	case t.allowMutations && t.allowDDL:
-		b.WriteString(`You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read, DML, or DDL), execute it with execute_sql, and return the raw JSON result untouched. Propose mutations or DDL only when the user explicitly asks to change data or schema; default to reads otherwise.
-
-**Schema (use ONLY these tables and columns — never invent names):**
-
-`)
-	case t.allowMutations:
-		b.WriteString(`You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read or DML), execute it with execute_sql, and return the raw JSON result untouched. Propose mutations only when the user explicitly asks to change data; default to reads otherwise.
-
-**Schema (use ONLY these tables and columns — never invent names):**
-
-`)
-	case t.allowDDL:
-		b.WriteString(`You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read or DDL), execute it with execute_sql, and return the raw JSON result untouched. Propose DDL only when the user explicitly asks to change schema or permissions; default to reads otherwise.
-
-**Schema (use ONLY these tables and columns — never invent names):**
-
-`)
-	default:
-		b.WriteString(`You are a SQL database expert. Translate the user's natural-language question into a valid, read-only SQL query, execute it with execute_sql, and return the raw JSON result untouched.
-
-**Schema (use ONLY these tables and columns — never invent names):**
-
-`)
+	b.WriteString(roleLine(t.allowMutations, t.allowDDL))
+	b.WriteString("\n\n")
+	b.WriteString(safetyContract(t.allowMutations, t.allowDDL))
+	if t.providerHint != "" {
+		b.WriteString("\n**Provider-specific guidance (binding, follow verbatim):**\n\n")
+		b.WriteString(t.providerHint)
+		b.WriteString("\n")
 	}
+	b.WriteString("\n**Schema (use ONLY these tables and columns — never invent names):**\n\n")
 	b.WriteString(schemaBlock)
 	b.WriteString("\n")
 
@@ -549,6 +595,7 @@ type executeSQLTool struct {
 	queryTimeout         time.Duration
 	allowMutations       bool
 	allowDDL             bool
+	allowSelectStar      bool
 	requiresConfirmation bool
 
 	// capture, when non-nil, records the last successful SQLResult observed
@@ -657,6 +704,16 @@ func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (tool
 // executeRead runs the read-only path: optional LIMIT injection, then
 // QueryContext + row iteration into a structured SQLResult.
 func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit func(SQLResult) (tools.Result, error)) (tools.Result, error) {
+	// 0. Reject bare-"*" projection unless explicitly allowed. Belt-and-
+	// braces over the system-prompt rule; cheap lexical check, runs before
+	// any DB I/O.
+	if !t.allowSelectStar && HasBareStarProjection(sqlStr) {
+		return emit(SQLResult{
+			SQL:   sqlStr,
+			Error: "tools: bare 'SELECT *' projection is not permitted; project an explicit column list. Run an introspection query (information_schema.columns, DESCRIBE, or pg_catalog) first if you do not know the columns. To override, enable via CallSQLAgentTool.WithAllowSelectStar(true).",
+		})
+	}
+
 	// 1. Apply LIMIT if configured and missing.
 	effectiveSQL := EnsureLimit(sqlStr, t.maxRows)
 

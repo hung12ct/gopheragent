@@ -235,3 +235,45 @@ func TestSplitStatements_IgnoresSemicolonsInStrings(t *testing.T) {
 		t.Fatalf("expected 2 statements, got %d: %#v", len(got), got)
 	}
 }
+
+func TestHasBareStarProjection(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{"bare star", "SELECT * FROM t", true},
+		{"bare star no FROM", "SELECT *", true},
+		{"alias dot star", "SELECT t.* FROM t", true},
+		{"distinct star", "SELECT DISTINCT * FROM t", true},
+		{"all star", "SELECT ALL * FROM t", true},
+		{"star with whitespace", "SELECT\n  *\nFROM t", true},
+		{"mixed list with star", "SELECT id, * FROM t", true},
+		{"mixed list with alias star", "SELECT id, u.* FROM users u", true},
+		{"trailing star", "SELECT a, b, * FROM t", true},
+		{"explicit columns", "SELECT id, name FROM t", false},
+		{"count star", "SELECT COUNT(*) FROM t", false},
+		{"count star aliased", "SELECT COUNT(*) AS n FROM t", false},
+		{"multiplication", "SELECT price * 2 FROM products", false},
+		{"subquery star ignored", "SELECT id FROM (SELECT * FROM t) sub", false},
+		{"exists subquery star ignored", "SELECT id FROM t WHERE EXISTS (SELECT * FROM other)", false},
+		{"cte body star ignored", "WITH x AS (SELECT * FROM t) SELECT col FROM x", false},
+		{"cte outer star caught", "WITH x AS (SELECT col FROM t) SELECT * FROM x", true},
+		{"explain select star ignored", "EXPLAIN SELECT * FROM t", false},
+		{"show tables ignored", "SHOW TABLES", false},
+		{"describe ignored", "DESCRIBE customers", false},
+		{"empty", "", false},
+		{"comment then bare star", "-- pick all\nSELECT * FROM t", true},
+		{"block comment then bare star", "/* */ SELECT * FROM t", true},
+		{"star inside quoted identifier ignored", `SELECT "weird*col" FROM t`, false},
+		{"star inside string literal ignored", "SELECT 'a*b' FROM t", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := HasBareStarProjection(c.sql)
+			if got != c.want {
+				t.Fatalf("HasBareStarProjection(%q) = %v, want %v", c.sql, got, c.want)
+			}
+		})
+	}
+}
