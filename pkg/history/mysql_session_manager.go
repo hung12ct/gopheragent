@@ -102,17 +102,22 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 			async_tasks JSON,
 			updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 			deleted_at  TIMESTAMP NULL DEFAULT NULL,
+			title       VARCHAR(512) NULL DEFAULT NULL,
 			INDEX idx_deleted_at (deleted_at),
 			INDEX idx_updated_at (updated_at)
 		)`, cfg.tableName)
 	if _, err := db.Exec(createStmt); err != nil {
 		return nil, fmt.Errorf("failed to create session table: %w", err)
 	}
-	// Idempotent migration for tables created by older versions that
-	// predate the deleted_at column. Duplicate-column (1060) is benign.
+	// Idempotent migrations for tables created by older versions that
+	// predate the deleted_at / title columns. Duplicate-column (1060) is benign.
 	addStmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL", cfg.tableName)
 	if _, err := db.Exec(addStmt); err != nil && !isMySQLDuplicateColumn(err) {
 		return nil, fmt.Errorf("failed to add deleted_at column: %w", err)
+	}
+	addTitleStmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN title VARCHAR(512) NULL DEFAULT NULL", cfg.tableName)
+	if _, err := db.Exec(addTitleStmt); err != nil && !isMySQLDuplicateColumn(err) {
+		return nil, fmt.Errorf("failed to add title column: %w", err)
 	}
 	for _, idx := range []struct{ name, cols string }{
 		{"idx_deleted_at", "(deleted_at)"},
@@ -462,7 +467,7 @@ func (sm *MySQLSessionManager) Query(ctx context.Context, prefix string, opts Se
 		order = "session_key ASC"
 	}
 	q := fmt.Sprintf(`
-		SELECT session_key, updated_at, deleted_at, JSON_LENGTH(messages)
+		SELECT session_key, updated_at, deleted_at, title, JSON_LENGTH(messages)
 		FROM %s
 		WHERE %s
 		ORDER BY %s
@@ -488,11 +493,12 @@ func (sm *MySQLSessionManager) Query(ctx context.Context, prefix string, opts Se
 		var key string
 		var updatedAt time.Time
 		var deletedAt sql.NullTime
+		var title sql.NullString
 		var msgCount sql.NullInt64
-		if err := rows.Scan(&key, &updatedAt, &deletedAt, &msgCount); err != nil {
+		if err := rows.Scan(&key, &updatedAt, &deletedAt, &title, &msgCount); err != nil {
 			return nil, fmt.Errorf("history: query scan: %w", err)
 		}
-		meta := SessionMeta{Key: key, UpdatedAt: updatedAt, MessageCount: int(msgCount.Int64)}
+		meta := SessionMeta{Key: key, UpdatedAt: updatedAt, MessageCount: int(msgCount.Int64), Title: title.String}
 		if deletedAt.Valid {
 			d := deletedAt.Time
 			meta.DeletedAt = &d
@@ -527,6 +533,26 @@ func (sm *MySQLSessionManager) Restore(ctx context.Context, sessionKey string) e
 	q := fmt.Sprintf("UPDATE %s SET deleted_at = NULL WHERE session_key = ?", sm.tableName)
 	if _, err := sm.db.ExecContext(ctx, q, sessionKey); err != nil {
 		return fmt.Errorf("history: restore %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+// SetTitle implements agent.SessionTitler. Updates the session row's
+// title column. Empty title is stored as NULL so Query returns it as
+// "". Calling SetTitle for a session that does not yet have a row is a
+// no-op — the title is meaningful only alongside persisted history,
+// and the typical caller (post-EventTypeSessionCreated handler) runs
+// after the first SaveHistory.
+func (sm *MySQLSessionManager) SetTitle(ctx context.Context, sessionKey string, title string) error {
+	var arg any
+	if title == "" {
+		arg = nil
+	} else {
+		arg = title
+	}
+	q := fmt.Sprintf("UPDATE %s SET title = ? WHERE session_key = ?", sm.tableName)
+	if _, err := sm.db.ExecContext(ctx, q, arg, sessionKey); err != nil {
+		return fmt.Errorf("history: set title %q: %w", sessionKey, err)
 	}
 	return nil
 }

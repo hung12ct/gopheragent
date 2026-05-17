@@ -20,6 +20,7 @@ type InMemSessionManager struct {
 	lastSumLen      map[string]int
 	updatedAt       map[string]time.Time // last SetHistory wall-clock; used by Query
 	deletedAt       map[string]time.Time // soft-delete tombstone; zero = not deleted
+	titles          map[string]string    // optional per-session sidebar label
 	SystemPrompt    string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 
@@ -51,6 +52,7 @@ func NewInMemSessionManager(systemPrompt ...string) *InMemSessionManager {
 		lastSumLen:   make(map[string]int),
 		updatedAt:    make(map[string]time.Time),
 		deletedAt:    make(map[string]time.Time),
+		titles:       make(map[string]string),
 		SystemPrompt: sp,
 	}
 }
@@ -279,7 +281,24 @@ func (m *InMemSessionManager) purgeKeyLocked(sessionKey string) {
 	delete(m.lastSumLen, sessionKey)
 	delete(m.updatedAt, sessionKey)
 	delete(m.deletedAt, sessionKey)
+	delete(m.titles, sessionKey)
 	m.lastUse.Delete(sessionKey)
+}
+
+// SetTitle implements agent.SessionTitler. Empty title clears any
+// previously-recorded label. Recording a title for a session not yet
+// seen is permitted — the title is retained and joined to the session
+// record once it is created (matches the typical "title fires off
+// concurrently with the first turn" event-handler flow).
+func (m *InMemSessionManager) SetTitle(_ context.Context, sessionKey string, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if title == "" {
+		delete(m.titles, sessionKey)
+	} else {
+		m.titles[sessionKey] = title
+	}
+	return nil
 }
 
 // Query returns metadata for sessions whose key starts with prefix. See
@@ -305,6 +324,7 @@ func (m *InMemSessionManager) Query(_ context.Context, prefix string, opts Sessi
 			Key:          key,
 			UpdatedAt:    m.updatedAt[key],
 			MessageCount: len(msgs),
+			Title:        m.titles[key],
 			DeletedAt:    deletedAt,
 		})
 	}

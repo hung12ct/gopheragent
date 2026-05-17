@@ -118,7 +118,7 @@ func TestClassifySQL_ClassifiesMutations(t *testing.T) {
 	}
 }
 
-func TestClassifySQL_RejectsDDLAndPermissions(t *testing.T) {
+func TestClassifySQL_ClassifiesDDL(t *testing.T) {
 	for _, sql := range []string{
 		"DROP TABLE t",
 		"CREATE TABLE t (id INT)",
@@ -126,13 +126,29 @@ func TestClassifySQL_RejectsDDLAndPermissions(t *testing.T) {
 		"TRUNCATE TABLE t",
 		"GRANT SELECT ON t TO u",
 		"REVOKE ALL ON t FROM u",
+		"COMMENT ON TABLE t IS 'note'",
+	} {
+		kind, err := ClassifySQL(sql)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", sql, err)
+		}
+		if kind != SQLKindDDL {
+			t.Fatalf("expected SQLKindDDL for %q, got %v", sql, kind)
+		}
+	}
+}
+
+func TestClassifySQL_RejectsUnknownVerbs(t *testing.T) {
+	for _, sql := range []string{
+		"VACUUM t",
+		"CALL sp_do_stuff()",
 	} {
 		kind, err := ClassifySQL(sql)
 		if err == nil {
 			t.Fatalf("expected error for %q, got nil (kind=%v)", sql, kind)
 		}
 		if kind != SQLKindUnknown {
-			t.Fatalf("expected SQLKindUnknown for rejected %q, got %v", sql, kind)
+			t.Fatalf("expected SQLKindUnknown for %q, got %v", sql, kind)
 		}
 	}
 }

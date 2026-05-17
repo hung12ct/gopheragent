@@ -118,6 +118,24 @@ func hasDanglingToolCalls(msgs []history.Message) bool {
 	return false
 }
 
+// PatchDanglingToolCalls scans message history and injects synthetic tool
+// responses for any tool_call that never received a reply. Adopters slicing
+// session history for ad-hoc LLM calls (titling, summarisation, custom
+// retitle / classification flows) can apply this before the call so the
+// provider doesn't 400 on broken tool_use/tool_result adjacency.
+//
+// The same routine runs automatically inside the ReAct loop and provider
+// converters — exporting it lets downstream callers that build their own
+// message slices stay safe without duplicating the logic.
+//
+// Returns the input slice unchanged when no dangling call is detected (no
+// allocation). When patching is required, synthetic tool messages are
+// appended *after* any existing tool responses for the same assistant
+// turn so call order matches the source tool_calls order.
+func PatchDanglingToolCalls(msgs []history.Message) []history.Message {
+	return patchDanglingToolCalls(msgs)
+}
+
 // patchDanglingToolCalls scans message history and injects synthetic tool
 // responses for any tool_call that never received a reply. Without this,
 // provider APIs (Anthropic / OpenAI) reject the request with a 400/500

@@ -6,16 +6,20 @@ import (
 )
 
 // SQLKind classifies a parsed single SQL statement by its leading verb.
-// Unknown covers anything that isn't a read or a permitted mutation —
-// DDL (DROP / CREATE / ALTER / TRUNCATE), permissions (GRANT / REVOKE),
-// and any other unrecognised verb. ClassifySQL never returns Unknown
-// alongside a nil error; the kind/error pair is always consistent.
+// Unknown covers anything that doesn't map to a known verb. ClassifySQL
+// never returns Unknown alongside a nil error; the kind/error pair is
+// always consistent. The executor decides which kinds are permitted via
+// WithAllowMutations / WithAllowDDL — classification itself stays neutral.
 type SQLKind int
 
 const (
 	SQLKindUnknown SQLKind = iota
 	SQLKindRead
 	SQLKindMutation
+	// SQLKindDDL covers schema- and permission-changing statements
+	// (CREATE / DROP / ALTER / TRUNCATE / GRANT / REVOKE / COMMENT).
+	// Default-rejected at the executor; opt-in via WithAllowDDL(true).
+	SQLKindDDL
 )
 
 // readOnlyHeads lists the first-token keywords that classify as Read.
@@ -30,12 +34,25 @@ var readOnlyHeads = map[string]bool{
 
 // mutationHeads lists the DML verbs that classify as Mutation. DDL and
 // permission statements are intentionally excluded — those carry larger
-// blast radius and aren't covered by the opt-in flag.
+// blast radius and have their own opt-in flag (WithAllowDDL).
 var mutationHeads = map[string]bool{
 	"INSERT": true,
 	"UPDATE": true,
 	"DELETE": true,
 	"MERGE":  true,
+}
+
+// ddlHeads lists schema- and permission-changing verbs. Kept orthogonal
+// to mutationHeads so adopters can opt in to DML and DDL independently —
+// their blast radii are very different (rows vs schemas/permissions).
+var ddlHeads = map[string]bool{
+	"CREATE":   true,
+	"DROP":     true,
+	"ALTER":    true,
+	"TRUNCATE": true,
+	"GRANT":    true,
+	"REVOKE":   true,
+	"COMMENT":  true,
 }
 
 // ClassifySQL parses sql, rejects multi-statement input, and returns the
@@ -64,8 +81,10 @@ func ClassifySQL(sql string) (SQLKind, error) {
 		return SQLKindRead, nil
 	case mutationHeads[head]:
 		return SQLKindMutation, nil
+	case ddlHeads[head]:
+		return SQLKindDDL, nil
 	default:
-		return SQLKindUnknown, fmt.Errorf("tools: statement type %q is not permitted; allowed verbs are SELECT, WITH, EXPLAIN, SHOW, DESCRIBE (and INSERT, UPDATE, DELETE, MERGE when mutations are enabled)", head)
+		return SQLKindUnknown, fmt.Errorf("tools: statement type %q is not permitted; allowed verbs are SELECT, WITH, EXPLAIN, SHOW, DESCRIBE (and INSERT, UPDATE, DELETE, MERGE when mutations are enabled; CREATE, DROP, ALTER, TRUNCATE, GRANT, REVOKE, COMMENT when DDL is enabled)", head)
 	}
 }
 

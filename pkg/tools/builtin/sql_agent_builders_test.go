@@ -127,6 +127,58 @@ func TestCallSQLAgentTool_WithExecuteSQLConfirmation(t *testing.T) {
 	}
 }
 
+func TestCallSQLAgentTool_WithAllowDDL(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil)
+	if tool.allowDDL {
+		t.Fatalf("WithAllowDDL default: got true, want false")
+	}
+	tool.WithAllowDDL(true)
+	if !tool.allowDDL {
+		t.Fatalf("WithAllowDDL(true): flag not set")
+	}
+	tool.WithAllowDDL(false)
+	if tool.allowDDL {
+		t.Fatalf("WithAllowDDL(false): flag not cleared")
+	}
+}
+
+func TestExecuteSQLTool_RejectsDDLWhenDisabled(t *testing.T) {
+	exec := &executeSQLTool{db: nil, allowDDL: false}
+	out, err := exec.Execute(context.Background(), `{"sql_query":"DROP TABLE customers"}`)
+	if err != nil {
+		t.Fatalf("Execute returned a hard error instead of a structured rejection: %v", err)
+	}
+	if !strings.Contains(out.Text, "DDL") || !strings.Contains(out.Text, "WithAllowDDL") {
+		t.Fatalf("rejection payload should mention DDL + the enabling builder, got %s", out.Text)
+	}
+}
+
+func TestExecuteSQLTool_DescriptionReflectsDDLFlag(t *testing.T) {
+	off := (&executeSQLTool{allowDDL: false}).Descriptor().Description
+	on := (&executeSQLTool{allowDDL: true}).Descriptor().Description
+	both := (&executeSQLTool{allowMutations: true, allowDDL: true}).Descriptor().Description
+	if strings.Contains(off, "CREATE") {
+		t.Fatalf("DDL-off description should not advertise CREATE: %s", off)
+	}
+	if !strings.Contains(on, "CREATE") || !strings.Contains(on, "DROP") || !strings.Contains(on, "ALTER") {
+		t.Fatalf("DDL-on description should list DDL verbs: %s", on)
+	}
+	if !strings.Contains(both, "INSERT") || !strings.Contains(both, "CREATE") {
+		t.Fatalf("both-on description should list DML + DDL verbs: %s", both)
+	}
+}
+
+func TestCallSQLAgentTool_BuildSystemPromptMentionsDDL(t *testing.T) {
+	off := NewCallSQLAgentTool(nil, "schema", nil, nil).buildSystemPrompt()
+	on := NewCallSQLAgentTool(nil, "schema", nil, nil).WithAllowDDL(true).buildSystemPrompt()
+	if strings.Contains(off, "DDL (CREATE, DROP, ALTER") {
+		t.Fatalf("DDL-off prompt regressed (mentions DDL as permitted): %s", off)
+	}
+	if !strings.Contains(on, "DDL (CREATE, DROP, ALTER") {
+		t.Fatalf("DDL-on prompt missing rule 12: %s", on)
+	}
+}
+
 func TestExecuteSQLTool_RequiresConfirmationReflectsFlag(t *testing.T) {
 	off := (&executeSQLTool{}).Descriptor().RequiresConfirmation
 	on := (&executeSQLTool{requiresConfirmation: true}).Descriptor().RequiresConfirmation

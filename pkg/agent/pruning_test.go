@@ -186,6 +186,22 @@ func TestPatchDanglingToolCalls_AllDangling(t *testing.T) {
 	}
 }
 
+func TestPatchDanglingToolCallsExported(t *testing.T) {
+	// PatchDanglingToolCalls is the public alias adopters call when they
+	// slice history for ad-hoc LLM rounds (titling, summarisation, …).
+	// Confirm it matches the internal helper's contract.
+	msgs := []history.Message{
+		{Role: "assistant", ToolCalls: []history.ToolCall{{ID: "t1", Name: "x"}}},
+	}
+	got := PatchDanglingToolCalls(msgs)
+	if len(got) != 2 {
+		t.Fatalf("expected dangling tool_use sealed, got %d msgs", len(got))
+	}
+	if got[1].Role != "tool" || got[1].ToolCallID != "t1" {
+		t.Fatalf("synthetic tool msg shape wrong: %+v", got[1])
+	}
+}
+
 func TestPatchDanglingToolCalls_DanglingBeforeUserTurn(t *testing.T) {
 	msgs := []history.Message{
 		{Role: "assistant", ToolCalls: []history.ToolCall{{ID: "t1", Name: "x"}}},

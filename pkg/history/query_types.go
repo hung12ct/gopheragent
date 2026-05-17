@@ -6,15 +6,20 @@ import (
 )
 
 // SessionMeta is the lightweight per-session shape returned by
-// SessionManager.Query. Backends populate every field except DeletedAt,
-// which is non-nil only for soft-deleted sessions and only when
-// SessionQueryOpts.IncludeDeleted is true (otherwise deleted sessions
-// are filtered out at query time).
+// SessionManager.Query. Backends populate every field except DeletedAt
+// (non-nil only for soft-deleted sessions surfaced via
+// SessionQueryOpts.IncludeDeleted) and Title (empty until a caller
+// records one via the SessionTitler capability).
 type SessionMeta struct {
 	Key          string     `json:"key"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	MessageCount int        `json:"message_count"`
-	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
+	// Title is the human-readable label attached to the session via
+	// SessionTitler.SetTitle (typically produced by builtin.GenerateTitle
+	// on the first turn). Empty when the backend has none. Backends without
+	// the SessionTitler capability always return "".
+	Title     string     `json:"title,omitempty"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // SessionMetaOrder controls the sort key used by SessionManager.Query.
