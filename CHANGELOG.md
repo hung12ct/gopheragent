@@ -2,6 +2,26 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.26.0] — 2026-05-17
+
+SQL sub-agent prompt hardening + server-side bare-`SELECT *` guard, aimed at the failure mode where weakly-grounding models (Gemini 2.5) invent destructive follow-ups, ignore HITL denial, and project unbounded row width. One default-rejection change; the rest are additive.
+
+### Added
+
+- `CallSQLAgentTool.WithProviderHint(string)` — appends a free-form addendum between the safety contract and the schema block in the sub-agent system prompt. Use it to layer adopter-specific "do NOT" sentences (typically Gemini-only) on top of the universal contract. Empty string clears. (`pkg/tools/builtin/sql_agent.go`)
+- `CallSQLAgentTool.WithAllowSelectStar(bool)` — opt-out for the new bare-`*` guard. Default `false`; flip to `true` for ad-hoc workbench use. (`pkg/tools/builtin/sql_agent.go`)
+- `builtin.HasBareStarProjection(sql string) bool` — exported lexical detector for `*` or `<alias>.*` in the outermost SELECT projection list. Skips subqueries, CTE bodies, `EXPLAIN`/`SHOW`/`DESCRIBE`, `COUNT(*)`, and `*` inside quoted identifiers / string literals. Reusable for adopter-side pre-checks. (`pkg/tools/builtin/sql_validate.go`)
+- **Safety-contract preamble in the sub-agent system prompt** — three binding rules surfaced immediately after the role line: destructive verbs require literal user request (intent-scoping), `HITL_BLOCKED` results halt the loop without retry, bare `SELECT *` is forbidden. Phrased as imperative-negative sentences so weakly-grounding models follow the contract instead of paraphrasing it. (`pkg/tools/builtin/sql_agent.go`)
+
+### Changed (breaking)
+
+- **`executeSQLTool` now rejects bare `SELECT *` and `<alias>.*` by default** before any DB I/O. Adopters relying on `SELECT *` must opt in via `WithAllowSelectStar(true)`. `COUNT(*)`, subquery stars, CTE-body stars, and `*` inside `EXPLAIN SELECT *` are unaffected. (`pkg/tools/builtin/sql_agent.go`)
+- **`HITL_BLOCKED` envelope prose tightened** in both `CallSQLAgentTool` (`hitlBlockedReport`) and `CallSubAgentTool` (`subAgentHITLReport`). Denial / timeout envelopes now lead with explicit `STOP. Do NOT call this tool again` imperatives and end with `end your turn`. No-op for strong instruction-followers; closes the "I'll send the DELETE again for approval" retry loop on Gemini.
+
+### Changed
+
+- `CallSQLAgentTool.buildSystemPrompt` refactored: the four-branch prose-and-schema repetition collapses into a flat `roleLine()` + `safetyContract()` + optional provider hint + schema sequence. No prompt-content change for the non-`WithProviderHint` path beyond the safety-contract addition above.
+
 ## [v0.25.0] — 2026-05-17
 
 Five integration-driven items landed against the live `v0.24.0` API. Two ship as new opt-in capabilities (`WithAllowDDL`, `SessionTitler`), two as provider-converter robustness fixes (Anthropic adjacency, GPT-5 tool-call content), one as prompt hardening for weak instruction-following models. No breaking changes — every addition is opt-in or behind a non-default flag.
@@ -278,6 +298,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.26.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.0
 [v0.25.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.25.0
 [v0.24.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.24.0
 [v0.23.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.23.0
