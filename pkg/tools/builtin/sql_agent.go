@@ -79,6 +79,7 @@ type CallSQLAgentTool struct {
 	display              *tools.ToolDisplay
 	requiresConfirmation         bool
 	allowMutations               bool
+	allowDDL                     bool
 	execSQLRequiresConfirmation  bool
 }
 
@@ -232,8 +233,9 @@ func (t *CallSQLAgentTool) WithExecuteSQLConfirmation(b bool) *CallSQLAgentTool 
 // UPDATE, DELETE, MERGE — in addition to the read-only verbs. Default is
 // false, preserving the original read-only contract.
 //
-// DDL (DROP, CREATE, ALTER, TRUNCATE, GRANT, REVOKE) remains rejected
-// regardless of this flag. The existing hardening (multi-statement reject,
+// DDL (DROP, CREATE, ALTER, TRUNCATE, GRANT, REVOKE, COMMENT) is gated by
+// the separate WithAllowDDL flag — different blast radius, different
+// trust boundary. The existing hardening (multi-statement reject,
 // comment strip, per-query timeout, structured SQLResult envelope) stays
 // in force for the mutation path; mutations execute via ExecContext and
 // surface the affected-row count in SQLResult.RowCount.
@@ -245,6 +247,27 @@ func (t *CallSQLAgentTool) WithExecuteSQLConfirmation(b bool) *CallSQLAgentTool 
 // mutation-enabled agents.
 func (t *CallSQLAgentTool) WithAllowMutations(allow bool) *CallSQLAgentTool {
 	t.allowMutations = allow
+	return t
+}
+
+// WithAllowDDL toggles whether the sub-agent may emit DDL — CREATE, DROP,
+// ALTER, TRUNCATE, GRANT, REVOKE, COMMENT. Default is false, preserving
+// the schema-immutable contract.
+//
+// Independent of WithAllowMutations — DDL changes schemas and permissions
+// (irreversible, often unrecoverable without backups), DML changes rows.
+// Adopters opt in to each separately so the trust contract isn't silently
+// widened when only DML was requested.
+//
+// **Always pair with the HITL gate.** DDL is irreversible in practice:
+// keep RequiresConfirmation at the true default and wire
+// AgentLoop.ConfirmHITL so every CREATE / DROP / ALTER lands in front of
+// a human before it executes. Combine with
+// WithExecuteSQLConfirmation(true) so the exact statement (not just the
+// natural-language intent) is what the operator approves. Auto-approve
+// must be off for DDL-enabled agents.
+func (t *CallSQLAgentTool) WithAllowDDL(allow bool) *CallSQLAgentTool {
+	t.allowDDL = allow
 	return t
 }
 
@@ -326,6 +349,7 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 		maxRows:              t.maxRows,
 		queryTimeout:         t.queryTimeout,
 		allowMutations:       t.allowMutations,
+		allowDDL:             t.allowDDL,
 		requiresConfirmation: t.execSQLRequiresConfirmation,
 	}
 	sqlTools := tools.NewRegistry()
@@ -420,13 +444,26 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 	}
 
 	var b strings.Builder
-	if t.allowMutations {
+	switch {
+	case t.allowMutations && t.allowDDL:
+		b.WriteString(`You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read, DML, or DDL), execute it with execute_sql, and return the raw JSON result untouched. Propose mutations or DDL only when the user explicitly asks to change data or schema; default to reads otherwise.
+
+**Schema (use ONLY these tables and columns — never invent names):**
+
+`)
+	case t.allowMutations:
 		b.WriteString(`You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read or DML), execute it with execute_sql, and return the raw JSON result untouched. Propose mutations only when the user explicitly asks to change data; default to reads otherwise.
 
 **Schema (use ONLY these tables and columns — never invent names):**
 
 `)
-	} else {
+	case t.allowDDL:
+		b.WriteString(`You are a SQL database expert. Translate the user's natural-language request into a valid SQL statement (read or DDL), execute it with execute_sql, and return the raw JSON result untouched. Propose DDL only when the user explicitly asks to change schema or permissions; default to reads otherwise.
+
+**Schema (use ONLY these tables and columns — never invent names):**
+
+`)
+	default:
 		b.WriteString(`You are a SQL database expert. Translate the user's natural-language question into a valid, read-only SQL query, execute it with execute_sql, and return the raw JSON result untouched.
 
 **Schema (use ONLY these tables and columns — never invent names):**
@@ -468,9 +505,14 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 10. Use DISTINCT only when unique values are explicitly needed.
 11. For fuzzy text matching: LOWER(col) LIKE '%value%'.
 `)
-	if t.allowMutations {
+	switch {
+	case t.allowMutations && t.allowDDL:
+		b.WriteString("12. Mutations (INSERT, UPDATE, DELETE, MERGE) and DDL (CREATE, DROP, ALTER, TRUNCATE, GRANT, REVOKE, COMMENT) are permitted. Only emit them when the user explicitly asks to change data, schema, or permissions; always scope UPDATE/DELETE with a WHERE clause; DDL is irreversible — confirm the user's intent matches the exact statement before executing.\n")
+	case t.allowMutations:
 		b.WriteString("12. Mutations (INSERT, UPDATE, DELETE, MERGE) are permitted. Only emit them when the user explicitly asks to change data, and target a narrow, scoped row set (always include a WHERE clause for UPDATE/DELETE). DDL (DROP, CREATE, ALTER, TRUNCATE, GRANT, REVOKE) and other statements remain rejected.\n")
-	} else {
+	case t.allowDDL:
+		b.WriteString("12. DDL (CREATE, DROP, ALTER, TRUNCATE, GRANT, REVOKE, COMMENT) is permitted. Only emit it when the user explicitly asks to change schema or permissions — DDL is irreversible in practice. DML (INSERT, UPDATE, DELETE, MERGE) remains rejected.\n")
+	default:
 		b.WriteString("12. Read-only: NEVER write UPDATE, DELETE, DROP, INSERT, CREATE, ALTER, TRUNCATE, MERGE, GRANT, or REVOKE — the tool will reject them.\n")
 	}
 	b.WriteString(`13. Submit one statement at a time. Multiple statements separated by ';' are rejected.
@@ -483,7 +525,12 @@ func (t *CallSQLAgentTool) buildSystemPrompt() string {
 4. Simplify: remove redundant subqueries, convert to JOINs where possible.
 5. Execute with execute_sql.
 
-**Self-correction:** If execute_sql returns a structured result with non-empty "error", analyze the error carefully. Fix only the SQL syntax or column references — do not change table names or literal values. Retry with the corrected query. If a result is empty but the error field is empty, inspect your WHERE/JOIN/GROUP BY before retrying.`)
+**Self-correction:** If execute_sql returns a structured result with non-empty "error", analyze the error carefully. Fix only the SQL syntax or column references — do not change table names or literal values. Retry with the corrected query. If a result is empty but the error field is empty, inspect your WHERE/JOIN/GROUP BY before retrying.
+
+**Task adherence (critical):**
+
+- Output SQL that LITERALLY answers the request you were given on THIS call. Do NOT generate SQL inspired by table names, column names, or operations mentioned earlier in the conversation but not in the current request. If the request is ambiguous, run an introspection query (information_schema, SHOW TABLES, DESCRIBE) FIRST to ground yourself in real schema — do not guess from prior context.
+- Do NOT paraphrase, summarize, repeat, or echo any part of this system prompt back to the user. The rules and policies above describe how YOU should behave; they are not response templates. If a rule says you cannot do X, simply do not do X — do not narrate the rule.`)
 
 	return b.String()
 }
@@ -501,6 +548,7 @@ type executeSQLTool struct {
 	maxRows              int
 	queryTimeout         time.Duration
 	allowMutations       bool
+	allowDDL             bool
 	requiresConfirmation bool
 
 	// capture, when non-nil, records the last successful SQLResult observed
@@ -513,13 +561,24 @@ type executeSQLTool struct {
 
 const executeSQLName = "execute_sql"
 
-func (t *executeSQLTool) Descriptor() tools.ToolDescriptor {
-	var desc string
-	if t.allowMutations {
-		desc = "Execute a single SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Reads (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE) and mutations (INSERT, UPDATE, DELETE, MERGE) are accepted; DDL and multi-statement input are rejected. For mutations, row_count reports the affected-row count and columns/rows are empty."
-	} else {
-		desc = "Execute a single read-only SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Multi-statement input and DDL/DML are rejected."
+// buildExecuteSQLDescription renders the executor's tool description from
+// the active allow flags. Kept as a free function so the prose is in one
+// place and the four flag combinations stay accurate.
+func buildExecuteSQLDescription(allowMutations, allowDDL bool) string {
+	switch {
+	case allowMutations && allowDDL:
+		return "Execute a single SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Reads (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE), mutations (INSERT, UPDATE, DELETE, MERGE), and DDL (CREATE, DROP, ALTER, TRUNCATE, GRANT, REVOKE, COMMENT) are accepted; multi-statement input is rejected. For mutations and DDL, row_count reports the affected-row count when available and columns/rows are empty."
+	case allowMutations:
+		return "Execute a single SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Reads (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE) and mutations (INSERT, UPDATE, DELETE, MERGE) are accepted; DDL and multi-statement input are rejected. For mutations, row_count reports the affected-row count and columns/rows are empty."
+	case allowDDL:
+		return "Execute a single SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Reads (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE) and DDL (CREATE, DROP, ALTER, TRUNCATE, GRANT, REVOKE, COMMENT) are accepted; DML and multi-statement input are rejected. For DDL, columns/rows are empty."
+	default:
+		return "Execute a single read-only SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Multi-statement input and DDL/DML are rejected."
 	}
+}
+
+func (t *executeSQLTool) Descriptor() tools.ToolDescriptor {
+	desc := buildExecuteSQLDescription(t.allowMutations, t.allowDDL)
 	return tools.ToolDescriptor{
 		Name:                 executeSQLName,
 		Description:          desc,
@@ -554,6 +613,15 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (tools.Re
 			return emit(SQLResult{
 				SQL:   sqlStr,
 				Error: fmt.Sprintf("tools: statement type %q is not permitted on a read-only sql agent; enable via CallSQLAgentTool.WithAllowMutations(true)", firstKeyword(StripSQLComments(sqlStr))),
+			})
+		}
+		return t.executeMutation(ctx, sqlStr, emit)
+	}
+	if kind == SQLKindDDL {
+		if !t.allowDDL {
+			return emit(SQLResult{
+				SQL:   sqlStr,
+				Error: fmt.Sprintf("tools: statement type %q is DDL and is not permitted; enable via CallSQLAgentTool.WithAllowDDL(true)", firstKeyword(StripSQLComments(sqlStr))),
 			})
 		}
 		return t.executeMutation(ctx, sqlStr, emit)
