@@ -2,6 +2,31 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.24.0] — 2026-05-17
+
+Tool interface collapse — the 6-method `Tool` interface plus three opt-in method-set interfaces (`Cacheable`, `InlineRenderer`, `StructuredResult`) is replaced with one `Descriptor()` accessor returning a value struct plus one `Execute()` returning a `Result`. Capability flags (cacheable, inline-render, requires-confirmation) now live as fields on the descriptor, so wrappers (logging / timing / retry / debug middleware) preserve every flag for free — the previous design silently dropped opt-in capabilities on wrap because Go's structural interface satisfaction does not carry method sets across embedding.
+
+### Added
+- `tools.ToolDescriptor` — single value struct returned by `Tool.Descriptor()` carrying `Name`, `Description`, `Parameters`, `RequiresConfirmation`, `Cacheable`, `Inline`, `Display`. One accessor replaces the prior 5 metadata methods + 2 opt-in capability interfaces. Wrappers forward `Descriptor()` in one line and inherit every flag without re-declaring methods.
+- `tools.Result` — return type of `Tool.Execute`. `Text` (string the LLM sees) plus optional `Structured any` (typed payload delivered to `OnToolResult` for post-execution mutators) plus optional `Parts []MediaPart` (multi-modal output for providers that accept non-text tool results).
+- `tools.Text(s string) Result` — one-liner constructor for text-only results: `return tools.Text("ok"), nil`.
+- `tools.MediaPart` — leaf-package multi-modal output unit (`MIMEType`, `Data`, `Text`). Defined inline in `pkg/tools` so the package stays leaf — the agent loop adapts to `history.MediaPart` at the boundary.
+- `Registry.All() []Tool` — replaces `Registry.GetAll`, matching the `Get`-prefix-drop pattern from v0.22's `SessionManager` redesign.
+
+### Changed (breaking)
+- `tools.Tool` interface is now `Descriptor() ToolDescriptor` + `Execute(ctx, args) (Result, error)`. Implementations replace their 5 metadata methods (`Name`, `Description`, `ParametersSchema`, `RequiresConfirmation`, `Display`) with a single `Descriptor()` returning a `ToolDescriptor` value. `Execute` returns `tools.Result` instead of `string`; for text-only tools use `tools.Text("...")` to wrap.
+- `tools.Cacheable`, `tools.InlineRenderer`, `tools.StructuredResult` interfaces removed. Tools that previously implemented them set `Cacheable: true` / `Inline: true` on the descriptor; structured payloads go on `Result.Structured`. `ExecuteStructured` is gone — `Execute` is the sole entry point and returns `Result{Text: ..., Structured: ...}` when typed data accompanies the LLM-facing string.
+- `Registry.GetAll()` removed. Use `Registry.All()`.
+- `pkg/tools/result.go` removed (the unused `Result` / `Emitter` / `NoopEmitter` shapes from prior speculative work). The new `Result` lives in `tool.go`.
+- LLM providers (`pkg/llm/anthropic.go`, `openai.go`, `gemini.go`) and `pkg/builder/catalog.go` updated to read tool metadata via `Descriptor()` — mechanical change forced by the upstream interface redesign, no behavioral edits.
+
+### Removed
+- `tools.Cacheable`, `tools.InlineRenderer`, `tools.StructuredResult` interfaces (folded into `ToolDescriptor` fields and `Result.Structured`).
+- `tools.Emitter`, `tools.NoopEmitter`, the unused `Result.UI` shape from `pkg/tools/result.go`.
+- `Tool.Name()`, `Tool.Description()`, `Tool.ParametersSchema()`, `Tool.RequiresConfirmation()`, `Tool.Display()` — read these as `tool.Descriptor().<Field>` instead.
+- `StructuredResult.ExecuteStructured()` — return `Result{Text, Structured}` from `Execute` instead.
+- `Registry.GetAll()` — renamed to `All`.
+
 ## [v0.23.0] — 2026-05-15
 
 First-class `Regenerate` / `Continue` affordances on `AgentLoop` so chat-UI adopters get the "redo my last turn" and "keep going from where it stopped" patterns without re-implementing tool_use/tool_result-safe history truncation in adopter code (the exact shape that produced the Anthropic 400s sanitized in v0.20.1).
@@ -183,6 +208,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.24.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.24.0
 [v0.23.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.23.0
 [v0.22.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.22.0
 [v0.21.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.21.0
