@@ -2,6 +2,14 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.26.1] — 2026-05-17
+
+Patch release. One Fixed item — completes the v0.25.0 OpenAI null-content fix after a second Phin report.
+
+### Fixed
+
+- **OpenAI provider — `gpt-4.1` and `gpt-5` 400 on null content across every message role.** The v0.25.0 fix stamped a single space only inside the `assistant + has tool-calls` branch, leaving three other paths exposed: tool-result rows with empty content (`role:"tool"`, `Content:""`), plain assistant rows whose stream ended with `finalContent == ""`, and user/system rows with empty content. All four serialized as null after the Go SDK's `omitempty` ate the empty string, and both `gpt-4.1` and `gpt-5` rejected the resulting request with "Invalid value for 'content': expected a string, got null." The space-stamp now runs unconditionally on every converted message right before append, gated only on `Content == "" && len(MultiContent) == 0` so multimodal user messages stay untouched. Model-level no-op, satisfies every role. (`pkg/llm/openai.go`)
+
 ## [v0.26.0] — 2026-05-17
 
 SQL sub-agent prompt hardening + server-side bare-`SELECT *` guard, aimed at the failure mode where weakly-grounding models (Gemini 2.5) invent destructive follow-ups, ignore HITL denial, and project unbounded row width. One default-rejection change; the rest are additive.
@@ -298,6 +306,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.26.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.1
 [v0.26.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.0
 [v0.25.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.25.0
 [v0.24.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.24.0

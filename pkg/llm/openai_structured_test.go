@@ -187,6 +187,51 @@ func TestOpenAI_AssistantToolCall_HasContentField(t *testing.T) {
 	}
 }
 
+// Every role with empty Content must serialize a non-null content
+// field — gpt-4.1 and gpt-5 both 400 with "Invalid value for 'content':
+// expected a string, got null." The Go SDK's `omitempty` would drop the
+// field entirely for empty strings, so the converter stamps a single
+// space across every role. Multimodal messages (MultiContent populated)
+// are exempt and remain untouched.
+func TestOpenAI_EmptyContent_AllRolesHaveContent(t *testing.T) {
+	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+		ch := make(chan agent.StreamEvent, 8)
+		go func() {
+			for range ch {
+			}
+		}()
+		_, _ = p.GenerateStream(context.Background(), []history.Message{
+			{Role: "system", Content: ""},
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Content: "", ToolCalls: []history.ToolCall{{
+				ID: "call_1", Name: "foo", Arguments: "{}",
+			}}},
+			{Role: "tool", ToolCallID: "call_1", Content: ""},
+			{Role: "assistant", Content: ""},
+		}, nil, ch)
+		close(ch)
+	})
+
+	msgs, ok := req["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages missing: %v", req["messages"])
+	}
+	for i, m := range msgs {
+		mm, _ := m.(map[string]any)
+		role, _ := mm["role"].(string)
+		content, present := mm["content"]
+		if !present {
+			t.Fatalf("msg[%d] role=%q missing content field (gpt-4.1/gpt-5 will 400)", i, role)
+		}
+		if content == nil {
+			t.Fatalf("msg[%d] role=%q has null content (gpt-4.1/gpt-5 will 400)", i, role)
+		}
+		if s, _ := content.(string); s == "" {
+			t.Fatalf("msg[%d] role=%q has empty-string content; converter must stamp a space", i, role)
+		}
+	}
+}
+
 // Defensive: confirm that the jsonSchemaMarshaler produces a JSON object,
 // not the Go map's default encoding quirks, when the map is empty.
 func TestJSONSchemaMarshaler_EmptyMap(t *testing.T) {
