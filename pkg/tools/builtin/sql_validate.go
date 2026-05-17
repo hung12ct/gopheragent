@@ -201,6 +201,122 @@ func EnsureLimit(sql string, max int) string {
 	return trimmed + fmt.Sprintf("\nLIMIT %d", max)
 }
 
+// HasBareStarProjection reports whether the outermost SELECT's projection
+// list contains a bare "*" or "<alias>.*" wildcard. Subquery SELECTs at
+// paren depth > 0 are not inspected — only the outer query is enforced,
+// which is where SELECT * causes the practical harm (unbounded row width,
+// hallucinated column references on the model's next turn). Statements
+// whose leading verb is not SELECT or WITH return false unconditionally
+// (EXPLAIN / SHOW / DESCRIBE return plan / metadata rows, not user data).
+func HasBareStarProjection(sql string) bool {
+	s := StripSQLComments(sql)
+	head := firstKeyword(s)
+	if head != "SELECT" && head != "WITH" {
+		return false
+	}
+	selectStart := findOuterSelectBody(s)
+	if selectStart < 0 {
+		return false
+	}
+	// Skip optional DISTINCT / ALL qualifier.
+	i := selectStart
+	for i < len(s) && isSpace(s[i]) {
+		i++
+	}
+	if matchesWordAt(s, i, "DISTINCT") {
+		i += len("DISTINCT")
+	} else if matchesWordAt(s, i, "ALL") {
+		i += len("ALL")
+	}
+	// Walk projection list at depth 0; split on commas; stop at outer FROM.
+	pieceStart := i
+	depth := 0
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == '\'' || c == '"' || c == '`':
+			i = scanQuoted(s, i)
+		case c == '(':
+			depth++
+			i++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+			i++
+		case depth == 0 && c == ',':
+			if isWildcardProjection(s[pieceStart:i]) {
+				return true
+			}
+			pieceStart = i + 1
+			i++
+		case depth == 0 && matchesWordAt(s, i, "FROM"):
+			return isWildcardProjection(s[pieceStart:i])
+		default:
+			i++
+		}
+	}
+	return isWildcardProjection(s[pieceStart:])
+}
+
+// findOuterSelectBody returns the byte offset immediately after the first
+// "SELECT" keyword at paren depth 0, or -1 if none is found. Used by
+// HasBareStarProjection to locate the outermost projection list (skipping
+// SELECTs nested inside CTE bodies, subqueries, etc.).
+func findOuterSelectBody(s string) int {
+	depth := 0
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == '\'' || c == '"' || c == '`':
+			i = scanQuoted(s, i)
+		case c == '(':
+			depth++
+			i++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+			i++
+		case depth == 0 && matchesWordAt(s, i, "SELECT"):
+			return i + len("SELECT")
+		default:
+			i++
+		}
+	}
+	return -1
+}
+
+// isWildcardProjection reports whether a single comma-separated projection
+// piece is a bare "*" or "<alias>.*". Trims surrounding whitespace; a
+// trailing "AS alias" on the wildcard still counts (the alias does not
+// constrain the row width). Anything starting with an operand before the
+// star (e.g. "price * 2") is multiplication and returns false.
+func isWildcardProjection(piece string) bool {
+	p := strings.TrimSpace(piece)
+	if p == "" {
+		return false
+	}
+	if p[0] == '*' {
+		return len(p) == 1 || !isIdentChar(p[1])
+	}
+	dot := strings.IndexByte(p, '.')
+	if dot <= 0 {
+		return false
+	}
+	for k := range dot {
+		if !isIdentChar(p[k]) {
+			return false
+		}
+	}
+	rest := strings.TrimLeft(p[dot+1:], " \t")
+	if rest == "" {
+		return false
+	}
+	return rest[0] == '*' && (len(rest) == 1 || !isIdentChar(rest[1]))
+}
+
 // firstKeyword returns the first SQL keyword in s, uppercased. Leading
 // whitespace and an opening parenthesis (common in parenthesised SELECTs)
 // are skipped.

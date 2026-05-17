@@ -179,6 +179,56 @@ func TestCallSQLAgentTool_BuildSystemPromptMentionsDDL(t *testing.T) {
 	}
 }
 
+func TestCallSQLAgentTool_WithProviderHintInjectsAddendum(t *testing.T) {
+	prompt := NewCallSQLAgentTool(nil, "schema", nil, nil).
+		WithAllowMutations(true).
+		WithProviderHint("Do NOT propose a follow-up DELETE based on rows you just read.").
+		buildSystemPrompt()
+	if !strings.Contains(prompt, "Provider-specific guidance") {
+		t.Fatalf("provider hint section missing: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Do NOT propose a follow-up DELETE") {
+		t.Fatalf("provider hint body missing: %s", prompt)
+	}
+	// Hint must sit between safety contract and schema block so it's read
+	// as binding (not as schema metadata).
+	contractIdx := strings.Index(prompt, "Safety contract")
+	hintIdx := strings.Index(prompt, "Provider-specific guidance")
+	schemaIdx := strings.Index(prompt, "Schema (use ONLY")
+	if !(contractIdx < hintIdx && hintIdx < schemaIdx) {
+		t.Fatalf("provider hint out of order: contract=%d hint=%d schema=%d", contractIdx, hintIdx, schemaIdx)
+	}
+}
+
+func TestCallSQLAgentTool_WithProviderHintEmptyOmitsSection(t *testing.T) {
+	prompt := NewCallSQLAgentTool(nil, "schema", nil, nil).buildSystemPrompt()
+	if strings.Contains(prompt, "Provider-specific guidance") {
+		t.Fatalf("provider hint section should be absent when hint is empty: %s", prompt)
+	}
+}
+
+func TestCallSQLAgentTool_WithAllowSelectStar(t *testing.T) {
+	tool := NewCallSQLAgentTool(nil, "", nil, nil)
+	if tool.allowSelectStar {
+		t.Fatalf("WithAllowSelectStar default: got true, want false")
+	}
+	tool.WithAllowSelectStar(true)
+	if !tool.allowSelectStar {
+		t.Fatalf("WithAllowSelectStar(true): flag not set")
+	}
+}
+
+func TestExecuteSQLTool_RejectsBareSelectStar(t *testing.T) {
+	exec := &executeSQLTool{db: nil, allowSelectStar: false}
+	out, err := exec.Execute(context.Background(), `{"sql_query":"SELECT * FROM customers"}`)
+	if err != nil {
+		t.Fatalf("Execute returned a hard error instead of a structured rejection: %v", err)
+	}
+	if !strings.Contains(out.Text, "bare 'SELECT *'") || !strings.Contains(out.Text, "WithAllowSelectStar") {
+		t.Fatalf("rejection payload should mention the rule + the enabling builder, got %s", out.Text)
+	}
+}
+
 func TestExecuteSQLTool_RequiresConfirmationReflectsFlag(t *testing.T) {
 	off := (&executeSQLTool{}).Descriptor().RequiresConfirmation
 	on := (&executeSQLTool{requiresConfirmation: true}).Descriptor().RequiresConfirmation

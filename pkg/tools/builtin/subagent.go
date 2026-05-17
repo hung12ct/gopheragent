@@ -151,9 +151,9 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (tools
 func subAgentHITLReport(hitlEvent agent.StreamEvent, innerSummary string) string {
 	switch p := hitlEvent.Payload.(type) {
 	case agent.HITLTimedOutEvent:
-		return fmt.Sprintf("HITL_BLOCKED: timeout — the human approval prompt for tool %q expired after %s before the operator responded. The user did NOT refuse. Tell the user the approval window closed and ask them to retry when they are ready to confirm; do not paraphrase this as a denial. Worker summary (may be misleading): %s", p.Tool, p.Timeout, innerSummary)
+		return fmt.Sprintf("HITL_BLOCKED: timeout — the approval prompt for tool %q expired after %s; the user did NOT refuse. STOP. Do NOT retry automatically. Do NOT rephrase or re-issue the same call. Reply to the user with one short paragraph saying the approval window closed and ask them to confirm when ready, then end your turn. Worker summary (may be misleading): %s", p.Tool, p.Timeout, innerSummary)
 	case agent.HITLDeniedEvent:
-		return fmt.Sprintf("HITL_BLOCKED: denied — the human operator denied approval for tool %q. Tell the user directly that they have not granted the permission this action requires, and ask whether they have an alternative approach. Worker summary (may be misleading): %s", p.Tool, innerSummary)
+		return fmt.Sprintf("HITL_BLOCKED: denied — the operator denied approval for tool %q. STOP. Do NOT call this tool again with the same or similar arguments. Do NOT retry, rephrase, or work around the gate. Reply to the user with one short paragraph stating the request was not approved and ask whether they have an alternative approach, then end your turn. Worker summary (may be misleading): %s", p.Tool, innerSummary)
 	default:
 		return innerSummary
 	}
