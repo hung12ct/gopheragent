@@ -491,7 +491,19 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	registerStream(sessionKey, streamChan)
 	defer unregisterStream(sessionKey)
 
-	go myAgentApp.RunIterationStream(r.Context(), sessionKey, userInput, streamChan)
+	// Bridge the iter-based Run API to streamChan so the HITL gate
+	// (registered via registerStream above) can multiplex its
+	// action_required events onto the same channel the handler reads from.
+	go func() {
+		defer close(streamChan)
+		for ev := range myAgentApp.RunText(r.Context(), sessionKey, userInput) {
+			select {
+			case streamChan <- ev:
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}()
 
 	sawTerminal := false
 	defer func() {

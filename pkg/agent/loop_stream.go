@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"log"
 	"strings"
 	"sync"
@@ -544,27 +545,66 @@ func isFreshSessionHistory(msgs []history.Message) bool {
 	return len(msgs) == 1 && msgs[0].Role == "system"
 }
 
+// Run streams events from the agent loop as a pull-based iterator. The caller
+// ranges over it; the library owns the underlying goroutine and tears it down
+// when the range loop exits — for any reason, including early break or ctx
+// cancellation.
+//
+//	for ev := range agent.Run(ctx, sessionKey, msg) {
+//	    if p, ok := ev.Payload.(agent.ErrorEvent); ok { return p.Err }
+//	    // ... handle ev
+//	    if userStopped { break }   // library cancels the loop, drains
+//	}
+//
+// Thought events are filtered when AgentLoop.EmitThoughts is false (default).
+// Errors are surfaced as ErrorEvent payloads in-stream; callers that want a
+// terminal Go error type-assert on the payload. For the blocking "return the
+// final answer" shape, use RunIteration.
+func (al *AgentLoop) Run(ctx context.Context, sessionKey string, msg history.Message) iter.Seq[StreamEvent] {
+	if msg.Role == "" {
+		msg.Role = "user"
+	}
+	emitThoughts := al.EmitThoughts
+	return func(yield func(StreamEvent) bool) {
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		internalChan := make(chan StreamEvent, runIterationStreamBuffer)
+		go al.runLogicLoop(runCtx, sessionKey, msg, internalChan)
+		yieldEvents(internalChan, yield, emitThoughts, cancel)
+	}
+}
+
+// RunText is a string-input convenience wrapper around Run for text-only
+// turns. The wrapped history.Message has Role="user" and Content=text.
+func (al *AgentLoop) RunText(ctx context.Context, sessionKey, text string) iter.Seq[StreamEvent] {
+	return al.Run(ctx, sessionKey, history.Message{Role: "user", Content: text})
+}
+
 // RunIteration provides a fast, blocking response interface (non-streaming).
 // Thoughts are always suppressed — only final content and errors are returned.
+// Implemented on top of Run: drains the iterator, collecting Content events
+// into the returned string and surfacing the first ErrorEvent as a Go error.
 func (al *AgentLoop) RunIteration(ctx context.Context, sessionKey string, userInput string) (string, error) {
 	return al.RunIterationMessage(ctx, sessionKey, history.Message{Role: "user", Content: userInput})
 }
 
 // RunIterationMessage is the multimodal-aware variant of RunIteration. The
-// caller controls the appended user message — set Parts to pass image
-// bytes, ToolCallID for tool-result inputs, CacheHint for prompt-cache
-// breakpoints, etc. Role defaults to "user" when empty.
+// caller controls the appended user message — set Parts to pass image bytes,
+// ToolCallID for tool-result inputs, CacheHint for prompt-cache breakpoints,
+// etc. Role defaults to "user" when empty.
 func (al *AgentLoop) RunIterationMessage(ctx context.Context, sessionKey string, msg history.Message) (string, error) {
 	if msg.Role == "" {
 		msg.Role = "user"
 	}
-	streamChan := make(chan StreamEvent, runIterationBuffer)
-
-	go al.runLogicLoop(ctx, sessionKey, msg, streamChan)
+	// Suppress thoughts unconditionally for the blocking shape — callers that
+	// want them should use Run with EmitThoughts=true.
+	prevEmitThoughts := al.EmitThoughts
+	al.EmitThoughts = false
+	defer func() { al.EmitThoughts = prevEmitThoughts }()
 
 	var buf strings.Builder
 	var lastErr error
-	for ev := range streamChan {
+	for ev := range al.Run(ctx, sessionKey, msg) {
 		// Events forwarded from sub-agents (Source != "") are observational only;
 		// they must not be treated as the parent's own final answer or error.
 		if ev.Source != "" {
@@ -593,79 +633,23 @@ func (al *AgentLoop) RunIterationMessage(ctx context.Context, sessionKey string,
 	return buf.String(), lastErr
 }
 
-// RunIterationStream is a streaming version of the LLM loop that pushes data to a channel.
-// It supports SSE by streaming thoughts and response chunks.
-//
-// Channel lifecycle: this call returns immediately after spawning two
-// internal goroutines (the relayer and the agent loop). The library owns
-// streamChan and will close() it exactly once when the agent loop
-// terminates — callers MUST NOT close streamChan themselves and MUST NOT
-// wrap the call in `go func() { defer close(streamChan); ... }()`. Doing
-// so races the relayer at loop_stream.go and produces
-// "send on closed channel" / "close of closed channel" panics on the
-// first emitted event. Range over the channel from the caller; it
-// terminates naturally when the agent is done.
-//
-// Cancellation contract: when ctx is cancelled mid-stream the agent loop
-// emits a terminal error event wrapping [ErrContextCancelled]; the relayer
-// best-effort forwards any terminal frame (done/error) to streamChan before
-// closing it, even after ctx fires. Non-terminal events queued at the moment
-// of cancellation are dropped. Adopters should treat both EventTypeDone and
-// EventTypeError (where Source == "") as terminal so the consumer transitions
-// out of its streaming state in every termination path.
-func (al *AgentLoop) RunIterationStream(ctx context.Context, sessionKey string, userInput string, streamChan chan<- StreamEvent) {
-	al.RunIterationStreamMessage(ctx, sessionKey, history.Message{Role: "user", Content: userInput}, streamChan)
-}
-
-// RunIterationStreamMessage is the multimodal-aware variant of
-// RunIterationStream. The caller controls the appended user message —
-// set Parts for image bytes / mixed multimodal content, ToolCallID for
-// tool-result inputs, CacheHint for prompt-cache breakpoints. Role
-// defaults to "user" when empty. Same goroutine + channel semantics as
-// RunIterationStream — returns immediately, library owns streamChan,
-// callers MUST NOT close it.
-func (al *AgentLoop) RunIterationStreamMessage(ctx context.Context, sessionKey string, msg history.Message, streamChan chan<- StreamEvent) {
-	if msg.Role == "" {
-		msg.Role = "user"
-	}
-	internalChan := make(chan StreamEvent, runIterationStreamBuffer)
-	emitThoughts := al.EmitThoughts
-
-	go func() {
-		defer close(streamChan)
-		for ev := range internalChan {
-			if ev.Type == EventTypeThought && !emitThoughts {
-				continue
-			}
-			select {
-			case streamChan <- ev:
-			case <-ctx.Done():
-				// Consumer ctx cancelled. Best-effort forward terminal frames
-				// (done/error) so adopters can distinguish cancellation from a
-				// silent close; drop the rest to unblock runLogicLoop.
-				trySendTerminal(streamChan, ev)
-				for ev := range internalChan {
-					trySendTerminal(streamChan, ev)
-				}
-				return
-			}
+// yieldEvents drains internalChan through yield, filtering thoughts when not
+// requested and best-effort forwarding terminal frames when ctx cancels or
+// the caller breaks early. The cancel func is the iterator's cleanup hook —
+// invoking it stops the underlying runLogicLoop so we can finish draining.
+func yieldEvents(internalChan chan StreamEvent, yield func(StreamEvent) bool, emitThoughts bool, cancel context.CancelFunc) {
+	for ev := range internalChan {
+		if ev.Type == EventTypeThought && !emitThoughts {
+			continue
 		}
-	}()
-
-	go al.runLogicLoop(ctx, sessionKey, msg, internalChan)
-}
-
-// trySendTerminal non-blocking sends ev to streamChan only when ev is a
-// terminal frame (done/error). Used by the relayer's ctx-cancel branch to
-// forward cancellation/completion signals on a best-effort basis without
-// risking a block when the consumer has stopped reading.
-func trySendTerminal(streamChan chan<- StreamEvent, ev StreamEvent) {
-	if ev.Type != EventTypeDone && ev.Type != EventTypeError {
-		return
-	}
-	select {
-	case streamChan <- ev:
-	default:
+		if !yield(ev) {
+			// Caller broke early. Cancel and drain so the producer goroutine
+			// finishes without blocking on the unbuffered/full channel.
+			cancel()
+			for range internalChan {
+			}
+			return
+		}
 	}
 }
 

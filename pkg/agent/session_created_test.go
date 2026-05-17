@@ -33,10 +33,8 @@ func TestSessionCreated_EmittedOnFirstTurnOnly(t *testing.T) {
 	loop, _ := setup(provider)
 
 	drain := func(userInput string) []StreamEvent {
-		ch := make(chan StreamEvent, 16)
-		go loop.RunIterationStream(context.Background(), "fresh:s1", userInput, ch)
 		var out []StreamEvent
-		for ev := range ch {
+		for ev := range loop.RunText(context.Background(), "fresh:s1", userInput) {
 			out = append(out, ev)
 		}
 		return out
