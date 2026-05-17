@@ -105,13 +105,10 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 	parentSessionKey, _ := agent.SessionKeyFromContext(ctx)
 	source := "subagent:" + input.AgentName
 
-	workerChan := make(chan agent.StreamEvent, 50)
-	go workerLoop.RunIterationStream(ctx, workerSessionKey, instruction, workerChan)
-
 	var buf strings.Builder
 	var workerErr error
 	var hitlEvent agent.StreamEvent
-	for ev := range workerChan {
+	for ev := range workerLoop.RunText(ctx, workerSessionKey, instruction) {
 		// Accumulate the worker's own content as its final report; content that
 		// comes from deeper nested sub-agents (Source already set) is only
 		// observational and must not pollute this worker's answer.

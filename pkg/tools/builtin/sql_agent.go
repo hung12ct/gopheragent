@@ -350,12 +350,9 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 		})
 	}
 
-	streamChan := make(chan agent.StreamEvent, 100)
-	go subAgent.RunIterationStream(ctx, subSessionKey, query, streamChan)
-
 	var finalResult strings.Builder
 	var hitlEvent agent.StreamEvent
-	for event := range streamChan {
+	for event := range subAgent.RunText(ctx, subSessionKey, query) {
 		if event.Source != "" {
 			continue
 		}

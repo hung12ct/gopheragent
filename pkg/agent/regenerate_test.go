@@ -3,17 +3,18 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
 )
 
-// drainStream collects every event from ch until ch closes. Helper for
-// Regenerate / Continue tests that assert on the full transcript.
-func drainStream(ch <-chan StreamEvent) []StreamEvent {
+// drainSeq collects every event from seq. Helper for Regenerate / Continue
+// tests that assert on the full transcript.
+func drainSeq(seq iter.Seq[StreamEvent]) []StreamEvent {
 	var out []StreamEvent
-	for ev := range ch {
+	for ev := range seq {
 		out = append(out, ev)
 	}
 	return out
@@ -39,11 +40,11 @@ func TestRegenerate_ReplaysLastUserAndEmitsTransitionFrame(t *testing.T) {
 
 	// Regenerate must rewind to [system, user] (the user message stays in
 	// the truncated prefix because the loop re-appends it).
-	ch := make(chan StreamEvent, 16)
-	if err := loop.Regenerate(context.Background(), "s1", ch); err != nil {
+	seq, err := loop.Regenerate(context.Background(), "s1")
+	if err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
-	events := drainStream(ch)
+	events := drainSeq(seq)
 
 	// First frame must be EventTypeRegenerated.
 	if len(events) == 0 || events[0].Type != EventTypeRegenerated {
@@ -71,14 +72,12 @@ func TestRegenerate_NoUserMessageReturnsSentinel(t *testing.T) {
 	provider := &scriptProvider{}
 	loop, _ := setup(provider)
 
-	ch := make(chan StreamEvent, 4)
-	err := loop.Regenerate(context.Background(), "empty", ch)
+	seq, err := loop.Regenerate(context.Background(), "empty")
 	if !errors.Is(err, ErrNothingToRegenerate) {
 		t.Fatalf("expected ErrNothingToRegenerate, got %v", err)
 	}
-	// Channel must be closed so adopters ranging over it exit cleanly.
-	if _, open := <-ch; open {
-		t.Fatalf("expected streamChan to be closed on sentinel return")
+	if seq != nil {
+		t.Fatalf("expected nil iterator on sentinel return, got %v", seq)
 	}
 }
 
@@ -101,11 +100,11 @@ func TestContinue_ResumesFromInterruptedHistory(t *testing.T) {
 	}
 	sm.SaveHistory(ctx, "s1", seed)
 
-	ch := make(chan StreamEvent, 16)
-	if err := loop.Continue(ctx, "s1", ch); err != nil {
+	seq, err := loop.Continue(ctx, "s1")
+	if err != nil {
 		t.Fatalf("Continue: %v", err)
 	}
-	events := drainStream(ch)
+	events := drainSeq(seq)
 	if len(events) == 0 || events[0].Type != EventTypeContinued {
 		t.Fatalf("expected first frame %q, got %+v", EventTypeContinued, events)
 	}
@@ -136,13 +135,12 @@ func TestContinue_CleanFinalReturnsSentinel(t *testing.T) {
 		{Role: "assistant", Content: "all done"},
 	})
 
-	ch := make(chan StreamEvent, 4)
-	err := loop.Continue(ctx, "s1", ch)
+	seq, err := loop.Continue(ctx, "s1")
 	if !errors.Is(err, ErrNothingToContinue) {
 		t.Fatalf("expected ErrNothingToContinue, got %v", err)
 	}
-	if _, open := <-ch; open {
-		t.Fatalf("expected streamChan to be closed on sentinel return")
+	if seq != nil {
+		t.Fatalf("expected nil iterator on sentinel return, got %v", seq)
 	}
 }
 
@@ -188,11 +186,11 @@ func TestRegenerate_TruncationIsToolPairSafe(t *testing.T) {
 		// c2's tool result is missing — simulates a crash mid-wave.
 	})
 
-	ch := make(chan StreamEvent, 16)
-	if err := loop.Regenerate(ctx, "s1", ch); err != nil {
+	seq, err := loop.Regenerate(ctx, "s1")
+	if err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
-	_ = drainStream(ch)
+	_ = drainSeq(seq)
 
 	// After the rewind + replay the persisted history must keep the older
 	// completed tool group [assistant tool_use, tool, assistant final] intact

@@ -47,9 +47,7 @@ func TestRunIterationStreamMessage_FlowsPartsIntoLLMCall(t *testing.T) {
 		},
 	}
 
-	ch := make(chan StreamEvent, 16)
-	go loop.RunIterationStreamMessage(context.Background(), "s1", msg, ch)
-	for range ch {
+	for range loop.Run(context.Background(), "s1", msg) {
 	}
 
 	prov.mu.Lock()

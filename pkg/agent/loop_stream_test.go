@@ -176,11 +176,8 @@ func TestRunIterationStream_ForwardsErrorOnCancelledCtx(t *testing.T) {
 	provider := &scriptProvider{turns: []LLMResult{{Content: "unreachable"}}}
 	loop, _ := setup(provider)
 
-	ch := make(chan StreamEvent, 10)
-	loop.RunIterationStream(ctx, "s1", "hello", ch)
-
 	var sawTerminal bool
-	for ev := range ch {
+	for ev := range loop.RunText(ctx, "s1", "hello") {
 		if ev.Type != EventTypeError && ev.Type != EventTypeDone {
 			continue
 		}
@@ -221,11 +218,8 @@ func TestRunIterationStream_EventTypes(t *testing.T) {
 	loop, _ := setup(provider, &echoTool{name: "echo"})
 	loop.EmitThoughts = true
 
-	ch := make(chan StreamEvent, 100)
-	loop.RunIterationStream(context.Background(), "s1", "hi", ch)
-
 	types := map[StreamEventType]bool{}
-	for ev := range ch {
+	for ev := range loop.RunText(context.Background(), "s1", "hi") {
 		types[ev.Type] = true
 	}
 	for _, want := range []StreamEventType{EventTypeToolCall, EventTypeContent, EventTypeDone} {
@@ -286,11 +280,8 @@ func TestRunIterationStream_HITLTimedOutEmitsTypedEvent(t *testing.T) {
 		return false
 	}
 
-	ch := make(chan StreamEvent, 50)
-	loop.RunIterationStream(context.Background(), "s1", "do risky thing", ch)
-
 	var sawTimedOut bool
-	for ev := range ch {
+	for ev := range loop.RunText(context.Background(), "s1", "do risky thing") {
 		if ev.Type != EventTypeHITLTimedOut {
 			continue
 		}

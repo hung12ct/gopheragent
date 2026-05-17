@@ -166,22 +166,11 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	streamChan := make(chan agent.StreamEvent, 64)
-	go agentLoop.RunIterationStream(r.Context(), sessionKey, userMsg, streamChan)
-
-	for {
-		select {
-		case event, ok := <-streamChan:
-			if !ok {
-				return
-			}
-			b, _ := json.Marshal(event)
-			fmt.Fprintf(w, "data: %s\n\n", b)
-			flusher.Flush()
-			if event.Type == "done" {
-				return
-			}
-		case <-r.Context().Done():
+	for event := range agentLoop.RunText(r.Context(), sessionKey, userMsg) {
+		b, _ := json.Marshal(event)
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+		if event.Type == "done" {
 			return
 		}
 	}

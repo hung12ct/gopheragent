@@ -42,11 +42,8 @@ func TestMaxIters_AlsoEmitsLimitExhausted(t *testing.T) {
 	loop, _ := setup(provider, ct)
 	loop.MaxIters = 2
 
-	ch := make(chan StreamEvent, 64)
-	go loop.RunIterationStream(context.Background(), "s1", "go", ch)
-
 	var sawLimitExhausted, sawMaxItersReached bool
-	for ev := range ch {
+	for ev := range loop.RunText(context.Background(), "s1", "go") {
 		switch p := ev.Payload.(type) {
 		case LimitExhaustedEvent:
 			if p.Kind == LimitKindMaxIters {
@@ -73,12 +70,9 @@ func TestMaxToolCallsPerSession_AlsoEmitsLimitExhausted(t *testing.T) {
 	loop, _ := setup(provider, ct)
 	loop.MaxToolCallsPerSession = 3
 
-	ch := make(chan StreamEvent, 64)
-	go loop.RunIterationStream(context.Background(), "s1", "go", ch)
-
 	var seen LimitExhaustedEvent
 	var found bool
-	for ev := range ch {
+	for ev := range loop.RunText(context.Background(), "s1", "go") {
 		if p, ok := ev.Payload.(LimitExhaustedEvent); ok && p.Kind == LimitKindMaxToolCallsPerSession {
 			seen = p
 			found = true

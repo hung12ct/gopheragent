@@ -260,9 +260,13 @@ func chatHandler(loop *agent.AgentLoop, mu *sync.Mutex, channels map[string]chan
 			mu.Unlock()
 		}()
 
-		go loop.RunIterationStream(r.Context(), req.SessionID, req.Message, events)
-
-		for ev := range events {
+		for ev := range loop.RunText(r.Context(), req.SessionID, req.Message) {
+			// Mirror the event to the approval broker's per-session channel so
+			// pending HITL approvals receive the action_required signal.
+			select {
+			case events <- ev:
+			default:
+			}
 			payload, err := json.Marshal(ev)
 			if err != nil {
 				log.Printf("sse: marshal: %v", err)
