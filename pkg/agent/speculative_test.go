@@ -136,15 +136,18 @@ type ctxBlockingTool struct {
 	started chan struct{}
 }
 
-func (t *ctxBlockingTool) Name() string                       { return t.name }
-func (t *ctxBlockingTool) Description() string                { return "blocks until ctx cancels" }
-func (t *ctxBlockingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (t *ctxBlockingTool) RequiresConfirmation() bool         { return false }
-func (t *ctxBlockingTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *ctxBlockingTool) Execute(ctx context.Context, _ string) (string, error) {
+func (t *ctxBlockingTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        t.name,
+		Description: "blocks until ctx cancels",
+		Display:     tools.DefaultDisplay(t.name, "blocks until ctx cancels"),
+	}
+}
+
+func (t *ctxBlockingTool) Execute(ctx context.Context, _ string) (tools.Result, error) {
 	close(t.started)
 	<-ctx.Done()
-	return "", ctx.Err()
+	return tools.Result{}, ctx.Err()
 }
 
 func TestSpawnSpeculative_MissingToolSurfacesError(t *testing.T) {
@@ -213,19 +216,22 @@ type slowCountingTool struct {
 	counter *int64
 }
 
-func (t *slowCountingTool) Name() string                        { return t.name }
-func (t *slowCountingTool) Description() string                 { return "slow counting tool" }
-func (t *slowCountingTool) ParametersSchema() tools.ToolSchema  { return tools.ToolSchema{} }
-func (t *slowCountingTool) RequiresConfirmation() bool          { return false }
-func (t *slowCountingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *slowCountingTool) Execute(ctx context.Context, args string) (string, error) {
+func (t *slowCountingTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        t.name,
+		Description: "slow counting tool",
+		Display:     tools.DefaultDisplay(t.name, "slow counting tool"),
+	}
+}
+
+func (t *slowCountingTool) Execute(ctx context.Context, args string) (tools.Result, error) {
 	atomic.AddInt64(t.counter, 1)
 	select {
 	case <-time.After(t.delay):
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return tools.Result{}, ctx.Err()
 	}
-	return "result:" + args, nil
+	return tools.Text("result:" + args), nil
 }
 
 func TestSpeculative_ToolExecutedOnceAndReused(t *testing.T) {

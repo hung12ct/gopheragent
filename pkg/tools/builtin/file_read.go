@@ -47,17 +47,8 @@ func (t *FileReadTool) WithMaxBytes(n int64) *FileReadTool {
 	return t
 }
 
-func (t *FileReadTool) Name() string { return "file_read" }
-
-// Cacheable opts file_read into the agent-loop tool-result cache: identical
-// (path, offset, length) tuples return the same bytes within a process
-// lifetime. Files can change on disk between agent turns, but the cache is
-// in-memory and short-lived, so staleness is bounded.
-func (t *FileReadTool) Cacheable() bool { return true }
-
-func (t *FileReadTool) Description() string {
-	return "Read the contents of a file from the local workspace. Paths are resolved relative to a fixed root directory; attempts to traverse outside root are rejected."
-}
+const fileReadName = "file_read"
+const fileReadDescription = "Read the contents of a file from the local workspace. Paths are resolved relative to a fixed root directory; attempts to traverse outside root are rejected."
 
 type fileReadArgs struct {
 	Path   string `json:"path"             description:"File path to read, relative to the configured root directory."`
@@ -65,29 +56,35 @@ type fileReadArgs struct {
 	Length int64  `json:"length,omitempty" description:"Optional number of bytes to read. Capped by MaxBytes. Defaults to MaxBytes."`
 }
 
-func (t *FileReadTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[fileReadArgs]()
+// Descriptor returns metadata for file_read. Cacheable=true opts identical
+// (path, offset, length) tuples into the agent-loop tool-result cache for the
+// process lifetime; files can change on disk between turns, but the cache is
+// in-memory and short-lived so staleness is bounded.
+func (t *FileReadTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        fileReadName,
+		Description: fileReadDescription,
+		Parameters:  tools.SchemaFor[fileReadArgs](),
+		Cacheable:   true,
+		Display:     tools.DefaultDisplay(fileReadName, fileReadDescription),
+	}
 }
 
-// RequiresConfirmation is false — reads are non-destructive.
-func (t *FileReadTool) RequiresConfirmation() bool { return false }
-
-func (t *FileReadTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args fileReadArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	if strings.TrimSpace(args.Path) == "" {
-		return "", fmt.Errorf("tools: path is required")
+		return tools.Result{}, fmt.Errorf("tools: path is required")
 	}
 	if t.Root == "" {
-		return "", fmt.Errorf("tools: file_read has no Root configured")
+		return tools.Result{}, fmt.Errorf("tools: file_read has no Root configured")
 	}
 
 	absRoot, err := filepath.Abs(t.Root)
 	if err != nil {
-		return "", fmt.Errorf("tools: invalid root: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid root: %w", err)
 	}
 
 	// Resolve the request path relative to root, then confirm it stays there.
@@ -97,29 +94,29 @@ func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	cleaned, err := filepath.Abs(filepath.Clean(req))
 	if err != nil {
-		return "", fmt.Errorf("tools: invalid path: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid path: %w", err)
 	}
 	if !pathWithin(cleaned, absRoot) {
-		return "", fmt.Errorf("tools: path %q is outside the configured root", args.Path)
+		return tools.Result{}, fmt.Errorf("tools: path %q is outside the configured root", args.Path)
 	}
 
 	info, err := os.Stat(cleaned)
 	if err != nil {
-		return "", fmt.Errorf("tools: stat %q: %w", args.Path, err)
+		return tools.Result{}, fmt.Errorf("tools: stat %q: %w", args.Path, err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("tools: %q is a directory, not a file", args.Path)
+		return tools.Result{}, fmt.Errorf("tools: %q is a directory, not a file", args.Path)
 	}
 
 	f, err := os.Open(cleaned)
 	if err != nil {
-		return "", fmt.Errorf("tools: open %q: %w", args.Path, err)
+		return tools.Result{}, fmt.Errorf("tools: open %q: %w", args.Path, err)
 	}
 	defer f.Close()
 
 	if args.Offset > 0 {
 		if _, err := f.Seek(args.Offset, io.SeekStart); err != nil {
-			return "", fmt.Errorf("tools: seek: %w", err)
+			return tools.Result{}, fmt.Errorf("tools: seek: %w", err)
 		}
 	}
 
@@ -133,7 +130,7 @@ func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (string, er
 
 	buf, err := io.ReadAll(io.LimitReader(f, cap))
 	if err != nil {
-		return "", fmt.Errorf("tools: read: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: read: %w", err)
 	}
 	truncated := info.Size()-args.Offset > int64(len(buf))
 
@@ -145,9 +142,9 @@ func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	out, err := json.Marshal(envelope)
 	if err != nil {
-		return "", fmt.Errorf("tools: marshal: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: marshal: %w", err)
 	}
-	return string(out), nil
+	return tools.Text(string(out)), nil
 }
 
 // pathWithin reports whether target lives under root. Both arguments must

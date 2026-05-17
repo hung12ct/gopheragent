@@ -14,12 +14,15 @@ type describedTool struct {
 	desc string
 }
 
-func (t *describedTool) Name() string                                    { return t.name }
-func (t *describedTool) Description() string                             { return t.desc }
-func (t *describedTool) ParametersSchema() ToolSchema                    { return ToolSchema{} }
-func (t *describedTool) RequiresConfirmation() bool                      { return false }
-func (t *describedTool) Display() ToolDisplay { return DefaultDisplay(t.Name(), t.Description()) }
-func (t *describedTool) Execute(_ context.Context, _ string) (string, error) { return "", nil }
+func (t *describedTool) Descriptor() ToolDescriptor {
+	return ToolDescriptor{
+		Name:        t.name,
+		Description: t.desc,
+		Display:     DefaultDisplay(t.name, t.desc),
+	}
+}
+
+func (t *describedTool) Execute(_ context.Context, _ string) (Result, error) { return Result{}, nil }
 
 // keywordEmbedder produces 3-dim vectors keyed by hand-picked keywords. Gives
 // deterministic, testable cosine similarity without hitting a real embedder.
@@ -93,10 +96,10 @@ func TestSelector_TopK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Select: %v", err)
 	}
-	if len(got) != 1 || got[0].Name() != "get_weather" {
+	if len(got) != 1 || got[0].Descriptor().Name != "get_weather" {
 		names := make([]string, len(got))
 		for i, t := range got {
-			names[i] = t.Name()
+			names[i] = t.Descriptor().Name
 		}
 		t.Fatalf("expected [get_weather], got %v", names)
 	}
@@ -209,7 +212,7 @@ func TestSelector_Refresh(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 	got, _ := sel.Select(context.Background(), "order status")
-	if len(got) != 1 || got[0].Name() != "b" {
+	if len(got) != 1 || got[0].Descriptor().Name != "b" {
 		t.Fatalf("expected [b] after Refresh, got %v", toolNames(got))
 	}
 }
@@ -227,8 +230,8 @@ func TestSelectRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectRegistry: %v", err)
 	}
-	all := filtered.GetAll()
-	if len(all) != 1 || all[0].Name() != "lookup_order" {
+	all := filtered.All()
+	if len(all) != 1 || all[0].Descriptor().Name != "lookup_order" {
 		t.Fatalf("expected [lookup_order], got %v", toolNames(all))
 	}
 }
@@ -236,7 +239,7 @@ func TestSelectRegistry(t *testing.T) {
 func toolNames(ts []Tool) []string {
 	out := make([]string, len(ts))
 	for i, t := range ts {
-		out[i] = t.Name()
+		out[i] = t.Descriptor().Name
 	}
 	return out
 }

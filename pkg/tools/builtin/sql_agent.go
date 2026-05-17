@@ -248,33 +248,34 @@ func (t *CallSQLAgentTool) WithAllowMutations(allow bool) *CallSQLAgentTool {
 	return t
 }
 
-// Name implements tools.Tool.
-func (t *CallSQLAgentTool) Name() string {
-	if t.name != "" {
-		return t.name
-	}
-	return "call_sql_agent"
-}
-
-// Description implements tools.Tool.
-func (t *CallSQLAgentTool) Description() string {
-	return "Translate natural language business questions into SQL and query the Database directly. It automatically determines tables, runs queries, and returns structured data."
-}
+const callSQLAgentDefaultName = "call_sql_agent"
+const callSQLAgentDescription = "Translate natural language business questions into SQL and query the Database directly. It automatically determines tables, runs queries, and returns structured data."
 
 type sqlAgentArgs struct {
 	Query string `json:"query" description:"The natural language query or task for the SQL database Sub-Agent to perform."`
 }
 
-// ParametersSchema implements tools.Tool.
-func (t *CallSQLAgentTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[sqlAgentArgs]()
-}
-
-// RequiresConfirmation reports whether each invocation must pass the HITL
-// gate. Defaults to true; override via WithRequiresConfirmation(false) for
-// autonomous agents.
-func (t *CallSQLAgentTool) RequiresConfirmation() bool {
-	return t.requiresConfirmation
+// Descriptor implements tools.Tool. Reads name / display / requiresConfirmation
+// from the mutable builder fields so the Tool surface reflects the latest
+// configuration without snapshotting.
+func (t *CallSQLAgentTool) Descriptor() tools.ToolDescriptor {
+	name := t.name
+	if name == "" {
+		name = callSQLAgentDefaultName
+	}
+	var disp tools.ToolDisplay
+	if t.display != nil {
+		disp = *t.display
+	} else {
+		disp = tools.DefaultDisplay(name, callSQLAgentDescription)
+	}
+	return tools.ToolDescriptor{
+		Name:                 name,
+		Description:          callSQLAgentDescription,
+		Parameters:           tools.SchemaFor[sqlAgentArgs](),
+		RequiresConfirmation: t.requiresConfirmation,
+		Display:              disp,
+	}
 }
 
 // Execute runs the sub-agent loop. The sub-agent sees the schema, examples,
@@ -284,26 +285,24 @@ func (t *CallSQLAgentTool) RequiresConfirmation() bool {
 // When WithSelfConsistency(n) with n > 1 is configured, n independent sub-
 // agents run in parallel and their execution results are clustered by hash;
 // the answer from the winning cluster is returned.
-func (t *CallSQLAgentTool) Display() tools.ToolDisplay {
-	if t.display != nil {
-		return *t.display
-	}
-	return tools.DefaultDisplay(t.Name(), t.Description())
-}
-func (t *CallSQLAgentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *CallSQLAgentTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args sqlAgentArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 
 	if t.selfConsistency > 1 {
-		return t.runCandidates(ctx, args.Query, t.selfConsistency)
+		out, err := t.runCandidates(ctx, args.Query, t.selfConsistency)
+		if err != nil {
+			return tools.Result{}, err
+		}
+		return tools.Text(out), nil
 	}
 	cand := t.runOnce(ctx, args.Query, 0)
 	if cand.finalResp == "" {
-		return "Process finished but no verbal response was given. Check logs.", nil
+		return tools.Text("Process finished but no verbal response was given. Check logs."), nil
 	}
-	return cand.finalResp, nil
+	return tools.Text(cand.finalResp), nil
 }
 
 // runOnce executes a single sub-agent run and returns its candidate record.
@@ -512,34 +511,35 @@ type executeSQLTool struct {
 	capture   *SQLResult
 }
 
-func (t *executeSQLTool) Name() string { return "execute_sql" }
+const executeSQLName = "execute_sql"
 
-func (t *executeSQLTool) Description() string {
+func (t *executeSQLTool) Descriptor() tools.ToolDescriptor {
+	var desc string
 	if t.allowMutations {
-		return "Execute a single SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Reads (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE) and mutations (INSERT, UPDATE, DELETE, MERGE) are accepted; DDL and multi-statement input are rejected. For mutations, row_count reports the affected-row count and columns/rows are empty."
+		desc = "Execute a single SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Reads (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE) and mutations (INSERT, UPDATE, DELETE, MERGE) are accepted; DDL and multi-statement input are rejected. For mutations, row_count reports the affected-row count and columns/rows are empty."
+	} else {
+		desc = "Execute a single read-only SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Multi-statement input and DDL/DML are rejected."
 	}
-	return "Execute a single read-only SQL statement against the database and return a structured JSON envelope {sql, columns, rows, row_count, execution_ms, truncated, error}. Multi-statement input and DDL/DML are rejected."
+	return tools.ToolDescriptor{
+		Name:                 executeSQLName,
+		Description:          desc,
+		Parameters:           tools.SchemaFor[executeSQLArgs](),
+		RequiresConfirmation: t.requiresConfirmation,
+		Display:              tools.DefaultDisplay(executeSQLName, desc),
+	}
 }
 
 type executeSQLArgs struct {
 	SQLQuery string `json:"sql_query" description:"The exact SQL query string to run. Single statement only."`
 }
 
-func (t *executeSQLTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[executeSQLArgs]()
-}
-
-func (t *executeSQLTool) RequiresConfirmation() bool { return t.requiresConfirmation }
-
-func (t *executeSQLTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-
 // Execute dispatches to executeRead or executeMutation based on
 // ClassifySQL. Unknown verbs and multi-statement input are rejected
 // here before any DB I/O.
-func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args executeSQLArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	sqlStr := strings.TrimSpace(args.SQLQuery)
 
@@ -566,8 +566,8 @@ func (t *executeSQLTool) Execute(ctx context.Context, argsJSON string) (string, 
 // marshals the same payload back to the model. Centralising both keeps
 // every exit path in sync — no silently-empty Rows for success and no
 // missing OnSQL call on error.
-func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (string, error) {
-	return func(res SQLResult) (string, error) {
+func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (tools.Result, error) {
+	return func(res SQLResult) (tools.Result, error) {
 		if t.onSQL != nil {
 			t.onSQL(ctx, SQLQueryEvent{
 				SessionKey: t.sessionKey,
@@ -580,15 +580,15 @@ func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (stri
 		}
 		b, err := json.Marshal(res)
 		if err != nil {
-			return "", fmt.Errorf("tools: marshal result: %w", err)
+			return tools.Result{}, fmt.Errorf("tools: marshal result: %w", err)
 		}
-		return string(b), nil
+		return tools.Result{Text: string(b), Structured: res}, nil
 	}
 }
 
 // executeRead runs the read-only path: optional LIMIT injection, then
 // QueryContext + row iteration into a structured SQLResult.
-func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit func(SQLResult) (string, error)) (string, error) {
+func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit func(SQLResult) (tools.Result, error)) (tools.Result, error) {
 	// 1. Apply LIMIT if configured and missing.
 	effectiveSQL := EnsureLimit(sqlStr, t.maxRows)
 
@@ -686,7 +686,7 @@ func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit fu
 // skipped — auto-injecting LIMIT into UPDATE/DELETE has dialect-specific
 // semantics (MySQL accepts it, Postgres doesn't) and silently changes
 // the meaning of the statement.
-func (t *executeSQLTool) executeMutation(ctx context.Context, sqlStr string, emit func(SQLResult) (string, error)) (string, error) {
+func (t *executeSQLTool) executeMutation(ctx context.Context, sqlStr string, emit func(SQLResult) (tools.Result, error)) (tools.Result, error) {
 	queryCtx := ctx
 	if t.queryTimeout > 0 {
 		var cancel context.CancelFunc

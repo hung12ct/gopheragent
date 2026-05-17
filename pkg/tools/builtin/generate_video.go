@@ -77,29 +77,31 @@ func NewGenerateVideoTool(apiKey, model string, storage AssetStorage) (*Generate
 	}, nil
 }
 
-func (t *GenerateVideoTool) Name() string { return "generate_video" }
-func (t *GenerateVideoTool) Description() string {
-	return "Generate a short video clip (5–8 seconds) from a text description using Veo 2. " +
-		"Include camera movement (pan, zoom, dolly), subject action, environment, and mood. " +
-		"Generation takes 1–3 minutes — tell the user to wait. " +
-		"After generating, the video will appear inline in the chat."
+const generateVideoName = "generate_video"
+const generateVideoDescription = "Generate a short video clip (5–8 seconds) from a text description using Veo 2. " +
+	"Include camera movement (pan, zoom, dolly), subject action, environment, and mood. " +
+	"Generation takes 1–3 minutes — tell the user to wait. " +
+	"After generating, the video will appear inline in the chat."
+
+func (t *GenerateVideoTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        generateVideoName,
+		Description: generateVideoDescription,
+		Parameters:  tools.SchemaFor[generateVideoArgs](),
+		Inline:      true,
+		Display:     tools.DefaultDisplay(generateVideoName, generateVideoDescription),
+	}
 }
-func (t *GenerateVideoTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[generateVideoArgs]()
-}
-func (t *GenerateVideoTool) RequiresConfirmation() bool         { return false }
-func (t *GenerateVideoTool) InlineResult() bool                 { return true }
 
 // Execute starts a Veo 2 generation job, polls until complete, saves the video,
 // and returns an HTML <video> embed pointing at URLBase/<filename>.
-func (t *GenerateVideoTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args generateVideoArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: generate_video: invalid args: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: generate_video: invalid args: %w", err)
 	}
 	if strings.TrimSpace(args.Prompt) == "" {
-		return "", fmt.Errorf("tools: generate_video: prompt is required")
+		return tools.Result{}, fmt.Errorf("tools: generate_video: prompt is required")
 	}
 	if args.AspectRatio == "" {
 		args.AspectRatio = "16:9"
@@ -127,7 +129,7 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 	// Start the asynchronous generation.
 	op, err := t.client.Models.GenerateVideos(ctx, t.model, args.Prompt, nil, cfg)
 	if err != nil {
-		return "", fmt.Errorf("tools: generate_video: start: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: generate_video: start: %w", err)
 	}
 
 	// Bound the polling loop with both the caller's context and our own
@@ -145,44 +147,44 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (strin
 		select {
 		case <-pollCtx.Done():
 			if pollCtx.Err() == context.DeadlineExceeded {
-				return "", fmt.Errorf("tools: generate_video: timed out after %v", defaultPollTimeout)
+				return tools.Result{}, fmt.Errorf("tools: generate_video: timed out after %v", defaultPollTimeout)
 			}
-			return "", pollCtx.Err()
+			return tools.Result{}, pollCtx.Err()
 		case <-time.After(defaultPollInterval):
 		}
 		elapsed := time.Since(pollStart).Round(time.Second)
 		tools.ReportProgress(ctx, fmt.Sprintf("Generating video… (%s elapsed, checking again in %s)", elapsed, defaultPollInterval))
 		op, err = t.client.Operations.GetVideosOperation(pollCtx, op, nil)
 		if err != nil {
-			return "", fmt.Errorf("tools: generate_video: poll: %w", err)
+			return tools.Result{}, fmt.Errorf("tools: generate_video: poll: %w", err)
 		}
 	}
 
 	if op.Error != nil {
 		msg, _ := json.Marshal(op.Error)
-		return "", fmt.Errorf("tools: generate_video: generation failed: %s", msg)
+		return tools.Result{}, fmt.Errorf("tools: generate_video: generation failed: %s", msg)
 	}
 	if op.Response == nil || len(op.Response.GeneratedVideos) == 0 {
-		return "", fmt.Errorf("tools: generate_video: no video in response")
+		return tools.Result{}, fmt.Errorf("tools: generate_video: no video in response")
 	}
 
 	vid := op.Response.GeneratedVideos[0].Video
 	if vid == nil {
-		return "", fmt.Errorf("tools: generate_video: video object is nil")
+		return tools.Result{}, fmt.Errorf("tools: generate_video: video object is nil")
 	}
 
 	tools.ReportProgress(ctx, "Generation complete, downloading video…")
 	localURL, err := t.saveVideo(ctx, vid)
 	if err != nil {
-		return "", fmt.Errorf("tools: generate_video: save: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: generate_video: save: %w", err)
 	}
 
 	// Inline HTML embed. The frontend's DOMPurify config must allow <video>
 	// and <source> tags (see ADD_TAGS in the host page) for this to render.
-	return fmt.Sprintf(
+	return tools.Text(fmt.Sprintf(
 		`<video controls preload="metadata" style="max-width:100%%;border-radius:8px;margin:6px 0"><source src="%s" type="video/mp4">Your browser does not support video.</video>`+"\n\n*Prompt: %s*",
 		localURL, args.Prompt,
-	), nil
+	)), nil
 }
 
 // saveVideo persists the video bytes (or downloads from a Gemini Files

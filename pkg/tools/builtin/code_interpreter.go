@@ -87,57 +87,58 @@ func (t *CodeInterpreterTool) WithWorkingDir(dir string) *CodeInterpreterTool {
 	return t
 }
 
-func (t *CodeInterpreterTool) Name() string { return "code_interpreter" }
+const codeInterpreterName = "code_interpreter"
+const codeInterpreterDescription = "Execute a short code snippet in a supported language (python, node) and return {stdout, stderr, exit_code, timed_out, truncated}. Use for calculations, data transforms, and small utility scripts."
 
-func (t *CodeInterpreterTool) Description() string {
-	return "Execute a short code snippet in a supported language (python, node) and return {stdout, stderr, exit_code, timed_out, truncated}. Use for calculations, data transforms, and small utility scripts."
-}
-
-func (t *CodeInterpreterTool) ParametersSchema() tools.ToolSchema {
+// Descriptor returns metadata for code_interpreter. RequiresConfirmation is
+// true because arbitrary code execution is always side-effecting and should
+// never run without a human / policy gate.
+func (t *CodeInterpreterTool) Descriptor() tools.ToolDescriptor {
 	langs := make([]string, 0, len(t.interpreters))
 	for k := range t.interpreters {
 		langs = append(langs, k)
 	}
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"language": map[string]any{
-				"type":        "string",
-				"description": "Language to execute. Must be one of the configured interpreters.",
-				"enum":        langs,
+	return tools.ToolDescriptor{
+		Name:        codeInterpreterName,
+		Description: codeInterpreterDescription,
+		Parameters: tools.ToolSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"language": map[string]any{
+					"type":        "string",
+					"description": "Language to execute. Must be one of the configured interpreters.",
+					"enum":        langs,
+				},
+				"code": map[string]any{
+					"type":        "string",
+					"description": "Source code to execute. Will be passed to the interpreter on stdin.",
+				},
 			},
-			"code": map[string]any{
-				"type":        "string",
-				"description": "Source code to execute. Will be passed to the interpreter on stdin.",
-			},
+			Required: []string{"language", "code"},
 		},
-		Required: []string{"language", "code"},
+		RequiresConfirmation: true,
+		Display:              tools.DefaultDisplay(codeInterpreterName, codeInterpreterDescription),
 	}
 }
 
-// RequiresConfirmation returns true — arbitrary code execution is always
-// side-effecting and should never run without a human / policy gate.
-func (t *CodeInterpreterTool) RequiresConfirmation() bool { return true }
-
-func (t *CodeInterpreterTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *CodeInterpreterTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *CodeInterpreterTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args struct {
 		Language string `json:"language"`
 		Code     string `json:"code"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	lang := strings.ToLower(strings.TrimSpace(args.Language))
 	if lang == "" {
-		return "", fmt.Errorf("tools: language is required")
+		return tools.Result{}, fmt.Errorf("tools: language is required")
 	}
 	if strings.TrimSpace(args.Code) == "" {
-		return "", fmt.Errorf("tools: code is required")
+		return tools.Result{}, fmt.Errorf("tools: code is required")
 	}
 	binary, ok := t.interpreters[lang]
 	if !ok {
-		return "", fmt.Errorf("tools: language %q is not configured", lang)
+		return tools.Result{}, fmt.Errorf("tools: language %q is not configured", lang)
 	}
 
 	timeout := t.timeout
@@ -168,7 +169,7 @@ func (t *CodeInterpreterTool) Execute(ctx context.Context, argsJSON string) (str
 			exitCode = ee.ExitCode()
 		} else if !timedOut {
 			// Couldn't launch (binary missing, permission denied, ...).
-			return "", fmt.Errorf("tools: exec %s: %w", binary, runErr)
+			return tools.Result{}, fmt.Errorf("tools: exec %s: %w", binary, runErr)
 		} else {
 			exitCode = -1
 		}
@@ -188,9 +189,9 @@ func (t *CodeInterpreterTool) Execute(ctx context.Context, argsJSON string) (str
 	}
 	out, err := json.Marshal(envelope)
 	if err != nil {
-		return "", fmt.Errorf("tools: marshal: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: marshal: %w", err)
 	}
-	return string(out), nil
+	return tools.Text(string(out)), nil
 }
 
 // capBytes returns b (possibly truncated to max) and whether truncation

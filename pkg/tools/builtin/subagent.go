@@ -34,27 +34,30 @@ func NewCallSubAgentTool(sessions agent.SessionManager, registry *tools.Registry
 	}
 }
 
-func (t *CallSubAgentTool) Name() string { return "call_sub_agent" }
-func (t *CallSubAgentTool) Description() string {
-	return "Delegates a complex reasoning or multi-step task to a specialized worker sub-agent. The sub-agent operates in a completely isolated context and returns a final structured report. Useful to avoid context window explosions."
-}
-func (t *CallSubAgentTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"task_description": map[string]any{
-				"type":        "string",
-				"description": "Detailed instructions for the worker sub-agent.",
+const callSubAgentName = "call_sub_agent"
+const callSubAgentDescription = "Delegates a complex reasoning or multi-step task to a specialized worker sub-agent. The sub-agent operates in a completely isolated context and returns a final structured report. Useful to avoid context window explosions."
+
+func (t *CallSubAgentTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        callSubAgentName,
+		Description: callSubAgentDescription,
+		Parameters: tools.ToolSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"task_description": map[string]any{
+					"type":        "string",
+					"description": "Detailed instructions for the worker sub-agent.",
+				},
+				"agent_name": map[string]any{
+					"type":        "string",
+					"description": "Name of the worker persona (used to namespace the worker's session and tag its report).",
+				},
 			},
-			"agent_name": map[string]any{
-				"type":        "string",
-				"description": "Name of the worker persona (used to namespace the worker's session and tag its report).",
-			},
+			Required: []string{"task_description", "agent_name"},
 		},
-		Required: []string{"task_description", "agent_name"},
+		Display: tools.DefaultDisplay(callSubAgentName, callSubAgentDescription),
 	}
 }
-func (t *CallSubAgentTool) RequiresConfirmation() bool { return false }
 
 // Execute runs the sub-agent in an isolated session and returns its final report.
 // The worker session is always deleted before returning, regardless of outcome,
@@ -68,11 +71,10 @@ func (t *CallSubAgentTool) RequiresConfirmation() bool { return false }
 // while the sub-agent works, and gives UIs enough metadata to render a nested
 // activity timeline. When no emitter is present (e.g. tests calling Execute
 // directly), Execute falls back to the original non-streaming path.
-func (t *CallSubAgentTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (string, error) {
+func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (tools.Result, error) {
 	var input SubAgentInput
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
-		return "", fmt.Errorf("tools: invalid json: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid json: %w", err)
 	}
 
 	workerSessionKey := fmt.Sprintf("subagent-%s-%d", input.AgentName, time.Now().UnixNano())
@@ -97,9 +99,9 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 		workerLoop.EmitThoughts = false
 		result, err := workerLoop.RunIteration(ctx, workerSessionKey, instruction)
 		if err != nil {
-			return "", fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, err)
+			return tools.Result{}, fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, err)
 		}
-		return fmt.Sprintf("Report from %s:\n%s", input.AgentName, result), nil
+		return tools.Text(fmt.Sprintf("Report from %s:\n%s", input.AgentName, result)), nil
 	}
 
 	parentSessionKey, _ := agent.SessionKeyFromContext(ctx)
@@ -136,10 +138,10 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 	}
 
 	if workerErr != nil {
-		return "", fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, workerErr)
+		return tools.Result{}, fmt.Errorf("tools: sub-agent %s failed: %w", input.AgentName, workerErr)
 	}
 
-	return fmt.Sprintf("Report from %s:\n%s", input.AgentName, subAgentHITLReport(hitlEvent, buf.String())), nil
+	return tools.Text(fmt.Sprintf("Report from %s:\n%s", input.AgentName, subAgentHITLReport(hitlEvent, buf.String()))), nil
 }
 
 // subAgentHITLReport mirrors hitlBlockedReport for CallSubAgentTool: when

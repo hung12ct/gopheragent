@@ -87,45 +87,46 @@ func (t *HTTPRequestTool) WithAllowedHosts(hosts ...string) *HTTPRequestTool {
 	return t
 }
 
-func (t *HTTPRequestTool) Name() string { return "http_request" }
+const httpRequestName = "http_request"
+const httpRequestDescription = "Make an HTTP request to an external URL. Returns {status, headers, body, truncated}. Use for calling JSON APIs or webhooks. For reading human-readable web pages, prefer read_url."
 
-func (t *HTTPRequestTool) Description() string {
-	return "Make an HTTP request to an external URL. Returns {status, headers, body, truncated}. Use for calling JSON APIs or webhooks. For reading human-readable web pages, prefer read_url."
-}
-
-func (t *HTTPRequestTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"url": map[string]any{
-				"type":        "string",
-				"description": "Absolute HTTP(S) URL.",
+// Descriptor returns metadata for http_request. RequiresConfirmation is true
+// because HTTP calls can have side effects (POST/DELETE/etc.) and can
+// exfiltrate data; HITL operators decide. GET-only usage can override by
+// wrapping the tool in middleware.
+func (t *HTTPRequestTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        httpRequestName,
+		Description: httpRequestDescription,
+		Parameters: tools.ToolSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"url": map[string]any{
+					"type":        "string",
+					"description": "Absolute HTTP(S) URL.",
+				},
+				"method": map[string]any{
+					"type":        "string",
+					"description": "HTTP method (GET, HEAD, POST, PUT, PATCH, DELETE). Defaults to GET.",
+					"enum":        []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"},
+				},
+				"headers": map[string]any{
+					"type":        "object",
+					"description": "Optional request headers as a flat string→string map.",
+				},
+				"body": map[string]any{
+					"type":        "string",
+					"description": "Optional request body (send JSON as a string). Ignored for GET/HEAD.",
+				},
 			},
-			"method": map[string]any{
-				"type":        "string",
-				"description": "HTTP method (GET, HEAD, POST, PUT, PATCH, DELETE). Defaults to GET.",
-				"enum":        []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"},
-			},
-			"headers": map[string]any{
-				"type":        "object",
-				"description": "Optional request headers as a flat string→string map.",
-			},
-			"body": map[string]any{
-				"type":        "string",
-				"description": "Optional request body (send JSON as a string). Ignored for GET/HEAD.",
-			},
+			Required: []string{"url"},
 		},
-		Required: []string{"url"},
+		RequiresConfirmation: true,
+		Display:              tools.DefaultDisplay(httpRequestName, httpRequestDescription),
 	}
 }
 
-// RequiresConfirmation returns true — HTTP calls can have side effects
-// (POST/DELETE/etc.) and can exfiltrate data. HITL operators decide.
-// GET-only usage can override by wrapping the tool in middleware.
-func (t *HTTPRequestTool) RequiresConfirmation() bool { return true }
-
-func (t *HTTPRequestTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args struct {
 		URL     string            `json:"url"`
 		Method  string            `json:"method"`
@@ -133,7 +134,7 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string,
 		Body    string            `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 
 	method := strings.ToUpper(strings.TrimSpace(args.Method))
@@ -144,18 +145,18 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string,
 	case http.MethodGet, http.MethodHead, http.MethodPost,
 		http.MethodPut, http.MethodPatch, http.MethodDelete:
 	default:
-		return "", fmt.Errorf("tools: method %q is not permitted", method)
+		return tools.Result{}, fmt.Errorf("tools: method %q is not permitted", method)
 	}
 
 	u, err := url.Parse(strings.TrimSpace(args.URL))
 	if err != nil {
-		return "", fmt.Errorf("tools: invalid url: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid url: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("tools: only http(s) URLs are permitted, got %q", u.Scheme)
+		return tools.Result{}, fmt.Errorf("tools: only http(s) URLs are permitted, got %q", u.Scheme)
 	}
 	if t.allowedHosts != nil && !t.allowedHosts[strings.ToLower(u.Hostname())] {
-		return "", fmt.Errorf("tools: host %q is not in the allowlist", u.Hostname())
+		return tools.Result{}, fmt.Errorf("tools: host %q is not in the allowlist", u.Hostname())
 	}
 
 	var body io.Reader
@@ -164,7 +165,7 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string,
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
-		return "", fmt.Errorf("tools: build request: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: build request: %w", err)
 	}
 	for k, v := range args.Headers {
 		req.Header.Set(k, v)
@@ -177,7 +178,7 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string,
 	start := time.Now()
 	resp, err := t.httpClient().Do(req)
 	if err != nil {
-		return "", fmt.Errorf("tools: request failed: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -187,7 +188,7 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string,
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, cap+1))
 	if err != nil {
-		return "", fmt.Errorf("tools: read response: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: read response: %w", err)
 	}
 	truncated := false
 	if int64(len(raw)) > cap {
@@ -215,7 +216,7 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, argsJSON string) (string,
 	}
 	out, err := json.Marshal(envelope)
 	if err != nil {
-		return "", fmt.Errorf("tools: marshal: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: marshal: %w", err)
 	}
-	return string(out), nil
+	return tools.Text(string(out)), nil
 }

@@ -47,6 +47,7 @@ type Tool struct {
 	allArgs  []string
 }
 
+
 // NewTool returns a new fake tool with the given Name. Description defaults
 // to "fake tool", schema defaults to an empty object. Chain the With*
 // methods to configure further.
@@ -88,36 +89,37 @@ func (t *Tool) WithError(err error) *Tool {
 	return t
 }
 
-// Name implements tools.Tool.
-func (t *Tool) Name() string { return t.name }
-
-// Description implements tools.Tool.
-func (t *Tool) Description() string { return t.description }
-
-// ParametersSchema implements tools.Tool.
-func (t *Tool) ParametersSchema() tools.ToolSchema { return t.schema }
-
-// RequiresConfirmation implements tools.Tool.
-func (t *Tool) RequiresConfirmation() bool { return t.confirm }
-
-// Display implements tools.Tool. Returns a DefaultDisplay derived from the
-// configured Name and Description.
-func (t *Tool) Display() tools.ToolDisplay {
-	return tools.DefaultDisplay(t.name, t.description)
+// Descriptor implements tools.Tool. Returns the configured metadata block
+// (name, description, schema, RequiresConfirmation flag, display).
+func (t *Tool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:                 t.name,
+		Description:          t.description,
+		Parameters:           t.schema,
+		RequiresConfirmation: t.confirm,
+		Display:              tools.DefaultDisplay(t.name, t.description),
+	}
 }
 
 // Execute implements tools.Tool. Records the args, returns the configured
-// Result/Err (or ResultFn's output when set).
-func (t *Tool) Execute(_ context.Context, argsJSON string) (string, error) {
+// Result/Err (or ResultFn's output when set) wrapped in a tools.Result.
+func (t *Tool) Execute(_ context.Context, argsJSON string) (tools.Result, error) {
 	t.calls.Add(1)
 	t.mu.Lock()
 	t.lastArgs = argsJSON
 	t.allArgs = append(t.allArgs, argsJSON)
 	t.mu.Unlock()
 	if t.ResultFn != nil {
-		return t.ResultFn(argsJSON)
+		s, err := t.ResultFn(argsJSON)
+		if err != nil {
+			return tools.Result{}, err
+		}
+		return tools.Text(s), nil
 	}
-	return t.Result, t.Err
+	if t.Err != nil {
+		return tools.Result{}, t.Err
+	}
+	return tools.Text(t.Result), nil
 }
 
 // Calls returns how many times Execute has been invoked so far.

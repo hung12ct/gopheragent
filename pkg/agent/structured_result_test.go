@@ -17,26 +17,25 @@ type SQLPayload struct {
 	Columns  []string
 }
 
-// structuredCounterTool implements both Tool (via Execute) and
-// tools.StructuredResult (via ExecuteStructured). The agent loop must
-// prefer the structured path so the typed payload reaches OnToolResult.
+// structuredCounterTool returns a Result with both Text and Structured set.
+// The agent loop must surface the typed payload to OnToolResult.
 type structuredCounterTool struct {
 	name string
 }
 
-func (s *structuredCounterTool) Name() string                       { return s.name }
-func (s *structuredCounterTool) Description() string                { return "structured counter" }
-func (s *structuredCounterTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (s *structuredCounterTool) RequiresConfirmation() bool         { return false }
-func (s *structuredCounterTool) Display() tools.ToolDisplay {
-	return tools.DefaultDisplay(s.name, "structured counter")
+func (s *structuredCounterTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        s.name,
+		Description: "structured counter",
+		Display:     tools.DefaultDisplay(s.name, "structured counter"),
+	}
 }
-func (s *structuredCounterTool) Execute(ctx context.Context, args string) (string, error) {
-	r, _, err := s.ExecuteStructured(ctx, args)
-	return r, err
-}
-func (s *structuredCounterTool) ExecuteStructured(_ context.Context, _ string) (string, any, error) {
-	return "table rendered as markdown", SQLPayload{RowCount: 42, Columns: []string{"id", "name"}}, nil
+
+func (s *structuredCounterTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Result{
+		Text:       "table rendered as markdown",
+		Structured: SQLPayload{RowCount: 42, Columns: []string{"id", "name"}},
+	}, nil
 }
 
 func TestStructuredResult_PayloadReachesHook(t *testing.T) {

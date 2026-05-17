@@ -18,8 +18,8 @@ type recordingProvider struct {
 
 func (p *recordingProvider) GenerateStream(_ context.Context, _ []history.Message, available *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
 	names := make([]string, 0)
-	for _, t := range available.GetAll() {
-		names = append(names, t.Name())
+	for _, t := range available.All() {
+		names = append(names, t.Descriptor().Name)
 	}
 	p.seenToolNames = append(p.seenToolNames, names)
 	ch <- Event(ContentEvent{Text: p.reply})
@@ -102,9 +102,14 @@ type descTool struct {
 	desc string
 }
 
-func (t *descTool) Name() string                                        { return t.name }
-func (t *descTool) Description() string                                 { return t.desc }
-func (t *descTool) ParametersSchema() tools.ToolSchema                  { return tools.ToolSchema{} }
-func (t *descTool) RequiresConfirmation() bool                          { return false }
-func (t *descTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *descTool) Execute(_ context.Context, _ string) (string, error) { return "", nil }
+func (t *descTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        t.name,
+		Description: t.desc,
+		Display:     tools.DefaultDisplay(t.name, t.desc),
+	}
+}
+
+func (t *descTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Result{}, nil
+}

@@ -19,23 +19,30 @@ type mockTool struct {
 	latency time.Duration
 }
 
-func (m *mockTool) Name() string                    { return m.name }
-func (m *mockTool) Description() string             { return "mock" }
-func (m *mockTool) ParametersSchema() ToolSchema    { return ToolSchema{} }
-func (m *mockTool) RequiresConfirmation() bool       { return false }
-func (m *mockTool) Display() ToolDisplay { return DefaultDisplay(m.Name(), m.Description()) }
-func (m *mockTool) Execute(ctx context.Context, args string) (string, error) {
+func (m *mockTool) Descriptor() ToolDescriptor {
+	return ToolDescriptor{
+		Name:        m.name,
+		Description: "mock",
+		Display:     DefaultDisplay(m.name, "mock"),
+	}
+}
+
+func (m *mockTool) Execute(ctx context.Context, args string) (Result, error) {
 	if m.latency > 0 {
 		select {
 		case <-time.After(m.latency):
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return Result{}, ctx.Err()
 		}
 	}
 	if m.execFn != nil {
-		return m.execFn(ctx, args)
+		s, err := m.execFn(ctx, args)
+		if err != nil {
+			return Result{}, err
+		}
+		return Text(s), nil
 	}
-	return "ok:" + args, nil
+	return Text("ok:" + args), nil
 }
 
 func TestWithTiming_CallbackFired(t *testing.T) {
@@ -55,8 +62,8 @@ func TestWithTiming_CallbackFired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != "ok:arg" {
-		t.Fatalf("unexpected result: %q", result)
+	if result.Text != "ok:arg" {
+		t.Fatalf("unexpected result: %q", result.Text)
 	}
 	if !called {
 		t.Fatal("timing callback not called")
@@ -111,8 +118,8 @@ func TestWithTimeout_FastToolSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != "ok:hello" {
-		t.Fatalf("unexpected result: %q", result)
+	if result.Text != "ok:hello" {
+		t.Fatalf("unexpected result: %q", result.Text)
 	}
 }
 
@@ -163,7 +170,7 @@ func TestChain_OrderPreserved(t *testing.T) {
 		return func(next Tool) Tool {
 			return &wrappedTool{
 				Tool: next,
-				executeFn: func(ctx context.Context, args string) (string, error) {
+				executeFn: func(ctx context.Context, args string) (Result, error) {
 					order = append(order, name+":before")
 					res, err := next.Execute(ctx, args)
 					order = append(order, name+":after")
@@ -195,8 +202,8 @@ func TestWithLogging_DoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != "ok:payload" {
-		t.Fatalf("unexpected result: %q", result)
+	if result.Text != "ok:payload" {
+		t.Fatalf("unexpected result: %q", result.Text)
 	}
 }
 
@@ -303,14 +310,15 @@ func TestMiddleware_PassthroughMethods(t *testing.T) {
 	base := &mockTool{name: "base"}
 	wrapped := Chain(base, WithTimeout(time.Second))
 
-	if wrapped.Name() != "base" {
-		t.Fatalf("Name() should pass through, got %q", wrapped.Name())
+	desc := wrapped.Descriptor()
+	if desc.Name != "base" {
+		t.Fatalf("Descriptor.Name should pass through, got %q", desc.Name)
 	}
-	if wrapped.Description() != "mock" {
-		t.Fatalf("Description() should pass through")
+	if desc.Description != "mock" {
+		t.Fatalf("Descriptor.Description should pass through")
 	}
-	if wrapped.RequiresConfirmation() != false {
-		t.Fatal("RequiresConfirmation() should pass through")
+	if desc.RequiresConfirmation {
+		t.Fatal("Descriptor.RequiresConfirmation should pass through")
 	}
 }
 
@@ -335,16 +343,21 @@ func BenchmarkChain_WithTiming(b *testing.B) {
 }
 
 // schemaTool is a mockTool variant that returns a configurable schema and
-// counts ParametersSchema() calls so tests can assert the schema is cached.
+// counts Descriptor() calls so tests can assert the schema is cached.
 type schemaTool struct {
 	mockTool
 	schema      ToolSchema
 	schemaCalls atomic.Int32
 }
 
-func (s *schemaTool) ParametersSchema() ToolSchema {
+func (s *schemaTool) Descriptor() ToolDescriptor {
 	s.schemaCalls.Add(1)
-	return s.schema
+	return ToolDescriptor{
+		Name:        s.name,
+		Description: "mock",
+		Parameters:  s.schema,
+		Display:     DefaultDisplay(s.name, "mock"),
+	}
 }
 
 func schemaObj(required []string, props map[string]any) ToolSchema {
@@ -361,8 +374,8 @@ func TestWithSchemaValidation_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out != `ok:{"q":"hi"}` {
-		t.Fatalf("unexpected output: %q", out)
+	if out.Text != `ok:{"q":"hi"}` {
+		t.Fatalf("unexpected output: %q", out.Text)
 	}
 }
 

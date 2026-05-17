@@ -179,34 +179,38 @@ type CreateTaskTool struct{ Store TaskStore }
 
 func NewCreateTaskTool(store TaskStore) *CreateTaskTool { return &CreateTaskTool{Store: store} }
 
-func (t *CreateTaskTool) Name() string { return "create_task" }
-func (t *CreateTaskTool) Description() string {
-	return "Register a new pending task in the session task list. Use at the start of multi-step work to plan subtasks; revisit via list_tasks and update via update_task. Title should be short and imperative."
-}
+const createTaskName = "create_task"
+const createTaskDescription = "Register a new pending task in the session task list. Use at the start of multi-step work to plan subtasks; revisit via list_tasks and update via update_task. Title should be short and imperative."
 
 type createTaskArgs struct {
 	Title string `json:"title" description:"Short imperative description of the task (e.g. 'Write scheduler tests')."`
 	Notes string `json:"notes,omitempty" description:"Optional acceptance criteria, constraints, or sub-steps."`
 }
 
-func (t *CreateTaskTool) ParametersSchema() tools.ToolSchema { return tools.SchemaFor[createTaskArgs]() }
-func (t *CreateTaskTool) RequiresConfirmation() bool         { return false }
-func (t *CreateTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *CreateTaskTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *CreateTaskTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        createTaskName,
+		Description: createTaskDescription,
+		Parameters:  tools.SchemaFor[createTaskArgs](),
+		Display:     tools.DefaultDisplay(createTaskName, createTaskDescription),
+	}
+}
+
+func (t *CreateTaskTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	sk, err := taskSessionKey(ctx)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	var a createTaskArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	if t.Store == nil {
-		return "", fmt.Errorf("tools: create_task has no store configured")
+		return tools.Result{}, fmt.Errorf("tools: create_task has no store configured")
 	}
 	task, err := t.Store.Create(ctx, sk, a.Title, a.Notes)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	emitTaskList(ctx, t.Store, sk)
 	return marshalOrError(task)
@@ -221,10 +225,8 @@ type UpdateTaskTool struct{ Store TaskStore }
 
 func NewUpdateTaskTool(store TaskStore) *UpdateTaskTool { return &UpdateTaskTool{Store: store} }
 
-func (t *UpdateTaskTool) Name() string { return "update_task" }
-func (t *UpdateTaskTool) Description() string {
-	return "Update the status (and optional notes) of a task previously registered via create_task. Valid status values: pending, in_progress, completed. Flip to in_progress when you start the task and completed as soon as you finish it."
-}
+const updateTaskName = "update_task"
+const updateTaskDescription = "Update the status (and optional notes) of a task previously registered via create_task. Valid status values: pending, in_progress, completed. Flip to in_progress when you start the task and completed as soon as you finish it."
 
 type updateTaskArgs struct {
 	ID     string `json:"id" description:"Task ID returned by create_task (e.g. 't1')."`
@@ -232,24 +234,30 @@ type updateTaskArgs struct {
 	Notes  string `json:"notes,omitempty" description:"Optional new notes. Empty string leaves existing notes unchanged; '-' clears them."`
 }
 
-func (t *UpdateTaskTool) ParametersSchema() tools.ToolSchema { return tools.SchemaFor[updateTaskArgs]() }
-func (t *UpdateTaskTool) RequiresConfirmation() bool         { return false }
-func (t *UpdateTaskTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *UpdateTaskTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *UpdateTaskTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        updateTaskName,
+		Description: updateTaskDescription,
+		Parameters:  tools.SchemaFor[updateTaskArgs](),
+		Display:     tools.DefaultDisplay(updateTaskName, updateTaskDescription),
+	}
+}
+
+func (t *UpdateTaskTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	sk, err := taskSessionKey(ctx)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	var a updateTaskArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	if t.Store == nil {
-		return "", fmt.Errorf("tools: update_task has no store configured")
+		return tools.Result{}, fmt.Errorf("tools: update_task has no store configured")
 	}
 	task, err := t.Store.Update(ctx, sk, a.ID, TaskStatus(a.Status), a.Notes)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	emitTaskList(ctx, t.Store, sk)
 	return marshalOrError(task)
@@ -264,27 +272,31 @@ type ListTasksTool struct{ Store TaskStore }
 
 func NewListTasksTool(store TaskStore) *ListTasksTool { return &ListTasksTool{Store: store} }
 
-func (t *ListTasksTool) Name() string { return "list_tasks" }
-func (t *ListTasksTool) Description() string {
-	return "Return every task in the session task list with its current status. Call periodically during multi-step work to re-orient on remaining work."
-}
+const listTasksName = "list_tasks"
+const listTasksDescription = "Return every task in the session task list with its current status. Call periodically during multi-step work to re-orient on remaining work."
 
 type listTasksArgs struct{}
 
-func (t *ListTasksTool) ParametersSchema() tools.ToolSchema { return tools.SchemaFor[listTasksArgs]() }
-func (t *ListTasksTool) RequiresConfirmation() bool         { return false }
-func (t *ListTasksTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *ListTasksTool) Execute(ctx context.Context, _ string) (string, error) {
+func (t *ListTasksTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        listTasksName,
+		Description: listTasksDescription,
+		Parameters:  tools.SchemaFor[listTasksArgs](),
+		Display:     tools.DefaultDisplay(listTasksName, listTasksDescription),
+	}
+}
+
+func (t *ListTasksTool) Execute(ctx context.Context, _ string) (tools.Result, error) {
 	sk, err := taskSessionKey(ctx)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	if t.Store == nil {
-		return "", fmt.Errorf("tools: list_tasks has no store configured")
+		return tools.Result{}, fmt.Errorf("tools: list_tasks has no store configured")
 	}
 	tasks, err := t.Store.List(ctx, sk)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	emitTaskList(ctx, t.Store, sk)
 	return marshalOrError(map[string]any{"tasks": tasks, "count": len(tasks)})
@@ -301,10 +313,10 @@ func RegisterTaskTools(registry *tools.Registry, store TaskStore) {
 	registry.Register(NewListTasksTool(store))
 }
 
-func marshalOrError(v any) (string, error) {
+func marshalOrError(v any) (tools.Result, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return "", fmt.Errorf("tools: marshal task result: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: marshal task result: %w", err)
 	}
-	return string(b), nil
+	return tools.Text(string(b)), nil
 }

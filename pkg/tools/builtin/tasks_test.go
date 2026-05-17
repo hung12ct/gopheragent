@@ -153,7 +153,7 @@ func TestCreateTaskTool_HappyPath(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	var got Task
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
+	if err := json.Unmarshal([]byte(out.Text), &got); err != nil {
 		t.Fatalf("unmarshal: %v (raw=%s)", err, out)
 	}
 	if got.ID != "t1" || got.Title != "plan" || got.Status != TaskPending || got.Notes != "details" {
@@ -191,7 +191,7 @@ func TestUpdateTaskTool_HappyPath(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	var got Task
-	_ = json.Unmarshal([]byte(out), &got)
+	_ = json.Unmarshal([]byte(out.Text), &got)
 	if got.Status != TaskInProgress || got.Notes != "working" {
 		t.Fatalf("unexpected state: %+v", got)
 	}
@@ -222,7 +222,7 @@ func TestListTasksTool_ReturnsEnvelope(t *testing.T) {
 		Tasks []Task `json:"tasks"`
 		Count int    `json:"count"`
 	}
-	if err := json.Unmarshal([]byte(out), &env); err != nil {
+	if err := json.Unmarshal([]byte(out.Text), &env); err != nil {
 		t.Fatalf("unmarshal: %v (raw=%s)", err, out)
 	}
 	if env.Count != 2 || len(env.Tasks) != 2 {
@@ -239,7 +239,7 @@ func TestListTasksTool_EmptySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !strings.Contains(out, `"count":0`) {
+	if !strings.Contains(out.Text, `"count":0`) {
 		t.Fatalf("expected empty count, got %s", out)
 	}
 }
@@ -316,10 +316,10 @@ func TestTaskTools_SessionsAreIsolatedViaContext(t *testing.T) {
 
 	outA, _ := list.Execute(taskCtx("alpha"), ``)
 	outB, _ := list.Execute(taskCtx("beta"), ``)
-	if !strings.Contains(outA, "only-alpha") || strings.Contains(outA, "only-beta") {
+	if !strings.Contains(outA.Text, "only-alpha") || strings.Contains(outA.Text, "only-beta") {
 		t.Fatalf("alpha leaked: %s", outA)
 	}
-	if !strings.Contains(outB, "only-beta") || strings.Contains(outB, "only-alpha") {
+	if !strings.Contains(outB.Text, "only-beta") || strings.Contains(outB.Text, "only-alpha") {
 		t.Fatalf("beta leaked: %s", outB)
 	}
 }

@@ -19,21 +19,22 @@ func TestTool_DefaultsAndFluentConfig(t *testing.T) {
 		WithConfirmation(true).
 		WithResult(`"ok"`)
 
-	if tool.Name() != "echo" {
-		t.Errorf("Name() = %q, want echo", tool.Name())
+	desc := tool.Descriptor()
+	if desc.Name != "echo" {
+		t.Errorf("Descriptor.Name = %q, want echo", desc.Name)
 	}
-	if tool.Description() != "echoes back" {
-		t.Errorf("Description() = %q", tool.Description())
+	if desc.Description != "echoes back" {
+		t.Errorf("Descriptor.Description = %q", desc.Description)
 	}
-	if !tool.RequiresConfirmation() {
-		t.Error("expected RequiresConfirmation() true")
+	if !desc.RequiresConfirmation {
+		t.Error("expected Descriptor.RequiresConfirmation true")
 	}
 	out, err := tool.Execute(context.Background(), `{"a":1}`)
 	if err != nil {
 		t.Fatalf("execute err: %v", err)
 	}
-	if out != `"ok"` {
-		t.Errorf("out = %q", out)
+	if out.Text != `"ok"` {
+		t.Errorf("out.Text = %q", out.Text)
 	}
 }
 
@@ -65,8 +66,8 @@ func TestTool_ResultFnOverridesStatic(t *testing.T) {
 	tool := toolsfake.NewTool("x").WithResult("static")
 	tool.ResultFn = func(args string) (string, error) { return "dyn:" + args, nil }
 	out, _ := tool.Execute(context.Background(), "A")
-	if out != "dyn:A" {
-		t.Errorf("ResultFn should override Result; got %q", out)
+	if out.Text != "dyn:A" {
+		t.Errorf("ResultFn should override Result; got %q", out.Text)
 	}
 }
 

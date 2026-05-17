@@ -73,13 +73,16 @@ func TestOnToolResult_VetoConvertsToToolError(t *testing.T) {
 // boomTool always fails. Used to pin OnToolResult error-path firing.
 type boomTool struct{ name string }
 
-func (f *boomTool) Name() string                       { return f.name }
-func (f *boomTool) Description() string                { return "always fails" }
-func (f *boomTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (f *boomTool) RequiresConfirmation() bool         { return false }
-func (f *boomTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay(f.Name(), f.Description()) }
-func (f *boomTool) Execute(_ context.Context, _ string) (string, error) {
-	return "", errors.New("tool exploded")
+func (f *boomTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        f.name,
+		Description: "always fails",
+		Display:     tools.DefaultDisplay(f.name, "always fails"),
+	}
+}
+
+func (f *boomTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Result{}, errors.New("tool exploded")
 }
 
 // TestOnToolResult_FiresOnError pins the v0.19.0 contract: the hook now
@@ -204,16 +207,19 @@ type idCapturingTool struct {
 	mu     sync.Mutex
 }
 
-func (i *idCapturingTool) Name() string                       { return i.name }
-func (i *idCapturingTool) Description() string                { return "captures ctx id" }
-func (i *idCapturingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (i *idCapturingTool) RequiresConfirmation() bool         { return false }
-func (i *idCapturingTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay(i.Name(), i.Description()) }
-func (i *idCapturingTool) Execute(ctx context.Context, _ string) (string, error) {
+func (i *idCapturingTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        i.name,
+		Description: "captures ctx id",
+		Display:     tools.DefaultDisplay(i.name, "captures ctx id"),
+	}
+}
+
+func (i *idCapturingTool) Execute(ctx context.Context, _ string) (tools.Result, error) {
 	i.mu.Lock()
 	i.seenID = tools.ToolCallIDFromContext(ctx)
 	i.mu.Unlock()
-	return "ok", nil
+	return tools.Text("ok"), nil
 }
 
 // TestOnToolResult_ToolCtxCarriesCallID pins the ctx-threading contract:
@@ -250,16 +256,17 @@ func TestOnToolResult_ToolCtxCarriesCallID(t *testing.T) {
 // verify that the loop attaches Name+ToolCallID to every progress event.
 type progressEmittingTool struct{ name string }
 
-func (p *progressEmittingTool) Name() string                       { return p.name }
-func (p *progressEmittingTool) Description() string                { return "emits one progress message" }
-func (p *progressEmittingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (p *progressEmittingTool) RequiresConfirmation() bool         { return false }
-func (p *progressEmittingTool) Display() tools.ToolDisplay {
-	return tools.DefaultDisplay(p.Name(), p.Description())
+func (p *progressEmittingTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        p.name,
+		Description: "emits one progress message",
+		Display:     tools.DefaultDisplay(p.name, "emits one progress message"),
+	}
 }
-func (p *progressEmittingTool) Execute(ctx context.Context, _ string) (string, error) {
+
+func (p *progressEmittingTool) Execute(ctx context.Context, _ string) (tools.Result, error) {
 	tools.ReportProgress(ctx, "halfway there")
-	return "ok", nil
+	return tools.Text("ok"), nil
 }
 
 // TestToolProgress_EventCarriesCallID pins the parallel-correlation contract

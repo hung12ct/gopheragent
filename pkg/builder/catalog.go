@@ -25,7 +25,7 @@ func NewGlobalCatalog() *GlobalCatalog {
 func (c *GlobalCatalog) Register(tool tools.Tool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.availableTools[tool.Name()] = tool
+	c.availableTools[tool.Descriptor().Name] = tool
 }
 
 // Get retrieves a tool by its exact string name defined in the YAML flow file.

@@ -148,7 +148,7 @@ func TestCallSubAgentTool_ForwardsEventsWhenEmitterPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if !strings.Contains(result, "worker report") {
+	if !strings.Contains(result.Text, "worker report") {
 		t.Fatalf("expected worker content in report, got %q", result)
 	}
 
@@ -195,7 +195,7 @@ func TestCallSubAgentTool_NonStreamingFallbackWhenNoEmitter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(res, "legacy path") {
+	if !strings.Contains(res.Text, "legacy path") {
 		t.Fatalf("expected legacy path reply, got %q", res)
 	}
 }
@@ -227,13 +227,17 @@ func (p *scriptedProvider) GenerateStream(_ context.Context, _ []history.Message
 // HITL gate fires before its Execute would ever run.
 type hitlTool struct{}
 
-func (hitlTool) Name() string                          { return "dangerous_action" }
-func (hitlTool) Description() string                   { return "stub for HITL bubble-up tests" }
-func (hitlTool) ParametersSchema() tools.ToolSchema    { return tools.ToolSchema{} }
-func (hitlTool) RequiresConfirmation() bool            { return true }
-func (hitlTool) Display() tools.ToolDisplay            { return tools.DefaultDisplay("dangerous_action", "stub") }
-func (hitlTool) Execute(context.Context, string) (string, error) {
-	return "should never reach here", nil
+func (hitlTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:                 "dangerous_action",
+		Description:          "stub for HITL bubble-up tests",
+		RequiresConfirmation: true,
+		Display:              tools.DefaultDisplay("dangerous_action", "stub"),
+	}
+}
+
+func (hitlTool) Execute(context.Context, string) (tools.Result, error) {
+	return tools.Text("should never reach here"), nil
 }
 
 func TestCallSubAgentTool_HITLDenialBubbleUp(t *testing.T) {
@@ -254,10 +258,10 @@ func TestCallSubAgentTool_HITLDenialBubbleUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if !strings.Contains(res, "HITL_BLOCKED: denied") {
+	if !strings.Contains(res.Text, "HITL_BLOCKED: denied") {
 		t.Fatalf("expected HITL_BLOCKED denial directive in result, got: %q", res)
 	}
-	if !strings.Contains(res, "dangerous_action") {
+	if !strings.Contains(res.Text, "dangerous_action") {
 		t.Fatalf("expected tool name in result, got: %q", res)
 	}
 }

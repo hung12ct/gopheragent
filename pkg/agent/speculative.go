@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"sync"
-
-	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
 // speculativeExec carries the in-flight or completed result of a tool that
@@ -65,7 +63,7 @@ func (al *AgentLoop) shouldSpeculate(sessionKey, _, name, argsJSON string) bool 
 	if !ok {
 		return false
 	}
-	if tool.RequiresConfirmation() {
+	if tool.Descriptor().RequiresConfirmation {
 		return false
 	}
 	// The scheduler resolves <output_of:ID.path> tokens only after every
@@ -122,13 +120,8 @@ func (al *AgentLoop) spawnSpeculative(
 		// Run with the speculation-scoped ctx — no progress reporter, no
 		// sub-agent emitter. The wave executor owns user-visible emissions
 		// for this call when it processes the result.
-		// Mirror the wave executor's StructuredResult preference so speculated
-		// tools still deliver their typed payload to OnToolResult.
-		if sr, ok := tool.(tools.StructuredResult); ok {
-			sm.result, sm.structured, sm.err = sr.ExecuteStructured(specCtx, argsJSON)
-			return
-		}
-		sm.result, sm.err = tool.Execute(specCtx, argsJSON)
+		res, err := tool.Execute(specCtx, argsJSON)
+		sm.result, sm.structured, sm.err = res.Text, res.Structured, err
 	}()
 }
 

@@ -73,7 +73,7 @@ func NewSelector(ctx context.Context, registry *Registry, embedder Embedder, top
 // Refresh re-embeds all tool descriptions currently in the registry. Call
 // after Register-ing new tools on the underlying registry.
 func (s *Selector) Refresh(ctx context.Context) error {
-	all := s.registry.GetAll()
+	all := s.registry.All()
 	if len(all) == 0 {
 		s.mu.Lock()
 		s.toolNames = nil
@@ -84,8 +84,9 @@ func (s *Selector) Refresh(ctx context.Context) error {
 	names := make([]string, len(all))
 	texts := make([]string, len(all))
 	for i, t := range all {
-		names[i] = t.Name()
-		texts[i] = toolDescriptor(t)
+		desc := t.Descriptor()
+		names[i] = desc.Name
+		texts[i] = toolEmbedText(desc)
 	}
 	embeds, err := s.embedder.Embed(ctx, texts)
 	if err != nil {
@@ -120,7 +121,7 @@ func (s *Selector) Select(ctx context.Context, query string) ([]Tool, error) {
 	}
 	query = strings.TrimSpace(query)
 	if query == "" || topK <= 0 || topK >= len(names) {
-		return s.registry.GetAll(), nil
+		return s.registry.All(), nil
 	}
 
 	qvec, err := s.embedder.Embed(ctx, []string{query})
@@ -179,15 +180,15 @@ func (s *Selector) SelectRegistry(ctx context.Context, query string) (*Registry,
 	return out, nil
 }
 
-// toolDescriptor builds the text that represents a tool for embedding. Name,
+// toolEmbedText builds the text that represents a tool for embedding. Name,
 // description, and parameter names all carry signal — joining them gives the
 // embedder more lexical surface than description alone.
-func toolDescriptor(t Tool) string {
+func toolEmbedText(desc ToolDescriptor) string {
 	var b strings.Builder
-	b.WriteString(t.Name())
+	b.WriteString(desc.Name)
 	b.WriteString(": ")
-	b.WriteString(t.Description())
-	schema := t.ParametersSchema()
+	b.WriteString(desc.Description)
+	schema := desc.Parameters
 	if len(schema.Properties) > 0 {
 		b.WriteString(" | params: ")
 		keys := make([]string, 0, len(schema.Properties))

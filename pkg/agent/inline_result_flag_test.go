@@ -8,30 +8,36 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
-// inlineRenderTool implements tools.Tool plus tools.InlineRenderer with
-// InlineResult()=true — same shape as builtin/generate_image.
+// inlineRenderTool declares Inline=true in its descriptor — same shape as
+// builtin/generate_image.
 type inlineRenderTool struct{}
 
-func (inlineRenderTool) Name() string                       { return "render" }
-func (inlineRenderTool) Description() string                { return "renders inline" }
-func (inlineRenderTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (inlineRenderTool) RequiresConfirmation() bool         { return false }
-func (inlineRenderTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay("render", "renders inline") }
-func (inlineRenderTool) Execute(_ context.Context, _ string) (string, error) {
-	return "![cat](https://example.test/cat.png)", nil
+func (inlineRenderTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        "render",
+		Description: "renders inline",
+		Inline:      true,
+		Display:     tools.DefaultDisplay("render", "renders inline"),
+	}
 }
-func (inlineRenderTool) InlineResult() bool { return true }
 
-// plainTool implements only tools.Tool; its results are NOT inline.
+func (inlineRenderTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Text("![cat](https://example.test/cat.png)"), nil
+}
+
+// plainTool is the default — Inline=false; results are NOT streamed inline.
 type plainTool struct{}
 
-func (plainTool) Name() string                       { return "plain" }
-func (plainTool) Description() string                { return "plain tool" }
-func (plainTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (plainTool) RequiresConfirmation() bool         { return false }
-func (plainTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay("plain", "plain tool") }
-func (plainTool) Execute(_ context.Context, _ string) (string, error) {
-	return "ok", nil
+func (plainTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        "plain",
+		Description: "plain tool",
+		Display:     tools.DefaultDisplay("plain", "plain tool"),
+	}
+}
+
+func (plainTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Text("ok"), nil
 }
 
 func TestInlineResultTool_PersistedRowCarriesIsInlineResultFlag(t *testing.T) {
@@ -103,15 +109,18 @@ func TestInlineResultTool_FailingExecuteDoesNotSetFlag(t *testing.T) {
 
 type failingInlineRenderTool struct{}
 
-func (failingInlineRenderTool) Name() string                       { return "render" }
-func (failingInlineRenderTool) Description() string                { return "renders inline" }
-func (failingInlineRenderTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (failingInlineRenderTool) RequiresConfirmation() bool         { return false }
-func (failingInlineRenderTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay("render", "renders inline") }
-func (failingInlineRenderTool) Execute(_ context.Context, _ string) (string, error) {
-	return "", &mockToolErr{msg: "render failed"}
+func (failingInlineRenderTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        "render",
+		Description: "renders inline",
+		Inline:      true,
+		Display:     tools.DefaultDisplay("render", "renders inline"),
+	}
 }
-func (failingInlineRenderTool) InlineResult() bool { return true }
+
+func (failingInlineRenderTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Result{}, &mockToolErr{msg: "render failed"}
+}
 
 type mockToolErr struct{ msg string }
 

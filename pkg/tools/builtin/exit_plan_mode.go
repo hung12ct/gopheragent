@@ -17,23 +17,22 @@ type ExitPlanModeTool struct{}
 // NewExitPlanModeTool returns a ready-to-register plan-mode exit tool.
 func NewExitPlanModeTool() *ExitPlanModeTool { return &ExitPlanModeTool{} }
 
-func (t *ExitPlanModeTool) Name() string { return "exit_plan_mode" }
-
-func (t *ExitPlanModeTool) Description() string {
-	return "Propose a completed plan for the user's approval. Call this exactly once — when your plan is fully specified — with the plan text as `plan`. The system pauses execution until the user approves; approval unlocks normal tool use."
-}
+const exitPlanModeName = "exit_plan_mode"
+const exitPlanModeDescription = "Propose a completed plan for the user's approval. Call this exactly once — when your plan is fully specified — with the plan text as `plan`. The system pauses execution until the user approves; approval unlocks normal tool use."
 
 type exitPlanModeArgs struct {
 	Plan string `json:"plan" description:"The full plan as markdown text: goals, ordered steps, tools you will call, and acceptance criteria."`
 }
 
-func (t *ExitPlanModeTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[exitPlanModeArgs]()
+func (t *ExitPlanModeTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        exitPlanModeName,
+		Description: exitPlanModeDescription,
+		Parameters:  tools.SchemaFor[exitPlanModeArgs](),
+		Display:     tools.DefaultDisplay(exitPlanModeName, exitPlanModeDescription),
+	}
 }
 
-func (t *ExitPlanModeTool) RequiresConfirmation() bool { return false }
-
-func (t *ExitPlanModeTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *ExitPlanModeTool) Execute(_ context.Context, _ string) (string, error) {
-	return `{"approved":true,"note":"plan mode was not active; proceed with the plan."}`, nil
+func (t *ExitPlanModeTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Text(`{"approved":true,"note":"plan mode was not active; proceed with the plan."}`), nil
 }

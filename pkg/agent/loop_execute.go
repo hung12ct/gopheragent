@@ -92,16 +92,17 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		}, false)
 		return
 	}
+	desc := tool.Descriptor()
 
 	// Consult the permission policy before HITL. Allow bypasses
-	// RequiresConfirmation(); Deny short-circuits even for tools that
+	// RequiresConfirmation; Deny short-circuits even for tools that
 	// would otherwise run without a prompt; Prompt falls through to the
 	// existing HITL flow.
 	permDecision := PermissionPrompt
 	if al.Permissions != nil {
 		permDecision = al.Permissions.Check(ctx, tCall.Name, tCall.ArgsJSON)
 	}
-	if permDecision == PermissionAllow && tool.RequiresConfirmation() {
+	if permDecision == PermissionAllow && desc.RequiresConfirmation {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Permission policy auto-approved %s (bypassing HITL).", tCall.Name)}))
 	}
 	if permDecision == PermissionDeny {
@@ -116,7 +117,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		return
 	}
 
-	if tool.RequiresConfirmation() && permDecision != PermissionAllow {
+	if desc.RequiresConfirmation && permDecision != PermissionAllow {
 		outcome := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
 		if outcome != hitlApproved {
 			var msg string
@@ -144,11 +145,9 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 
 	var cacheKey string
 	cacheOK := false
-	if al.Cache != nil {
-		if c, ok := tool.(tools.Cacheable); ok && c.Cacheable() {
-			cacheOK = true
-			cacheKey = toolCacheKey(tCall.Name, tCall.ArgsJSON)
-		}
+	if al.Cache != nil && desc.Cacheable {
+		cacheOK = true
+		cacheKey = toolCacheKey(tCall.Name, tCall.ArgsJSON)
 	}
 
 	// Peek the speculative map before emitting so the tool_call event can
@@ -211,13 +210,9 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	if speculated {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)}))
 		toolResult, structured, execErr = awaitSpeculative(toolCtx, sm)
-	} else if sr, ok := tool.(tools.StructuredResult); ok {
-		// Tool advertises a typed payload — prefer the structured path so
-		// the payload reaches OnToolResult. The string branch (Execute)
-		// stays the fallback for tools that don't opt in.
-		toolResult, structured, execErr = sr.ExecuteStructured(toolCtx, tCall.ArgsJSON)
 	} else {
-		toolResult, execErr = tool.Execute(toolCtx, tCall.ArgsJSON)
+		res, err := tool.Execute(toolCtx, tCall.ArgsJSON)
+		toolResult, structured, execErr = res.Text, res.Structured, err
 	}
 	if al.OnToolResult != nil {
 		rewritten, hookErr := al.OnToolResult(toolCtx, callID, tCall.Name, tCall.ArgsJSON, toolResult, structured, execErr)
@@ -245,11 +240,9 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	}
 
 	isInlineResult := false
-	if !isToolErr {
-		if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
-			isInlineResult = true
-			al.emit(ctx, st.sessionKey, st.streamChan, Event(ContentEvent{Text: "\n\n" + content + "\n\n"}))
-		}
+	if !isToolErr && desc.Inline {
+		isInlineResult = true
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ContentEvent{Text: "\n\n" + content + "\n\n"}))
 	}
 
 	if cacheOK && !isToolErr {

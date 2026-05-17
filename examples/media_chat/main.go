@@ -112,34 +112,36 @@ func (t *DescribeFileTool) clearFile(sessionKey string) {
 	t.mu.Unlock()
 }
 
-func (t *DescribeFileTool) Name() string { return "describe_file" }
-func (t *DescribeFileTool) Description() string {
-	return "Analyze a video or text file the user uploaded in this session. Pass the user's exact question or analysis instruction as the prompt. Not used for images — images are visible directly in the conversation."
-}
-func (t *DescribeFileTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"prompt": map[string]any{
-				"type":        "string",
-				"description": "Specific question or instruction for the uploaded file, e.g. 'Summarize the key events in this video.'",
+const describeFileName = "describe_file"
+const describeFileDescription = "Analyze a video or text file the user uploaded in this session. Pass the user's exact question or analysis instruction as the prompt. Not used for images — images are visible directly in the conversation."
+
+func (t *DescribeFileTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        describeFileName,
+		Description: describeFileDescription,
+		Parameters: tools.ToolSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "Specific question or instruction for the uploaded file, e.g. 'Summarize the key events in this video.'",
+				},
 			},
+			Required: []string{"prompt"},
 		},
-		Required: []string{"prompt"},
+		Display: tools.DefaultDisplay(describeFileName, describeFileDescription),
 	}
 }
-func (t *DescribeFileTool) RequiresConfirmation() bool { return false }
 
-func (t *DescribeFileTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args struct {
 		Prompt string `json:"prompt"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	if strings.TrimSpace(args.Prompt) == "" {
-		return "", fmt.Errorf("tools: prompt is required")
+		return tools.Result{}, fmt.Errorf("tools: prompt is required")
 	}
 
 	sessionKey, _ := agent.SessionKeyFromContext(ctx)
@@ -147,24 +149,28 @@ func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (string
 	f, ok := t.sessions[sessionKey]
 	t.mu.RUnlock()
 	if !ok {
-		return "", fmt.Errorf("tools: no video or text file uploaded for this session")
+		return tools.Result{}, fmt.Errorf("tools: no video or text file uploaded for this session")
 	}
 
 	switch allowedMIME[f.MIMEType] {
 	case "video":
 		if t.media == nil {
-			return "", fmt.Errorf("tools: video analysis requires GEMINI_API_KEY")
+			return tools.Result{}, fmt.Errorf("tools: video analysis requires GEMINI_API_KEY")
 		}
 		raw, err := os.ReadFile(f.Path)
 		if err != nil {
-			return "", fmt.Errorf("tools: read file: %w", err)
+			return tools.Result{}, fmt.Errorf("tools: read file: %w", err)
 		}
 		dataURI := fmt.Sprintf("data:%s;base64,%s", f.MIMEType, base64.StdEncoding.EncodeToString(raw))
-		return t.media.Analyze(ctx, dataURI, args.Prompt)
+		out, err := t.media.Analyze(ctx, dataURI, args.Prompt)
+		if err != nil {
+			return tools.Result{}, err
+		}
+		return tools.Text(out), nil
 	case "text":
 		raw, err := os.ReadFile(f.Path)
 		if err != nil {
-			return "", fmt.Errorf("tools: read file: %w", err)
+			return tools.Result{}, fmt.Errorf("tools: read file: %w", err)
 		}
 		const maxRunes = 12_000
 		runes := []rune(string(raw))
@@ -178,9 +184,9 @@ func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (string
 			out += "\n\n[File truncated at 12,000 characters]"
 		}
 		out += fmt.Sprintf("\n\n---\nUser instruction: %s", args.Prompt)
-		return out, nil
+		return tools.Text(out), nil
 	default:
-		return "", fmt.Errorf("tools: unsupported file type %q for describe_file", f.MIMEType)
+		return tools.Result{}, fmt.Errorf("tools: unsupported file type %q for describe_file", f.MIMEType)
 	}
 }
 
