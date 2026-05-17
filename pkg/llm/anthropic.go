@@ -64,6 +64,17 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	var systemBlocks []anthropic.TextBlockParam
 	var messages []anthropic.MessageParam
 
+	// Anthropic rejects requests where an assistant tool_use isn't
+	// immediately followed by its matching tool_result (400: "tool_use ids
+	// were found without tool_result blocks immediately after"). Adopters
+	// who pass a sub-slice of session history into ad-hoc LLM calls
+	// (summarisation, classification, custom titling) routinely produce
+	// that shape. Sealing dangling tool_use blocks here makes the
+	// converter robust regardless of how the input slice was assembled —
+	// the same idempotent helper the agent loop already applies to every
+	// per-turn history before invoking the provider.
+	memory = agent.PatchDanglingToolCalls(memory)
+
 	for _, m := range memory {
 		switch m.Role {
 		case "system":
