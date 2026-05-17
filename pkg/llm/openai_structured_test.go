@@ -136,6 +136,57 @@ func TestOpenAI_NoStructuredOutput_OmitsResponseFormat(t *testing.T) {
 	}
 }
 
+// TestOpenAI_AssistantToolCall_HasContentField confirms that an assistant
+// message carrying ToolCalls but no text content goes out with a non-empty
+// content field. The SDK's omitempty drops empty strings entirely, and
+// GPT-5 rejects messages whose content field is missing — see BACKLOG
+// "OpenAI provider sends assistant tool-call messages with no content field".
+func TestOpenAI_AssistantToolCall_HasContentField(t *testing.T) {
+	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+		ch := make(chan agent.StreamEvent, 4)
+		go func() {
+			for range ch {
+			}
+		}()
+		_, _ = p.GenerateStream(context.Background(), []history.Message{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Content: "", ToolCalls: []history.ToolCall{{
+				ID:        "call_1",
+				Name:      "foo",
+				Arguments: "{}",
+			}}},
+			{Role: "tool", ToolCallID: "call_1", Content: "ok"},
+		}, nil, ch)
+		close(ch)
+	})
+
+	msgs, ok := req["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages missing: %v", req["messages"])
+	}
+	var assistantMsg map[string]any
+	for _, m := range msgs {
+		mm, _ := m.(map[string]any)
+		if mm["role"] == "assistant" {
+			assistantMsg = mm
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message not found in serialized request")
+	}
+	content, present := assistantMsg["content"]
+	if !present {
+		t.Fatal("assistant message must serialize a content field (GPT-5 rejects null)")
+	}
+	if content == nil {
+		t.Fatal("assistant message content must not be null")
+	}
+	if s, _ := content.(string); s == "" {
+		t.Fatalf("assistant message content must be non-empty string (got %q)", s)
+	}
+}
+
 // Defensive: confirm that the jsonSchemaMarshaler produces a JSON object,
 // not the Go map's default encoding quirks, when the map is empty.
 func TestJSONSchemaMarshaler_EmptyMap(t *testing.T) {
