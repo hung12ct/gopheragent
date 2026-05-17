@@ -82,15 +82,17 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 					},
 				})
 			}
-			// GPT-5 rejects tool-call assistant messages whose `content`
-			// field is missing. The Go SDK tags Content with `omitempty`,
-			// so empty-string content vanishes from the JSON entirely.
-			// A single space passes the tag and is semantically a no-op
-			// for the model; GPT-4 already accepted the missing field, so
-			// this is a one-direction widening — no regression there.
-			if msg.Content == "" && len(msg.MultiContent) == 0 {
-				msg.Content = " "
-			}
+		}
+		// gpt-4.1 / gpt-5 reject any message whose `content` field marshals
+		// to null with "Invalid value for 'content': expected a string, got
+		// null." The Go SDK tags Content with `omitempty`, so empty-string
+		// content vanishes from the JSON entirely. Stamp a single space
+		// whenever the message has no string content and no multimodal
+		// parts — applies to every role (assistant w/ or w/o tool calls,
+		// tool results, user, system). Model-level no-op; satisfies the
+		// validator. Skipped when MultiContent is populated (multimodal).
+		if msg.Content == "" && len(msg.MultiContent) == 0 {
+			msg.Content = " "
 		}
 		reqMessages = append(reqMessages, msg)
 	}
