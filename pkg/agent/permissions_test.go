@@ -79,19 +79,22 @@ func TestParsePermissionRule_Invalid(t *testing.T) {
 	}
 }
 
-func TestPermissionRuleSet_PanicsOnInvalidPattern(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic on invalid Allow pattern")
-		}
-	}()
-	NewPermissionRuleSet().Allow("Bash(unterminated")
+func TestPermissionRuleSet_ReturnsErrorOnInvalidPattern(t *testing.T) {
+	if _, err := NewPermissionRuleSet([]string{"Bash(unterminated"}, nil); err == nil {
+		t.Fatal("expected error on invalid Allow pattern, got nil")
+	}
+	if _, err := NewPermissionRuleSet(nil, []string{"Bash(unterminated"}); err == nil {
+		t.Fatal("expected error on invalid Deny pattern, got nil")
+	}
 }
 
 // --- rule-set decision logic ---
 
 func TestPermissionRuleSet_AllowMatchesExactTool(t *testing.T) {
-	r := NewPermissionRuleSet().Allow("ListFiles")
+	r, err := NewPermissionRuleSet([]string{"ListFiles"}, nil)
+	if err != nil {
+		t.Fatalf("NewPermissionRuleSet: %v", err)
+	}
 	ctx := context.Background()
 	if got := r.Check(ctx, "ListFiles", `{}`); got != PermissionAllow {
 		t.Fatalf("expected Allow, got %v", got)
@@ -102,7 +105,10 @@ func TestPermissionRuleSet_AllowMatchesExactTool(t *testing.T) {
 }
 
 func TestPermissionRuleSet_AllowGlobMatchesArgs(t *testing.T) {
-	r := NewPermissionRuleSet().Allow(`Bash(*"git status"*)`)
+	r, err := NewPermissionRuleSet([]string{`Bash(*"git status"*)`}, nil)
+	if err != nil {
+		t.Fatalf("NewPermissionRuleSet: %v", err)
+	}
 	ctx := context.Background()
 	if got := r.Check(ctx, "Bash", `{"command":"git status"}`); got != PermissionAllow {
 		t.Fatalf("expected Allow for git status, got %v", got)
@@ -114,9 +120,10 @@ func TestPermissionRuleSet_AllowGlobMatchesArgs(t *testing.T) {
 
 func TestPermissionRuleSet_DenyOverridesAllow(t *testing.T) {
 	// Deny rules take precedence even when an allow rule matches too.
-	r := NewPermissionRuleSet().
-		Allow(`Bash(*)`).
-		Deny(`Bash(*rm -rf*)`)
+	r, err := NewPermissionRuleSet([]string{`Bash(*)`}, []string{`Bash(*rm -rf*)`})
+	if err != nil {
+		t.Fatalf("NewPermissionRuleSet: %v", err)
+	}
 	ctx := context.Background()
 	if got := r.Check(ctx, "Bash", `{"command":"rm -rf /"}`); got != PermissionDeny {
 		t.Fatalf("Deny must override Allow, got %v", got)
@@ -127,16 +134,20 @@ func TestPermissionRuleSet_DenyOverridesAllow(t *testing.T) {
 }
 
 func TestPermissionRuleSet_NoMatchFallsThroughToPrompt(t *testing.T) {
-	r := NewPermissionRuleSet().
-		Allow("ListFiles").
-		Deny("DeleteFile")
+	r, err := NewPermissionRuleSet([]string{"ListFiles"}, []string{"DeleteFile"})
+	if err != nil {
+		t.Fatalf("NewPermissionRuleSet: %v", err)
+	}
 	if got := r.Check(context.Background(), "Unrelated", `{}`); got != PermissionPrompt {
 		t.Fatalf("expected Prompt for unmatched tool, got %v", got)
 	}
 }
 
 func TestPermissionRuleSet_EmptyPolicyIsAlwaysPrompt(t *testing.T) {
-	r := NewPermissionRuleSet()
+	r, err := NewPermissionRuleSet(nil, nil)
+	if err != nil {
+		t.Fatalf("NewPermissionRuleSet: %v", err)
+	}
 	if got := r.Check(context.Background(), "AnyTool", `{}`); got != PermissionPrompt {
 		t.Fatalf("empty policy must default to Prompt, got %v", got)
 	}
@@ -152,7 +163,8 @@ func TestPermissions_AllowBypassesHITL(t *testing.T) {
 		{Content: "done"},
 	}}
 	loop, _ := setup(provider, &echoTool{name: "dangerous", confirm: true})
-	loop.Permissions = NewPermissionRuleSet().Allow("dangerous")
+	perms, _ := NewPermissionRuleSet([]string{"dangerous"}, nil)
+	loop.Permissions = perms
 	// Intentionally leave ConfirmHITL nil to prove Allow skips the prompt.
 
 	resp, err := loop.RunIteration(context.Background(), "s1", "go")
@@ -177,7 +189,8 @@ func TestPermissions_DenyBlocksWithoutHITLPrompt(t *testing.T) {
 		hitlCalls++
 		return true
 	}
-	loop.Permissions = NewPermissionRuleSet().Deny(`echo(*"rm -rf"*)`)
+	perms, _ := NewPermissionRuleSet(nil, []string{`echo(*"rm -rf"*)`})
+	loop.Permissions = perms
 
 	resp, err := loop.RunIteration(context.Background(), "s1", "go")
 	if err != nil {
@@ -212,7 +225,8 @@ func TestPermissions_PromptFallsThroughToExistingHITL(t *testing.T) {
 		{Content: "executed"},
 	}}
 	loop, _ := setup(provider, &echoTool{name: "dangerous", confirm: true})
-	loop.Permissions = NewPermissionRuleSet().Allow("OtherTool") // no match
+	perms, _ := NewPermissionRuleSet([]string{"OtherTool"}, nil) // no match
+	loop.Permissions = perms
 	loop.ConfirmHITL = func(_ context.Context, _, _ string) bool {
 		hitlCalls++
 		return true
