@@ -29,7 +29,7 @@ func (p *flakyProvider) GenerateStream(_ context.Context, _ []history.Message, _
 	if n <= p.failBefore {
 		return LLMResult{}, p.transient
 	}
-	ch <- StreamEvent{Type: EventTypeContent, Content: p.finalText}
+	ch <- Event(ContentEvent{Text: p.finalText})
 	return LLMResult{Content: p.finalText}, nil
 }
 

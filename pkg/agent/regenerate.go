@@ -30,7 +30,11 @@ import (
 // track per-turn token usage themselves should call BudgetTracker.Reset or
 // a custom rewind before invoking Regenerate.
 func (al *AgentLoop) Regenerate(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) error {
-	existing := al.Sessions.GetHistory(ctx, sessionKey)
+	existing, err := al.Sessions.History(ctx, sessionKey)
+	if err != nil {
+		close(streamChan)
+		return fmt.Errorf("agent: regenerate: load history: %w", err)
+	}
 	userIdx := lastUserIndex(existing)
 	if userIdx < 0 {
 		close(streamChan)
@@ -67,7 +71,11 @@ func (al *AgentLoop) Regenerate(ctx context.Context, sessionKey string, streamCh
 // error results — without this, providers reject the next call with a
 // tool_use-without-tool_result 400.
 func (al *AgentLoop) Continue(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) error {
-	existing := al.Sessions.GetHistory(ctx, sessionKey)
+	existing, err := al.Sessions.History(ctx, sessionKey)
+	if err != nil {
+		close(streamChan)
+		return fmt.Errorf("agent: continue: load history: %w", err)
+	}
 	if !canContinue(existing) {
 		close(streamChan)
 		return ErrNothingToContinue
@@ -88,11 +96,18 @@ func (al *AgentLoop) Continue(ctx context.Context, sessionKey string, streamChan
 // next LLM call.
 func (al *AgentLoop) continueLogicLoop(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) {
 	defer close(streamChan)
-	ctx = context.WithValue(ctx, SessionKeyCtx("sessionKey"), sessionKey)
+	ctx = WithSessionKey(ctx, sessionKey)
 
-	msgs := al.Sessions.GetHistory(ctx, sessionKey)
-	msgs = PatchDanglingToolCalls(msgs)
-	al.Sessions.SetHistory(ctx, sessionKey, msgs)
+	msgs, err := al.Sessions.History(ctx, sessionKey)
+	if err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: continue: load history: %w", err)))
+		return
+	}
+	msgs = patchDanglingToolCalls(msgs)
+	if err := al.Sessions.SaveHistory(ctx, sessionKey, msgs); err != nil {
+		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: continue: save history: %w", err)))
+		return
+	}
 
 	al.iterateMessages(ctx, sessionKey, streamChan, msgs)
 }
@@ -138,19 +153,13 @@ func drainBestEffort(streamChan chan<- StreamEvent, internalChan <-chan StreamEv
 // a Regenerate stream. JSON-encoded into Content so wire consumers can parse
 // without an Anthropic SDK dependency.
 func regeneratedEvent(previousAssistantIndex, truncatedAt int) StreamEvent {
-	return StreamEvent{
-		Type:    EventTypeRegenerated,
-		Content: fmt.Sprintf(`{"previous_assistant_index":%d,"truncated_at":%d}`, previousAssistantIndex, truncatedAt),
-	}
+	return Event(RegeneratedEvent{PreviousAssistantIndex: previousAssistantIndex, TruncatedAt: truncatedAt})
 }
 
 // continuedEvent builds the typed transition frame emitted at the start of a
 // Continue stream.
 func continuedEvent(continuedFromIndex int) StreamEvent {
-	return StreamEvent{
-		Type:    EventTypeContinued,
-		Content: fmt.Sprintf(`{"continued_from_index":%d}`, continuedFromIndex),
-	}
+	return Event(ContinuedEvent{ContinuedFromIndex: continuedFromIndex})
 }
 
 // lastUserIndex returns the highest index of a "user" message, or -1.

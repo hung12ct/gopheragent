@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -45,17 +45,26 @@ func NewBudgetTracker(budget int) *BudgetTracker {
 	}
 }
 
+// Snapshot returns a copy of the per-session token usage recorded by the
+// tracker. The returned map is safe for the caller to read and mutate; it
+// reflects the state at the moment of the call.
+func (bt *BudgetTracker) Snapshot() map[string]TokenUsage {
+	bt.mu.RLock()
+	defer bt.mu.RUnlock()
+	out := make(map[string]TokenUsage, len(bt.usage))
+	maps.Copy(out, bt.usage)
+	return out
+}
+
 // Handler returns an EventHandler that accumulates token usage for each
 // "usage" StreamEvent. Register it with loop.OnEvent.
 func (bt *BudgetTracker) Handler() EventHandler {
 	return func(_ context.Context, sessionKey string, ev StreamEvent) {
-		if ev.Type != "usage" {
+		p, ok := ev.Payload.(UsageEvent)
+		if !ok {
 			return
 		}
-		var delta TokenUsage
-		if err := json.Unmarshal([]byte(ev.Content), &delta); err != nil {
-			return
-		}
+		delta := p.Usage
 		bt.mu.Lock()
 		cur := bt.usage[sessionKey]
 		cur.PromptTokens += delta.PromptTokens

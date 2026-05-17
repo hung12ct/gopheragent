@@ -31,7 +31,7 @@ func (p *capturingProvider) GenerateStream(_ context.Context, msgs []history.Mes
 	if p.err != nil {
 		return agent.LLMResult{}, p.err
 	}
-	ch <- agent.StreamEvent{Type: "content", Content: p.reply}
+	ch <- agent.Event(agent.ContentEvent{Text: p.reply})
 	return agent.LLMResult{Content: p.reply}, nil
 }
 
@@ -48,11 +48,11 @@ func newSpySessionManager(systemPrompt string) *spySessionManager {
 	}
 }
 
-func (s *spySessionManager) DeleteSession(ctx context.Context, sessionKey string) error {
+func (s *spySessionManager) Delete(ctx context.Context, sessionKey string) error {
 	s.mu.Lock()
 	s.deletes = append(s.deletes, sessionKey)
 	s.mu.Unlock()
-	return s.InMemSessionManager.DeleteSession(ctx, sessionKey)
+	return s.InMemSessionManager.Delete(ctx, sessionKey)
 }
 
 func (s *spySessionManager) deletedKeys() []string {
@@ -66,7 +66,7 @@ func (s *spySessionManager) deletedKeys() []string {
 func TestCallSubAgentTool_IsolatedSession(t *testing.T) {
 	sm := newSpySessionManager("main-sys")
 
-	sm.SetHistory(context.Background(), "parent", []history.Message{
+	sm.SaveHistory(context.Background(), "parent", []history.Message{
 		{Role: "system", Content: "main-sys"},
 		{Role: "user", Content: "earlier question"},
 		{Role: "assistant", Content: "earlier answer"},
@@ -142,7 +142,7 @@ func TestCallSubAgentTool_ForwardsEventsWhenEmitterPresent(t *testing.T) {
 		defer mu.Unlock()
 		forwarded = append(forwarded, ev)
 	})
-	ctx = context.WithValue(ctx, agent.SessionKeyCtx("sessionKey"), "parent-session")
+	ctx = agent.WithSessionKey(ctx, "parent-session")
 
 	result, err := tool.Execute(ctx, `{"task_description":"go","agent_name":"researcher"}`)
 	if err != nil {
@@ -166,12 +166,13 @@ func TestCallSubAgentTool_ForwardsEventsWhenEmitterPresent(t *testing.T) {
 		if ev.ParentID != "parent-session" {
 			t.Fatalf("forwarded event must carry ParentID=parent-session, got %q", ev.ParentID)
 		}
-		switch ev.Type {
-		case "content":
-			if ev.Content == "worker report" {
+		switch p := ev.Payload.(type) {
+		case agent.ContentEvent:
+			if p.Text == "worker report" {
 				sawContent = true
 			}
-		case "done":
+		case agent.DoneEvent:
+			_ = p
 			sawDone = true
 		}
 	}
@@ -217,7 +218,7 @@ func (p *scriptedProvider) GenerateStream(_ context.Context, _ []history.Message
 	r := p.turns[p.idx]
 	p.idx++
 	if len(r.ToolCalls) == 0 && r.Content != "" {
-		ch <- agent.StreamEvent{Type: "content", Content: r.Content}
+		ch <- agent.Event(agent.ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }
@@ -246,7 +247,7 @@ func TestCallSubAgentTool_HITLDenialBubbleUp(t *testing.T) {
 	tool := NewCallSubAgentTool(sm, reg, prov)
 
 	ctx := agent.WithSubAgentEmitter(context.Background(), func(agent.StreamEvent) {})
-	ctx = context.WithValue(ctx, agent.SessionKeyCtx("sessionKey"), "parent-session")
+	ctx = agent.WithSessionKey(ctx, "parent-session")
 	ctx = agent.WithConfirmHITL(ctx, func(context.Context, string, string) bool { return false })
 
 	res, err := tool.Execute(ctx, `{"task_description":"do dangerous","agent_name":"worker"}`)

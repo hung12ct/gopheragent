@@ -124,7 +124,7 @@ func TestToolError_WrappedInToolResult(t *testing.T) {
 	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
 		t.Fatalf("RunIteration: %v", err)
 	}
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	var toolMsg history.Message
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID == "c1" {
@@ -162,7 +162,7 @@ func TestToolError_CustomFormatterRoundTrips(t *testing.T) {
 	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err != nil {
 		t.Fatalf("RunIteration: %v", err)
 	}
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	var toolMsg history.Message
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID == "c1" {

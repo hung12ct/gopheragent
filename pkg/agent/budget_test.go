@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -10,11 +9,24 @@ import (
 
 func usageEvent(t *testing.T, pt, ct, tt int) StreamEvent {
 	t.Helper()
-	payload, err := json.Marshal(TokenUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt})
-	if err != nil {
-		t.Fatalf("marshal usage: %v", err)
+	return Event(UsageEvent{Usage: TokenUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt}})
+}
+
+func TestBudgetTracker_Snapshot_IsDetachedCopy(t *testing.T) {
+	bt := NewBudgetTracker(0)
+	bt.Handler()(context.Background(), "s1", usageEvent(t, 100, 50, 150))
+
+	snap := bt.Snapshot()
+	snap["s1"] = TokenUsage{TotalTokens: 9999}
+	snap["new"] = TokenUsage{TotalTokens: 42}
+
+	live := bt.Usage("s1")
+	if live.TotalTokens != 150 {
+		t.Fatalf("tracker state leaked through snapshot: got %+v", live)
 	}
-	return StreamEvent{Type: "usage", Content: string(payload)}
+	if bt.Usage("new").TotalTokens != 0 {
+		t.Fatalf("snapshot write leaked into tracker")
+	}
 }
 
 func TestBudgetTracker_HandlerAccumulates(t *testing.T) {
@@ -40,8 +52,8 @@ func TestBudgetTracker_HandlerAccumulates(t *testing.T) {
 func TestBudgetTracker_HandlerIgnoresOtherEventTypes(t *testing.T) {
 	bt := NewBudgetTracker(0)
 	h := bt.Handler()
-	h(context.Background(), "s", StreamEvent{Type: "content", Content: "hi"})
-	h(context.Background(), "s", StreamEvent{Type: "thought", Content: `{"total_tokens":999}`})
+	h(context.Background(), "s", Event(ContentEvent{Text: "hi"}))
+	h(context.Background(), "s", Event(ThoughtEvent{Message: `{"total_tokens":999}`}))
 	if bt.Usage("s").TotalTokens != 0 {
 		t.Fatalf("non-usage events must not accumulate, got %+v", bt.Usage("s"))
 	}
@@ -50,7 +62,9 @@ func TestBudgetTracker_HandlerIgnoresOtherEventTypes(t *testing.T) {
 func TestBudgetTracker_HandlerIgnoresMalformedPayload(t *testing.T) {
 	bt := NewBudgetTracker(0)
 	h := bt.Handler()
-	h(context.Background(), "s", StreamEvent{Type: "usage", Content: "not json"})
+	// A StreamEvent of usage type but with a non-Usage payload (e.g. an
+	// ErrorEvent mistakenly tagged as usage) must not accumulate.
+	h(context.Background(), "s", StreamEvent{Type: EventTypeUsage, Payload: ErrorEvent{Message: "not usage"}})
 	if bt.Usage("s").TotalTokens != 0 {
 		t.Fatalf("malformed payload must not crash or accumulate, got %+v", bt.Usage("s"))
 	}

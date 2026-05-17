@@ -155,7 +155,7 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 	}
 	toolCallMap := map[int]*toolCallAccum{}
 
-	streamChan <- agent.StreamEvent{Type: agent.EventTypeThought, Content: "Analyzing with OpenAI..."}
+	streamChan <- agent.Event(agent.ThoughtEvent{Message: "Analyzing with OpenAI..."})
 
 	for {
 		response, err := stream.Recv()
@@ -182,7 +182,7 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 
 		if delta.Content != "" {
 			finalContent += delta.Content
-			streamChan <- agent.StreamEvent{Type: agent.EventTypeContent, Content: delta.Content}
+			streamChan <- agent.Event(agent.ContentEvent{Text: delta.Content})
 		}
 
 		for _, tc := range delta.ToolCalls {

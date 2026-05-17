@@ -31,7 +31,7 @@ func (p *ctxValueCapturingProvider) GenerateStream(ctx context.Context, _ []hist
 		default:
 		}
 	}
-	ch <- StreamEvent{Type: "content", Content: "done"}
+	ch <- Event(ContentEvent{Text: "done"})
 	return LLMResult{Content: "done"}, nil
 }
 

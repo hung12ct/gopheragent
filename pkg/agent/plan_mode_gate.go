@@ -35,19 +35,18 @@ func (al *AgentLoop) runPlanModeGate(ctx context.Context, sessionKey string, str
 		Plan string `json:"plan"`
 	}
 	_ = json.Unmarshal([]byte(tc.ArgsJSON), &pa)
-	al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan proposed — awaiting human approval."})
+	al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{Message: "Plan proposed — awaiting human approval."}))
 	approved := false
 	if al.ConfirmPlan != nil {
 		approved = al.ConfirmPlan(ctx, pa.Plan)
 	} else {
-		payload, _ := json.Marshal(map[string]string{"tool": ExitPlanModeToolName, "plan": pa.Plan})
-		al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeActionRequired, Content: string(payload)})
+		al.emit(ctx, sessionKey, streamChan, Event(ActionRequiredEvent{Tool: ExitPlanModeToolName, Args: pa.Plan}))
 	}
 	var result string
 	isErr := false
 	if approved {
 		al.SetPlanMode(sessionKey, false)
-		al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "Plan approved — exiting plan mode."})
+		al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{Message: "Plan approved — exiting plan mode."}))
 		result = planApprovedJSON()
 	} else {
 		result = planDeniedJSON()

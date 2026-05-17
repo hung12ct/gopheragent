@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -195,19 +194,14 @@ type streamingToolCallReadyProvider struct {
 
 func (p *streamingToolCallReadyProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
 	if p.turn == 0 {
-		payload, _ := json.Marshal(struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Args string `json:"args"`
-		}{ID: "c1", Name: p.toolName, Args: p.argsJSON})
-		ch <- StreamEvent{Type: EventTypeToolCallReady, Content: string(payload)}
+		ch <- Event(ToolCallReadyEvent{ID: "c1", Name: p.toolName, ArgsJSON: p.argsJSON})
 		// Let the drainer observe the event and spawn the speculation
 		// before we return the tool-call result.
 		time.Sleep(20 * time.Millisecond)
 		p.turn++
 		return LLMResult{ToolCalls: []PendingToolCall{{ID: "c1", Name: p.toolName, ArgsJSON: p.argsJSON}}}, nil
 	}
-	ch <- StreamEvent{Type: "content", Content: "final answer"}
+	ch <- Event(ContentEvent{Text: "final answer"})
 	p.turn++
 	return LLMResult{Content: "final answer"}, nil
 }
@@ -270,11 +264,12 @@ func TestSpeculative_ToolCallEventFlagsReused(t *testing.T) {
 	var sawReused bool
 	var mu sync.Mutex
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type != EventTypeToolCall {
+		p, ok := ev.Payload.(ToolCallEvent)
+		if !ok {
 			return
 		}
 		mu.Lock()
-		if ev.Reused {
+		if p.Reused {
 			sawReused = true
 		}
 		mu.Unlock()
@@ -387,22 +382,14 @@ func (p *retryableToolReadyProvider) GenerateStream(_ context.Context, _ []histo
 	case 1:
 		// Emit a tool_call_ready that *would* have spawned a speculation,
 		// then fail transiently so a retry happens.
-		payload, _ := json.Marshal(struct {
-			ID, Name, Args string
-		}{"c1", p.toolName, p.argsJSON})
-		ch <- StreamEvent{Type: EventTypeToolCallReady, Content: string(payload)}
+		ch <- Event(ToolCallReadyEvent{ID: "c1", Name: p.toolName, ArgsJSON: p.argsJSON})
 		return LLMResult{}, fmt.Errorf("transient: rate limited")
 	case 2:
-		payload, _ := json.Marshal(struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Args string `json:"args"`
-		}{"c1", p.toolName, p.argsJSON})
-		ch <- StreamEvent{Type: EventTypeToolCallReady, Content: string(payload)}
+		ch <- Event(ToolCallReadyEvent{ID: "c1", Name: p.toolName, ArgsJSON: p.argsJSON})
 		time.Sleep(5 * time.Millisecond)
 		return LLMResult{ToolCalls: []PendingToolCall{{ID: "c1", Name: p.toolName, ArgsJSON: p.argsJSON}}}, nil
 	default:
-		ch <- StreamEvent{Type: "content", Content: "final answer"}
+		ch <- Event(ContentEvent{Text: "final answer"})
 		return LLMResult{Content: "final answer"}, nil
 	}
 }

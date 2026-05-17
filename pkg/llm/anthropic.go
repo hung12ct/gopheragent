@@ -173,7 +173,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(b)
 	}
 
-	streamChan <- agent.StreamEvent{Type: agent.EventTypeThought, Content: fmt.Sprintf("Analyzing with Claude (%s)...", p.model)}
+	streamChan <- agent.Event(agent.ThoughtEvent{Message: fmt.Sprintf("Analyzing with Claude (%s)...", p.model)})
 
 	stream := p.client.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
@@ -190,7 +190,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 			switch delta := variant.Delta.AsAny().(type) {
 			case anthropic.TextDelta:
 				if delta.Text != "" {
-					streamChan <- agent.StreamEvent{Type: agent.EventTypeContent, Content: delta.Text}
+					streamChan <- agent.Event(agent.ContentEvent{Text: delta.Text})
 				}
 			}
 		case anthropic.ContentBlockStopEvent:
@@ -203,16 +203,12 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 			idx := int(variant.Index)
 			if idx >= 0 && idx < len(accumulated.Content) {
 				if tu, ok := accumulated.Content[idx].AsAny().(anthropic.ToolUseBlock); ok {
-					argsBytes, err := json.Marshal(tu.Input)
-					if err == nil {
-						payload, pErr := json.Marshal(struct {
-							ID   string `json:"id"`
-							Name string `json:"name"`
-							Args string `json:"args"`
-						}{ID: tu.ID, Name: tu.Name, Args: string(argsBytes)})
-						if pErr == nil {
-							streamChan <- agent.StreamEvent{Type: agent.EventTypeToolCallReady, Content: string(payload)}
-						}
+					if argsBytes, err := json.Marshal(tu.Input); err == nil {
+						streamChan <- agent.Event(agent.ToolCallReadyEvent{
+							ID:       tu.ID,
+							Name:     tu.Name,
+							ArgsJSON: string(argsBytes),
+						})
 					}
 				}
 			}

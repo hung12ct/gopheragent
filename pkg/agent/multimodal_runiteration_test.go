@@ -30,7 +30,7 @@ func (p *partsCapturingProviderRegistry) GenerateStream(_ context.Context, msgs 
 		default:
 		}
 	}
-	ch <- StreamEvent{Type: EventTypeContent, Content: "ok"}
+	ch <- Event(ContentEvent{Text: "ok"})
 	return LLMResult{Content: "ok"}, nil
 }
 
@@ -80,7 +80,7 @@ func TestRunIterationMessage_DefaultsRoleToUser(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	var saw bool
 	for _, m := range stored {
 		if m.Role == "user" && m.Content == "hello" {

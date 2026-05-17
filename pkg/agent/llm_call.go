@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -21,10 +20,9 @@ func (al *AgentLoop) callLLMWithRetry(ctx context.Context, st *iterationState, m
 	}
 	for attempt := 0; attempt < al.Retry.MaxRetries; attempt++ {
 		delay := al.Retry.delay(attempt)
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
-			Type:    "thought",
-			Content: fmt.Sprintf("LLM error (%v). Retrying in %s (attempt %d/%d)...", err, delay, attempt+1, al.Retry.MaxRetries),
-		})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
+			Message: fmt.Sprintf("LLM error (%v). Retrying in %s (attempt %d/%d)...", err, delay, attempt+1, al.Retry.MaxRetries),
+		}))
 		if al.Retry.OnAttempt != nil {
 			// 1-indexed: the user-visible "attempt 1/3" matches the loop's
 			// retry semantics ("first retry"). Hook runs synchronously so
@@ -59,16 +57,14 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 	msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
 	if al.Reflect > 0 && finalContent != "" {
 		for r := 1; r <= al.Reflect; r++ {
-			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
-				Type:    "thought",
-				Content: fmt.Sprintf("Self-critique pass %d/%d...", r, al.Reflect),
-			})
+			al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
+				Message: fmt.Sprintf("Self-critique pass %d/%d...", r, al.Reflect),
+			}))
 			revised, rerr := al.reflectOnce(ctx, st.sessionKey, msgs, r, st.streamChan)
 			if rerr != nil {
-				al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
-					Type:    "thought",
-					Content: fmt.Sprintf("Self-critique aborted: %v", rerr),
-				})
+				al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
+					Message: fmt.Sprintf("Self-critique aborted: %v", rerr),
+				}))
 				break
 			}
 			if revised == "" || revised == finalContent {
@@ -76,14 +72,14 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 			}
 			finalContent = revised
 			msgs[len(msgs)-1].Content = finalContent
-			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
-				Type:    EventTypeReflected,
-				Content: reflectedEventContent(finalContent, r),
-			})
+			al.emit(ctx, st.sessionKey, st.streamChan, Event(ReflectedEvent{
+				Text:  finalContent,
+				Round: r,
+			}))
 		}
 	}
 	al.saveSession(ctx, st.sessionKey, msgs)
-	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeDone})
+	al.emit(ctx, st.sessionKey, st.streamChan, Event(DoneEvent{}))
 }
 
 // callLLM runs one LLM stream attempt. Returns the accumulated content,
@@ -131,8 +127,7 @@ func (al *AgentLoop) callLLM(ctx context.Context, st *iterationState, msgs []his
 		content = res.Content
 	}
 	if err == nil && res.Usage.TotalTokens > 0 {
-		payload, _ := json.Marshal(res.Usage)
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeUsage, Content: string(payload)})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(UsageEvent{Usage: res.Usage}))
 	}
 	return content, res, drainer.contentEmitted(), err
 }
@@ -152,10 +147,9 @@ func (al *AgentLoop) selectToolsForCall(ctx context.Context, sessionKey string, 
 		if filtered, selErr := al.ToolSelector.SelectRegistry(ctx, query); selErr == nil && filtered != nil {
 			toolsForCall = filtered
 		} else if selErr != nil {
-			al.emit(ctx, sessionKey, streamChan, StreamEvent{
-				Type:    "thought",
-				Content: fmt.Sprintf("Tool selector error, falling back to full registry: %v", selErr),
-			})
+			al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{
+				Message: fmt.Sprintf("Tool selector error, falling back to full registry: %v", selErr),
+			}))
 		}
 	}
 	return toolsForCall

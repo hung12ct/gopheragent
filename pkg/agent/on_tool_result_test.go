@@ -29,7 +29,7 @@ func TestOnToolResult_RewritesSuccessResult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var seenRewritten bool
 	for _, m := range msgs {
 		if m.Role == "tool" && strings.HasPrefix(m.Content, "rewritten:") {
@@ -58,7 +58,7 @@ func TestOnToolResult_VetoConvertsToToolError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var sawError bool
 	for _, m := range msgs {
 		if m.Role == "tool" && m.IsError && strings.Contains(m.Content, "post-validation rejected") {
@@ -140,7 +140,7 @@ func TestOnToolResult_HookCanRecoverError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var recovered bool
 	for _, m := range msgs {
 		if m.Role == "tool" && !m.IsError && strings.Contains(m.Content, "fallback") {
@@ -167,11 +167,12 @@ func TestOnToolResult_CallIDMatchesEvent(t *testing.T) {
 	var eventID, hookID string
 	var mu sync.Mutex
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type != EventTypeToolCall {
+		p, ok := ev.Payload.(ToolCallEvent)
+		if !ok {
 			return
 		}
 		mu.Lock()
-		eventID = ev.ToolCallID
+		eventID = p.ID
 		mu.Unlock()
 	})
 	loop.OnToolResult = func(_ context.Context, callID, _, _, _ string, _ any, _ error) (string, error) {
@@ -279,12 +280,12 @@ func TestToolProgress_EventCarriesCallID(t *testing.T) {
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
 		mu.Lock()
 		defer mu.Unlock()
-		switch ev.Type {
-		case EventTypeToolCall:
-			callEventID = ev.ToolCallID
-		case EventTypeToolProgress:
-			progressEventID = ev.ToolCallID
-			progressEventName = ev.Name
+		switch p := ev.Payload.(type) {
+		case ToolCallEvent:
+			callEventID = p.ID
+		case ToolProgressEvent:
+			progressEventID = p.ToolCallID
+			progressEventName = p.Name
 		}
 	})
 
@@ -318,7 +319,7 @@ func TestOnToolResult_NilHookIsZeroCost(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	var sawOk bool
 	for _, m := range msgs {
 		if m.Role == "tool" && strings.HasPrefix(m.Content, "ok:") {

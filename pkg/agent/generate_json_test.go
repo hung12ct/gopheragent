@@ -25,7 +25,7 @@ func (p *captureProvider) GenerateStream(ctx context.Context, memory []history.M
 	p.gotTools = avail
 	// Exercise the stream channel so the drainer goroutine has something
 	// to consume — catches an accidental unbuffered-chan deadlock.
-	stream <- StreamEvent{Type: "thought", Content: "ok"}
+	stream <- Event(ThoughtEvent{Message: "ok"})
 	return p.result, p.err
 }
 

@@ -41,7 +41,7 @@ func (p *scriptProvider) GenerateStream(_ context.Context, _ []history.Message, 
 	r := p.turns[p.idx]
 	p.idx++
 	if len(r.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: r.Content}
+		ch <- Event(ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }
@@ -185,8 +185,8 @@ func TestRunIterationStream_ForwardsErrorOnCancelledCtx(t *testing.T) {
 			continue
 		}
 		sawTerminal = true
-		if ev.Type == EventTypeError && !errors.Is(ev.Err, ErrContextCancelled) {
-			t.Fatalf("expected ErrContextCancelled, got %v", ev.Err)
+		if p, ok := ev.Payload.(ErrorEvent); ok && !errors.Is(p.Err, ErrContextCancelled) {
+			t.Fatalf("expected ErrContextCancelled, got %v", p.Err)
 		}
 	}
 	if !sawTerminal {
@@ -244,7 +244,7 @@ func TestSessionHistoryPersisted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	if len(msgs) < 3 { // system + user + assistant
 		t.Fatalf("expected at least 3 messages in history, got %d", len(msgs))
 	}
@@ -295,9 +295,9 @@ func TestRunIterationStream_HITLTimedOutEmitsTypedEvent(t *testing.T) {
 			continue
 		}
 		sawTimedOut = true
-		p, ok := ev.Payload().(HITLTimedOutEvent)
+		p, ok := ev.Payload.(HITLTimedOutEvent)
 		if !ok {
-			t.Fatalf("expected HITLTimedOutEvent payload, got %T", ev.Payload())
+			t.Fatalf("expected HITLTimedOutEvent payload, got %T", ev.Payload)
 		}
 		if p.Tool != "dangerous" {
 			t.Errorf("expected payload.Tool=dangerous, got %q", p.Tool)
@@ -311,7 +311,7 @@ func TestRunIterationStream_HITLTimedOutEmitsTypedEvent(t *testing.T) {
 	}
 
 	// Final tool message should carry the timeout directive (not a denial).
-	msgs := loop.Sessions.GetHistory(context.Background(), "s1")
+	msgs, _ := loop.Sessions.History(context.Background(), "s1")
 	var sawTimeoutDirective bool
 	for _, m := range msgs {
 		if m.Role == "tool" && strings.Contains(m.Content, "approval prompt expired") {
@@ -404,7 +404,7 @@ func TestRunIteration_LLMError(t *testing.T) {
 		t.Fatalf("expected LLM error propagation, got: %v", err)
 	}
 	// History should be saved even on LLM error (user message preserved)
-	msgs := sm.GetHistory(context.Background(), "s1")
+	msgs, _ := sm.History(context.Background(), "s1")
 	if len(msgs) < 2 { // system + user
 		t.Fatalf("expected history to be saved on LLM error, got %d messages", len(msgs))
 	}
@@ -600,7 +600,7 @@ func TestRunIteration_TokenBudgetPrune(t *testing.T) {
 	loop, _ := setup(provider)
 	loop.MaxTokenBudget = 1 // ridiculously low → always triggers
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type == "thought" && strings.Contains(ev.Content, "Token budget") {
+		if p, ok := ev.Payload.(ThoughtEvent); ok && strings.Contains(p.Message, "Token budget") {
 			pruneTriggered = true
 		}
 	})
@@ -638,7 +638,7 @@ func (p *countingErrorProvider) GenerateStream(_ context.Context, _ []history.Me
 		return LLMResult{}, fmt.Errorf("transient error #%d", p.calls)
 	}
 	if len(p.successResult.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: p.successResult.Content}
+		ch <- Event(ContentEvent{Text: p.successResult.Content})
 	}
 	return p.successResult, nil
 }

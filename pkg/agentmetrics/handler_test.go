@@ -1,39 +1,28 @@
-package agent
+package agentmetrics
 
 import (
 	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/hung12ct/gopheragent/pkg/agent"
 )
 
-func TestBudgetTracker_Snapshot_IsDetachedCopy(t *testing.T) {
-	bt := NewBudgetTracker(0)
-	bt.Handler()(context.Background(), "s1", usageEvent(t, 100, 50, 150))
-
-	snap := bt.Snapshot()
-	// Mutating the snapshot must not affect the tracker.
-	snap["s1"] = TokenUsage{TotalTokens: 9999}
-	snap["new"] = TokenUsage{TotalTokens: 42}
-
-	live := bt.Usage("s1")
-	if live.TotalTokens != 150 {
-		t.Fatalf("tracker state leaked through snapshot: got %+v", live)
-	}
-	if bt.Usage("new").TotalTokens != 0 {
-		t.Fatalf("snapshot write leaked into tracker")
-	}
+func usageEvent(t *testing.T, pt, ct, tt int) agent.StreamEvent {
+	t.Helper()
+	return agent.Event(agent.UsageEvent{Usage: agent.TokenUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt}})
 }
 
-func TestBudgetTracker_MetricsHandler_EmitsUsageAndBudget(t *testing.T) {
-	bt := NewBudgetTracker(1000)
+func TestHandler_EmitsUsageAndBudget(t *testing.T) {
+	bt := agent.NewBudgetTracker(1000)
 	h := bt.Handler()
 	h(context.Background(), "alpha", usageEvent(t, 300, 200, 500))
 	h(context.Background(), "beta", usageEvent(t, 100, 50, 150))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/metrics", nil)
-	bt.MetricsHandler().ServeHTTP(rec, req)
+	Handler(bt).ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -58,14 +47,12 @@ func TestBudgetTracker_MetricsHandler_EmitsUsageAndBudget(t *testing.T) {
 	}
 }
 
-func TestBudgetTracker_MetricsHandler_OmitsRemainingWhenBudgetZero(t *testing.T) {
-	bt := NewBudgetTracker(0) // track-only, enforcement disabled
+func TestHandler_OmitsRemainingWhenBudgetZero(t *testing.T) {
+	bt := agent.NewBudgetTracker(0) // track-only, enforcement disabled
 	bt.Handler()(context.Background(), "s", usageEvent(t, 10, 20, 30))
 
-	body := string(bt.renderOpenMetrics())
+	body := string(render(bt))
 
-	// Budget gauge still emitted (as 0), but the "remaining" family must be omitted
-	// — there is no meaningful remaining value when enforcement is disabled.
 	if !strings.Contains(body, `gopheragent_session_budget_tokens{session_key="s"} 0`) {
 		t.Fatalf("expected budget gauge with value 0, got:\n%s", body)
 	}
@@ -74,21 +61,19 @@ func TestBudgetTracker_MetricsHandler_OmitsRemainingWhenBudgetZero(t *testing.T)
 	}
 }
 
-func TestBudgetTracker_MetricsHandler_EscapesLabelValues(t *testing.T) {
-	bt := NewBudgetTracker(100)
+func TestHandler_EscapesLabelValues(t *testing.T) {
+	bt := agent.NewBudgetTracker(100)
 	bt.Handler()(context.Background(), `weird"key\with`+"\nnewline", usageEvent(t, 1, 1, 2))
 
-	body := string(bt.renderOpenMetrics())
-	// Backslash, quote, and newline must each be escaped per the spec.
+	body := string(render(bt))
 	if !strings.Contains(body, `session_key="weird\"key\\with\nnewline"`) {
 		t.Fatalf("label escaping failed, body was:\n%s", body)
 	}
 }
 
-func TestBudgetTracker_MetricsHandler_EmptyTrackerStillValid(t *testing.T) {
-	bt := NewBudgetTracker(0)
-	body := string(bt.renderOpenMetrics())
-	// HELP/TYPE lines must still appear even with no series, and # EOF must close it.
+func TestHandler_EmptyTrackerStillValid(t *testing.T) {
+	bt := agent.NewBudgetTracker(0)
+	body := string(render(bt))
 	mustContain(t, body,
 		"# TYPE gopheragent_session_prompt_tokens_total counter",
 		"# TYPE gopheragent_session_tokens_total counter",
@@ -98,15 +83,14 @@ func TestBudgetTracker_MetricsHandler_EmptyTrackerStillValid(t *testing.T) {
 	}
 }
 
-func TestBudgetTracker_MetricsHandler_DeterministicOrdering(t *testing.T) {
-	bt := NewBudgetTracker(100)
+func TestHandler_DeterministicOrdering(t *testing.T) {
+	bt := agent.NewBudgetTracker(100)
 	h := bt.Handler()
 	h(context.Background(), "c", usageEvent(t, 1, 1, 2))
 	h(context.Background(), "a", usageEvent(t, 1, 1, 2))
 	h(context.Background(), "b", usageEvent(t, 1, 1, 2))
 
-	body := string(bt.renderOpenMetrics())
-	// Inside the "prompt tokens" family the sessions must appear sorted: a, b, c.
+	body := string(render(bt))
 	a := strings.Index(body, `gopheragent_session_prompt_tokens_total{session_key="a"}`)
 	b := strings.Index(body, `gopheragent_session_prompt_tokens_total{session_key="b"}`)
 	c := strings.Index(body, `gopheragent_session_prompt_tokens_total{session_key="c"}`)

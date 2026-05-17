@@ -29,7 +29,7 @@ func (p *titleProvider) GenerateStream(_ context.Context, msgs []history.Message
 		return agent.LLMResult{}, p.err
 	}
 	for _, chunk := range p.streamChunks {
-		ch <- agent.StreamEvent{Type: agent.EventTypeContent, Content: chunk}
+		ch <- agent.Event(agent.ContentEvent{Text: chunk})
 	}
 	return agent.LLMResult{Content: p.resultText}, nil
 }

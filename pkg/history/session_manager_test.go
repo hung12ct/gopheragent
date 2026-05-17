@@ -15,15 +15,14 @@ func TestFileSessionManager_Fork_PersistsCopy(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	msgs := sm.GetHistory(ctx, "parent")
+	msgs, _ := sm.History(ctx, "parent")
 	msgs = append(msgs,
 		Message{Role: "user", Content: "a"},
 		Message{Role: "assistant", Content: "A"},
 		Message{Role: "user", Content: "b"},
 	)
-	sm.SetHistory(ctx, "parent", msgs)
-	if err := sm.Save(ctx, "parent"); err != nil {
-		t.Fatalf("Save parent: %v", err)
+	if err := sm.SaveHistory(ctx, "parent", msgs); err != nil {
+		t.Fatalf("SaveHistory parent: %v", err)
 	}
 
 	newKey, err := sm.Fork(ctx, "parent", 3) // keep [system, user "a", assistant "A"]
@@ -41,7 +40,7 @@ func TestFileSessionManager_Fork_PersistsCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-open: %v", err)
 	}
-	reloaded := sm2.GetHistory(ctx, newKey)
+	reloaded, _ := sm2.History(ctx, newKey)
 	if len(reloaded) != 3 {
 		t.Fatalf("expected 3 persisted messages, got %d", len(reloaded))
 	}
@@ -50,7 +49,7 @@ func TestFileSessionManager_Fork_PersistsCopy(t *testing.T) {
 	}
 
 	// The parent must still have all four messages.
-	parent := sm2.GetHistory(ctx, "parent")
+	parent, _ := sm2.History(ctx, "parent")
 	if len(parent) != 4 {
 		t.Fatalf("parent tampered: expected 4 messages, got %d", len(parent))
 	}

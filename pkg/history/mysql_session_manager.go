@@ -144,7 +144,13 @@ func NewMySQLSessionManagerWithOptions(db *sql.DB, systemPrompt string, opts ...
 	}, nil
 }
 
-func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string) []Message {
+// History returns the persisted message log for sessionKey. Reads from the
+// in-memory cache when present; otherwise loads from MySQL (or the
+// MessageStore when configured). Disk/decoding errors are logged and the
+// method degrades to "system-only" history rather than failing the loop —
+// the error return is reserved for unrecoverable infrastructure errors
+// that callers should propagate.
+func (sm *MySQLSessionManager) History(ctx context.Context, sessionKey string) ([]Message, error) {
 	sm.mu.RLock()
 	session, ok := sm.sessions[sessionKey]
 	behavior := sm.behaviors[sessionKey]
@@ -162,7 +168,7 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 		if len(result) > 0 && result[0].Role == "system" {
 			result[0].Content = systemPrompt
 		}
-		return result
+		return result, nil
 	}
 
 	// Load from MySQL — when MessageStore is set, messages live in a
@@ -174,10 +180,10 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 	).Scan(&messagesJSON, &behaviorSQL)
 
 	if err == sql.ErrNoRows {
-		return []Message{{Role: "system", Content: systemPrompt}}
+		return []Message{{Role: "system", Content: systemPrompt}}, nil
 	} else if err != nil {
-		log.Printf("[MySQLSessionManager] GetHistory error for %q: %v", sessionKey, err)
-		return []Message{{Role: "system", Content: systemPrompt}}
+		log.Printf("[MySQLSessionManager] History error for %q: %v", sessionKey, err)
+		return []Message{{Role: "system", Content: systemPrompt}}, nil
 	}
 
 	var msgs []Message
@@ -185,7 +191,7 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 		loaded, lerr := sm.MessageStore.Load(ctx, sessionKey)
 		if lerr != nil {
 			log.Printf("[MySQLSessionManager] MessageStore.Load %q: %v", sessionKey, lerr)
-			return []Message{{Role: "system", Content: systemPrompt}}
+			return []Message{{Role: "system", Content: systemPrompt}}, nil
 		}
 		msgs = loaded
 		sm.mu.Lock()
@@ -193,7 +199,7 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 		sm.mu.Unlock()
 	} else if err := json.Unmarshal([]byte(messagesJSON), &msgs); err != nil {
 		log.Printf("[MySQLSessionManager] unmarshal error for %q: %v", sessionKey, err)
-		return []Message{{Role: "system", Content: systemPrompt}}
+		return []Message{{Role: "system", Content: systemPrompt}}, nil
 	}
 
 	if len(msgs) > 0 && msgs[0].Role == "system" {
@@ -214,24 +220,30 @@ func (sm *MySQLSessionManager) GetHistory(ctx context.Context, sessionKey string
 	sm.sessions[sessionKey] = &Session{Key: sessionKey, Messages: msgs}
 	sm.mu.Unlock()
 
-	return result
+	return result, nil
 }
 
-// SetHistory stores a copy of the messages for the given session key (in-memory cache only).
-func (sm *MySQLSessionManager) SetHistory(_ context.Context, sessionKey string, messages []Message) {
+// SaveHistory atomically updates the in-memory cache and persists the row to
+// MySQL (and to the MessageStore when configured). Triggers background
+// summarization when the configured threshold is crossed.
+func (sm *MySQLSessionManager) SaveHistory(ctx context.Context, sessionKey string, msgs []Message) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	session, ok := sm.sessions[sessionKey]
 	if !ok {
 		session = &Session{Key: sessionKey}
 		sm.sessions[sessionKey] = session
 	}
-	cp := make([]Message, len(messages))
-	copy(cp, messages)
+	cp := make([]Message, len(msgs))
+	copy(cp, msgs)
 	session.Messages = cp
+	sm.mu.Unlock()
+	return sm.persist(ctx, sessionKey)
 }
 
-func (sm *MySQLSessionManager) GetAsyncTasks(ctx context.Context, sessionKey string) map[string]AsyncTask {
+// AsyncTasks returns a copy of the background tasks parked on sessionKey.
+// Reads from the in-memory cache when present, otherwise lazy-loads from
+// MySQL.
+func (sm *MySQLSessionManager) AsyncTasks(ctx context.Context, sessionKey string) (map[string]AsyncTask, error) {
 	sm.mu.RLock()
 	session, ok := sm.sessions[sessionKey]
 	sm.mu.RUnlock()
@@ -241,7 +253,7 @@ func (sm *MySQLSessionManager) GetAsyncTasks(ctx context.Context, sessionKey str
 		for k, v := range session.AsyncTasks {
 			cp[k] = v
 		}
-		return cp
+		return cp, nil
 	}
 
 	var asyncTasksJSON sql.NullString
@@ -260,15 +272,16 @@ func (sm *MySQLSessionManager) GetAsyncTasks(ctx context.Context, sessionKey str
 			for k, v := range tasks {
 				cp[k] = v
 			}
-			return cp
+			return cp, nil
 		}
 	}
-	return map[string]AsyncTask{}
+	return map[string]AsyncTask{}, nil
 }
 
-func (sm *MySQLSessionManager) SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) {
+// SaveAsyncTasks atomically updates the in-memory cache and persists the row
+// to MySQL.
+func (sm *MySQLSessionManager) SaveAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	session, ok := sm.sessions[sessionKey]
 	if !ok {
 		session = &Session{Key: sessionKey}
@@ -279,6 +292,8 @@ func (sm *MySQLSessionManager) SetAsyncTasks(ctx context.Context, sessionKey str
 		cp[k] = v
 	}
 	session.AsyncTasks = cp
+	sm.mu.Unlock()
+	return sm.persist(ctx, sessionKey)
 }
 
 // UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer.
@@ -299,7 +314,7 @@ func (sm *MySQLSessionManager) Fork(ctx context.Context, sessionKey string, atIn
 	}
 
 	// Ensure the source is loaded into the cache.
-	sm.GetHistory(ctx, sessionKey)
+	_, _ = sm.History(ctx, sessionKey)
 
 	sm.mu.Lock()
 	src, ok := sm.sessions[sessionKey]
@@ -325,17 +340,17 @@ func (sm *MySQLSessionManager) Fork(ctx context.Context, sessionKey string, atIn
 	}
 	sm.mu.Unlock()
 
-	if err := sm.Save(ctx, newKey); err != nil {
+	if err := sm.persist(ctx, newKey); err != nil {
 		return "", fmt.Errorf("history: fork persist %q: %w", newKey, err)
 	}
 	return newKey, nil
 }
 
-// DeleteSession removes the session from the in-memory cache and deletes the
+// Delete removes the session from the in-memory cache and deletes the
 // corresponding row from the agent_sessions table. Deleting a non-existent
 // session is a no-op. When a MessageStore is plugged in, its rows are
 // dropped too so no orphan messages survive.
-func (sm *MySQLSessionManager) DeleteSession(ctx context.Context, sessionKey string) error {
+func (sm *MySQLSessionManager) Delete(ctx context.Context, sessionKey string) error {
 	sm.mu.Lock()
 	delete(sm.sessions, sessionKey)
 	delete(sm.behaviors, sessionKey)
@@ -354,7 +369,10 @@ func (sm *MySQLSessionManager) DeleteSession(ctx context.Context, sessionKey str
 	return nil
 }
 
-func (sm *MySQLSessionManager) Save(ctx context.Context, sessionKey string) error {
+// persist writes the in-memory session row to MySQL and triggers background
+// summarization when configured. Internal helper — the SessionManager
+// interface no longer exposes a standalone Save method.
+func (sm *MySQLSessionManager) persist(ctx context.Context, sessionKey string) error {
 	sm.mu.Lock()
 	session, ok := sm.sessions[sessionKey]
 	if !ok {

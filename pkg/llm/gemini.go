@@ -135,7 +135,7 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 
 	iter := p.client.Models.GenerateContentStream(ctx, p.model, contents, config)
 	
-	streamChan <- agent.StreamEvent{Type: agent.EventTypeThought, Content: "Analyzing with Gemini..."}
+	streamChan <- agent.Event(agent.ThoughtEvent{Message: "Analyzing with Gemini..."})
 
 	var finalContent string
 	var pendingCalls []agent.PendingToolCall
@@ -163,7 +163,7 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 		for _, part := range resp.Candidates[0].Content.Parts {
 			if part.Text != "" {
 				finalContent += part.Text
-				streamChan <- agent.StreamEvent{Type: agent.EventTypeContent, Content: part.Text}
+				streamChan <- agent.Event(agent.ContentEvent{Text: part.Text})
 			}
 			if part.FunctionCall != nil {
 				argsBytes, _ := json.Marshal(part.FunctionCall.Args)

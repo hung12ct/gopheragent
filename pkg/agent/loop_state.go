@@ -19,7 +19,7 @@ type iterationState struct {
 	msgs       *[]history.Message
 	specMap    map[string]*speculativeExec
 	specMu     *sync.Mutex
-	tracker    *LoopDetector
+	tracker    *loopDetector
 }
 
 // waveState carries the per-wave shared mutable state used by the
@@ -80,7 +80,7 @@ func substituteWaveArgs(ws *waveState, wave []PendingToolCall, emitNote func(too
 			r, ok := ws.resultsByID[id]
 			return r, ok
 		}
-		newArgs, subErr := Substitute(tc.ArgsJSON, resolver)
+		newArgs, subErr := substituteRefs(tc.ArgsJSON, resolver)
 		ws.completedMu.Unlock()
 		if subErr != nil {
 			ws.recordToolMsg(tc.ID, history.Message{

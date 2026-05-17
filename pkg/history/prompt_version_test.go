@@ -43,7 +43,7 @@ func TestExtractPromptVersion_NoMarkerLeavesContentUnchanged(t *testing.T) {
 
 func TestInMem_PromptVersion_StampedOnGetHistory(t *testing.T) {
 	sm := NewInMemSessionManager("you are helpful").WithPromptVersion("v3")
-	msgs := sm.GetHistory(context.Background(), "fresh")
+	msgs, _ := sm.History(context.Background(), "fresh")
 	if len(msgs) != 1 || msgs[0].Role != "system" {
 		t.Fatalf("expected one system message, got %+v", msgs)
 	}
@@ -56,15 +56,15 @@ func TestInMem_PromptVersion_BumpReflectsOnNextRead(t *testing.T) {
 	// The user's stated pain point: edit prompt rules, existing sessions
 	// keep showing old version. Bump PromptVersion → next read carries v4.
 	sm := NewInMemSessionManager("you are helpful").WithPromptVersion("v3")
-	sm.SetHistory(context.Background(), "s1", []Message{{Role: "system", Content: "old"}, {Role: "user", Content: "hi"}})
+	sm.SaveHistory(context.Background(), "s1", []Message{{Role: "system", Content: "old"}, {Role: "user", Content: "hi"}})
 
-	got := sm.GetHistory(context.Background(), "s1")
+	got, _ := sm.History(context.Background(), "s1")
 	if !strings.HasPrefix(got[0].Content, "<!-- prompt-version:v3 -->\n") {
 		t.Fatalf("first read should have v3 marker, got %q", got[0].Content)
 	}
 
 	sm.PromptVersion = "v4"
-	got = sm.GetHistory(context.Background(), "s1")
+	got, _ = sm.History(context.Background(), "s1")
 	if !strings.HasPrefix(got[0].Content, "<!-- prompt-version:v4 -->\n") {
 		t.Fatalf("after bump, should have v4 marker, got %q", got[0].Content)
 	}

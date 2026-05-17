@@ -13,7 +13,7 @@ import (
 // the LLM call only. The session history written via SetHistory must
 // retain the original full-fidelity tool output.
 func TestPruning_DoesNotPersistTrimmedMessages(t *testing.T) {
-	bigContent := strings.Repeat("X", SoftTrimThreshold*2) // exceeds soft-trim threshold
+	bigContent := strings.Repeat("X", softTrimThreshold*2) // exceeds soft-trim threshold
 
 	provider := &scriptProvider{turns: []LLMResult{
 		{Content: "ok"},
@@ -30,13 +30,13 @@ func TestPruning_DoesNotPersistTrimmedMessages(t *testing.T) {
 		{Role: "user", Content: "first"},
 		{Role: "assistant", Content: "ok"},
 	}
-	sm.SetHistory(context.Background(), "s1", seed)
+	sm.SaveHistory(context.Background(), "s1", seed)
 
 	if _, err := loop.RunIteration(context.Background(), "s1", "next turn"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	var foundFull bool
 	for _, m := range stored {
 		if m.Role == "tool" && m.ToolCallID == "c1" && len(m.Content) >= len(bigContent) {

@@ -82,7 +82,7 @@ func TestCacheGate_CacheableTrue_Caches(t *testing.T) {
 
 	var hit int
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		if ev.Type == "thought" && strings.Contains(ev.Content, "Cache hit for gate") {
+		if p, ok := ev.Payload.(ThoughtEvent); ok && strings.Contains(p.Message, "Cache hit for gate") {
 			hit++
 		}
 	})
@@ -104,11 +104,15 @@ func TestCacheGate_CacheableTrue_EmitsToolCallOnHit(t *testing.T) {
 
 	var toolCalls, hits int
 	loop.OnEvent(func(_ context.Context, _ string, ev StreamEvent) {
-		switch {
-		case ev.Type == EventTypeToolCall && strings.Contains(ev.Content, "gate"):
-			toolCalls++
-		case ev.Type == "thought" && strings.Contains(ev.Content, "Cache hit for gate"):
-			hits++
+		switch p := ev.Payload.(type) {
+		case ToolCallEvent:
+			if strings.Contains(p.Name, "gate") {
+				toolCalls++
+			}
+		case ThoughtEvent:
+			if strings.Contains(p.Message, "Cache hit for gate") {
+				hits++
+			}
 		}
 	})
 

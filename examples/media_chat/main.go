@@ -142,7 +142,7 @@ func (t *DescribeFileTool) Execute(ctx context.Context, argsJSON string) (string
 		return "", fmt.Errorf("tools: prompt is required")
 	}
 
-	sessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	sessionKey, _ := agent.SessionKeyFromContext(ctx)
 	t.mu.RLock()
 	f, ok := t.sessions[sessionKey]
 	t.mu.RUnlock()
@@ -352,7 +352,10 @@ func injectImageIntoHistory(ctx context.Context, sessionKey, path, mimeType, nam
 	if err != nil {
 		return fmt.Errorf("read upload: %w", err)
 	}
-	msgs := sessionManager.GetHistory(ctx, sessionKey)
+	msgs, err := sessionManager.History(ctx, sessionKey)
+	if err != nil {
+		return fmt.Errorf("read session history: %w", err)
+	}
 	msgs = append(msgs,
 		history.Message{
 			Role:    "user",
@@ -364,8 +367,7 @@ func injectImageIntoHistory(ctx context.Context, sessionKey, path, mimeType, nam
 			Content: fmt.Sprintf("Got it — I can see %q. What would you like to know about it?", name),
 		},
 	)
-	sessionManager.SetHistory(ctx, sessionKey, msgs)
-	return sessionManager.Save(ctx, sessionKey)
+	return sessionManager.SaveHistory(ctx, sessionKey, msgs)
 }
 
 // ChatHandler streams the agent's response over SSE. Plain text in, SSE

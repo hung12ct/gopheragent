@@ -39,7 +39,7 @@ func (p *systemCapturingProviderPM) GenerateStream(_ context.Context, msgs []his
 	r := p.turns[p.idx]
 	p.idx++
 	if len(r.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: r.Content}
+		ch <- Event(ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }
@@ -147,7 +147,7 @@ func TestPlanMode_DeniedPlanStaysInModeAndBlocksTools(t *testing.T) {
 		t.Fatal("PlanMode should remain true after denial")
 	}
 
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	var toolMsg history.Message
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID == "tp" {
@@ -191,7 +191,7 @@ func TestPlanMode_BlocksOtherToolsAndAllowsExitPlanMode(t *testing.T) {
 	}
 
 	// First turn should have recorded a blocked tool result for t1.
-	hist := sm.GetHistory(context.Background(), "s1")
+	hist, _ := sm.History(context.Background(), "s1")
 	var blocked history.Message
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID == "t1" {
@@ -231,7 +231,7 @@ type sessionRoutingProviderPM struct {
 }
 
 func (p *sessionRoutingProviderPM) GenerateStream(ctx context.Context, _ []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
-	sessionKey, _ := ctx.Value(SessionKeyCtx("sessionKey")).(string)
+	sessionKey, _ := SessionKeyFromContext(ctx)
 	p.mu.Lock()
 	turns := p.routes[sessionKey]
 	idx := p.cursors[sessionKey]
@@ -242,7 +242,7 @@ func (p *sessionRoutingProviderPM) GenerateStream(ctx context.Context, _ []histo
 	}
 	r := turns[idx]
 	if len(r.ToolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: r.Content}
+		ch <- Event(ContentEvent{Text: r.Content})
 	}
 	return r, nil
 }
@@ -300,7 +300,7 @@ func TestPlanMode_MultiSessionLoopIsolatesApproval(t *testing.T) {
 		}
 	}
 	// Bob's blocked tool call must have produced an error tool result.
-	bobHist := sm.GetHistory(context.Background(), "bob")
+	bobHist, _ := sm.History(context.Background(), "bob")
 	var blocked history.Message
 	for _, m := range bobHist {
 		if m.Role == "tool" && m.ToolCallID == "tb" {

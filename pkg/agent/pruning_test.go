@@ -22,23 +22,23 @@ func BenchmarkPruneContextMessages_Short(b *testing.B) {
 	msgs := benchmarkMsgs(100)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		PruneContextMessages(msgs, 3)
+		pruneContextMessages(msgs, 3)
 	}
 }
 
 func BenchmarkPruneContextMessages_SoftTrim(b *testing.B) {
-	msgs := benchmarkMsgs(SoftTrimThreshold + 5000)
+	msgs := benchmarkMsgs(softTrimThreshold + 5000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		PruneContextMessages(msgs, 1)
+		pruneContextMessages(msgs, 1)
 	}
 }
 
 func BenchmarkPruneContextMessages_OutlierTrim(b *testing.B) {
-	msgs := benchmarkMsgs(OutlierTrimThreshold + 10000)
+	msgs := benchmarkMsgs(outlierTrimThreshold + 10000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		PruneContextMessages(msgs, 1)
+		pruneContextMessages(msgs, 1)
 	}
 }
 
@@ -48,20 +48,20 @@ func TestPruneContextMessages_ShortMessagesUntouched(t *testing.T) {
 		{Role: "user", Content: "hello"},
 		{Role: "tool", Content: "short result"},
 	}
-	pruned := PruneContextMessages(msgs, 1)
+	pruned := pruneContextMessages(msgs, 1)
 	if pruned[2].Content != "short result" {
 		t.Fatal("short tool message should not be pruned")
 	}
 }
 
 func TestPruneContextMessages_SoftTrim(t *testing.T) {
-	longContent := strings.Repeat("x", SoftTrimThreshold+1000)
+	longContent := strings.Repeat("x", softTrimThreshold+1000)
 	msgs := []history.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "tool", Content: longContent},
 		{Role: "user", Content: "latest"},
 	}
-	pruned := PruneContextMessages(msgs, 1)
+	pruned := pruneContextMessages(msgs, 1)
 	if len(pruned[1].Content) >= len(longContent) {
 		t.Fatal("expected soft trimmed content to be shorter")
 	}
@@ -71,39 +71,39 @@ func TestPruneContextMessages_SoftTrim(t *testing.T) {
 }
 
 func TestPruneContextMessages_OutlierGuard(t *testing.T) {
-	hugeContent := strings.Repeat("x", OutlierTrimThreshold+1)
+	hugeContent := strings.Repeat("x", outlierTrimThreshold+1)
 	msgs := []history.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "tool", Content: hugeContent},
 		{Role: "user", Content: "latest"},
 	}
-	pruned := PruneContextMessages(msgs, 1)
+	pruned := pruneContextMessages(msgs, 1)
 	if !strings.Contains(pruned[1].Content, "Outlier Payload Truncated") {
 		t.Fatal("expected outlier truncation")
 	}
 }
 
 func TestPruneContextMessages_ProtectsRecentMessages(t *testing.T) {
-	longContent := strings.Repeat("x", SoftTrimThreshold+1000)
+	longContent := strings.Repeat("x", softTrimThreshold+1000)
 	msgs := []history.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "tool", Content: longContent}, // protected (within last 3)
 		{Role: "user", Content: "latest"},
 	}
-	pruned := PruneContextMessages(msgs, 3) // protect all 3
+	pruned := pruneContextMessages(msgs, 3) // protect all 3
 	if pruned[1].Content != longContent {
 		t.Fatal("protected message should not be pruned")
 	}
 }
 
 func TestPruneContextMessages_SystemAndUserNeverPruned(t *testing.T) {
-	longContent := strings.Repeat("x", SoftTrimThreshold+1000)
+	longContent := strings.Repeat("x", softTrimThreshold+1000)
 	msgs := []history.Message{
 		{Role: "system", Content: longContent},
 		{Role: "user", Content: longContent},
 		{Role: "assistant", Content: "short"},
 	}
-	pruned := PruneContextMessages(msgs, 1)
+	pruned := pruneContextMessages(msgs, 1)
 	if pruned[0].Content != longContent {
 		t.Fatal("system message should never be pruned")
 	}
@@ -115,7 +115,7 @@ func TestPruneContextMessages_SystemAndUserNeverPruned(t *testing.T) {
 // ── PatchDanglingToolCalls ──────────────────────────────────────────────────
 
 func TestPatchDanglingToolCalls_Empty(t *testing.T) {
-	got := PatchDanglingToolCalls(nil)
+	got := patchDanglingToolCalls(nil)
 	if len(got) != 0 {
 		t.Fatalf("expected empty, got %d messages", len(got))
 	}
@@ -127,7 +127,7 @@ func TestPatchDanglingToolCalls_NoToolCalls(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}
-	got := PatchDanglingToolCalls(msgs)
+	got := patchDanglingToolCalls(msgs)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 messages unchanged, got %d", len(got))
 	}
@@ -140,7 +140,7 @@ func TestPatchDanglingToolCalls_FullyMatched(t *testing.T) {
 		{Role: "tool", Content: "echo:go", ToolCallID: "t1"},
 		{Role: "assistant", Content: "done"},
 	}
-	got := PatchDanglingToolCalls(msgs)
+	got := patchDanglingToolCalls(msgs)
 	if len(got) != 4 {
 		t.Fatalf("expected 4 messages (no injection), got %d", len(got))
 	}
@@ -154,7 +154,7 @@ func TestPatchDanglingToolCalls_PartialDangling(t *testing.T) {
 		}},
 		{Role: "tool", Content: "reply", ToolCallID: "t1"},
 	}
-	got := PatchDanglingToolCalls(msgs)
+	got := patchDanglingToolCalls(msgs)
 	if len(got) != 3 {
 		t.Fatalf("expected synthetic tool msg injected, got %d", len(got))
 	}
@@ -175,7 +175,7 @@ func TestPatchDanglingToolCalls_AllDangling(t *testing.T) {
 			{ID: "c", Name: "x"},
 		}},
 	}
-	got := PatchDanglingToolCalls(msgs)
+	got := patchDanglingToolCalls(msgs)
 	if len(got) != 4 {
 		t.Fatalf("expected 1 original + 3 synthetic, got %d", len(got))
 	}
@@ -191,7 +191,7 @@ func TestPatchDanglingToolCalls_DanglingBeforeUserTurn(t *testing.T) {
 		{Role: "assistant", ToolCalls: []history.ToolCall{{ID: "t1", Name: "x"}}},
 		{Role: "user", Content: "new turn"},
 	}
-	got := PatchDanglingToolCalls(msgs)
+	got := patchDanglingToolCalls(msgs)
 	if len(got) != 3 {
 		t.Fatalf("expected synthetic before user turn, got %d", len(got))
 	}
@@ -207,16 +207,16 @@ func TestPatchDanglingToolCalls_DanglingBeforeUserTurn(t *testing.T) {
 
 func TestTruncateToolArguments_ShortContent(t *testing.T) {
 	msgs := []history.Message{{Role: "tool", Content: "short"}}
-	got := TruncateToolArguments(msgs)
+	got := truncateToolArguments(msgs)
 	if got[0].Content != "short" {
 		t.Fatalf("short content should not be truncated, got %q", got[0].Content)
 	}
 }
 
 func TestTruncateToolArguments_LongContent(t *testing.T) {
-	long := strings.Repeat("x", ToolArgTruncateLen+500)
+	long := strings.Repeat("x", toolArgTruncateLen+500)
 	msgs := []history.Message{{Role: "tool", Content: long}}
-	got := TruncateToolArguments(msgs)
+	got := truncateToolArguments(msgs)
 	if len(got[0].Content) >= len(long) {
 		t.Fatalf("expected truncation, got len %d >= %d", len(got[0].Content), len(long))
 	}
@@ -226,13 +226,13 @@ func TestTruncateToolArguments_LongContent(t *testing.T) {
 }
 
 func TestTruncateToolArguments_NonToolMessagesUntouched(t *testing.T) {
-	long := strings.Repeat("y", ToolArgTruncateLen+500)
+	long := strings.Repeat("y", toolArgTruncateLen+500)
 	msgs := []history.Message{
 		{Role: "user", Content: long},
 		{Role: "assistant", Content: long},
 		{Role: "system", Content: long},
 	}
-	got := TruncateToolArguments(msgs)
+	got := truncateToolArguments(msgs)
 	for i, m := range got {
 		if m.Content != long {
 			t.Fatalf("non-tool message #%d should not be truncated", i)
@@ -242,9 +242,9 @@ func TestTruncateToolArguments_NonToolMessagesUntouched(t *testing.T) {
 
 func TestTruncateToolArguments_UTF8Safe(t *testing.T) {
 	// Each CJK char is 3 bytes but 1 rune. Make a content well over the limit.
-	cjk := strings.Repeat("漢字", ToolArgTruncateLen)
+	cjk := strings.Repeat("漢字", toolArgTruncateLen)
 	msgs := []history.Message{{Role: "tool", Content: cjk}}
-	got := TruncateToolArguments(msgs)
+	got := truncateToolArguments(msgs)
 	// Result must be valid UTF-8 (no corruption from byte-level cut).
 	if !isValidUTF8(got[0].Content) {
 		t.Fatalf("truncation corrupted UTF-8: %q", got[0].Content)

@@ -9,23 +9,23 @@ func TestParseRefs(t *testing.T) {
 	cases := []struct {
 		name string
 		args string
-		want []Ref
+		want []outputRef
 	}{
 		{"none", `{"x":1}`, nil},
-		{"bare", `{"uid": <output_of:t1>}`, []Ref{{ID: "t1"}}},
-		{"with-path", `{"uid": <output_of:t1.user_id>}`, []Ref{{ID: "t1", Path: "user_id"}}},
-		{"nested-path", `{"uid": <output_of:t1.user.id>}`, []Ref{{ID: "t1", Path: "user.id"}}},
-		{"quoted", `{"uid": "<output_of:t1.user_id>"}`, []Ref{{ID: "t1", Path: "user_id"}}},
-		{"multi", `{"a": <output_of:t1>, "b": <output_of:t2.field>}`, []Ref{
+		{"bare", `{"uid": <output_of:t1>}`, []outputRef{{ID: "t1"}}},
+		{"with-path", `{"uid": <output_of:t1.user_id>}`, []outputRef{{ID: "t1", Path: "user_id"}}},
+		{"nested-path", `{"uid": <output_of:t1.user.id>}`, []outputRef{{ID: "t1", Path: "user.id"}}},
+		{"quoted", `{"uid": "<output_of:t1.user_id>"}`, []outputRef{{ID: "t1", Path: "user_id"}}},
+		{"multi", `{"a": <output_of:t1>, "b": <output_of:t2.field>}`, []outputRef{
 			{ID: "t1"}, {ID: "t2", Path: "field"},
 		}},
-		{"duplicate-ids", `{"a": <output_of:t1>, "b": <output_of:t1>}`, []Ref{
+		{"duplicate-ids", `{"a": <output_of:t1>, "b": <output_of:t1>}`, []outputRef{
 			{ID: "t1"}, {ID: "t1"},
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ParseRefs(tc.args)
+			got := parseRefs(tc.args)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d refs, want %d: %v", len(got), len(tc.want), got)
 			}
@@ -64,7 +64,7 @@ func TestSubstitute_Simple(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Substitute(tc.in, resolve)
+			got, err := substituteRefs(tc.in, resolve)
 			if err != nil {
 				t.Fatalf("Substitute: %v", err)
 			}
@@ -82,7 +82,7 @@ func TestSubstitute_NestedPath(t *testing.T) {
 		}
 		return "", false
 	}
-	got, err := Substitute(`{"age": <output_of:t1.user.profile.age>}`, resolve)
+	got, err := substituteRefs(`{"age": <output_of:t1.user.profile.age>}`, resolve)
 	if err != nil {
 		t.Fatalf("Substitute: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestSubstitute_PlainStringOutput(t *testing.T) {
 		return "", false
 	}
 	// Full output: plain string is treated as a JSON string.
-	got, err := Substitute(`{"r": <output_of:t1>}`, resolve)
+	got, err := substituteRefs(`{"r": <output_of:t1>}`, resolve)
 	if err != nil {
 		t.Fatalf("Substitute: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestSubstitute_PlainStringOutput(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	// Path on non-JSON output: resolves to null.
-	got, err = Substitute(`{"r": <output_of:t1.field>}`, resolve)
+	got, err = substituteRefs(`{"r": <output_of:t1.field>}`, resolve)
 	if err != nil {
 		t.Fatalf("Substitute: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestSubstitute_PlainStringOutput(t *testing.T) {
 
 func TestSubstitute_UnknownID(t *testing.T) {
 	resolve := func(_ string) (string, bool) { return "", false }
-	_, err := Substitute(`{"x": <output_of:nope>}`, resolve)
+	_, err := substituteRefs(`{"x": <output_of:nope>}`, resolve)
 	if err == nil || !strings.Contains(err.Error(), "unknown tool-call reference") {
 		t.Fatalf("expected unknown-reference error, got %v", err)
 	}
@@ -129,7 +129,7 @@ func TestSchedule_NoDeps(t *testing.T) {
 		{ID: "a", Name: "one", ArgsJSON: `{}`},
 		{ID: "b", Name: "two", ArgsJSON: `{}`},
 	}
-	waves, err := ScheduleToolCalls(calls)
+	waves, err := scheduleToolCalls(calls)
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestSchedule_LinearChain(t *testing.T) {
 		{ID: "t2", Name: "b", ArgsJSON: `{"x": <output_of:t1.f>}`},
 		{ID: "t3", Name: "c", ArgsJSON: `{"y": <output_of:t2.f>}`},
 	}
-	waves, err := ScheduleToolCalls(calls)
+	waves, err := scheduleToolCalls(calls)
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSchedule_Diamond(t *testing.T) {
 		{ID: "c", ArgsJSON: `{"y": <output_of:a>}`},
 		{ID: "d", ArgsJSON: `{"p": <output_of:b>, "q": <output_of:c>}`},
 	}
-	waves, err := ScheduleToolCalls(calls)
+	waves, err := scheduleToolCalls(calls)
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSchedule_SelfReference(t *testing.T) {
 	calls := []PendingToolCall{
 		{ID: "t1", ArgsJSON: `{"x": <output_of:t1>}`},
 	}
-	_, err := ScheduleToolCalls(calls)
+	_, err := scheduleToolCalls(calls)
 	if err == nil || !strings.Contains(err.Error(), "itself") {
 		t.Fatalf("expected self-reference error, got %v", err)
 	}
@@ -200,7 +200,7 @@ func TestSchedule_Cycle(t *testing.T) {
 		{ID: "t1", ArgsJSON: `{"x": <output_of:t2>}`},
 		{ID: "t2", ArgsJSON: `{"y": <output_of:t1>}`},
 	}
-	_, err := ScheduleToolCalls(calls)
+	_, err := scheduleToolCalls(calls)
 	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("expected cycle error, got %v", err)
 	}
@@ -210,7 +210,7 @@ func TestSchedule_UnknownRef(t *testing.T) {
 	calls := []PendingToolCall{
 		{ID: "t1", ArgsJSON: `{"x": <output_of:nonexistent>}`},
 	}
-	_, err := ScheduleToolCalls(calls)
+	_, err := scheduleToolCalls(calls)
 	if err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("expected unknown-ref error, got %v", err)
 	}
@@ -221,14 +221,14 @@ func TestSchedule_DuplicateID(t *testing.T) {
 		{ID: "same"},
 		{ID: "same"},
 	}
-	_, err := ScheduleToolCalls(calls)
+	_, err := scheduleToolCalls(calls)
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("expected duplicate error, got %v", err)
 	}
 }
 
 func TestSchedule_Empty(t *testing.T) {
-	waves, err := ScheduleToolCalls(nil)
+	waves, err := scheduleToolCalls(nil)
 	if err != nil || waves != nil {
 		t.Fatalf("expected (nil,nil) for empty input, got %v,%v", waves, err)
 	}
@@ -241,7 +241,7 @@ func TestSchedule_PreservesInputOrderWithinWave(t *testing.T) {
 		{ID: "a"},
 		{ID: "m"},
 	}
-	waves, err := ScheduleToolCalls(calls)
+	waves, err := scheduleToolCalls(calls)
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}

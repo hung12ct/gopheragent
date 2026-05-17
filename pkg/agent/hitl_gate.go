@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"time"
 )
@@ -41,12 +40,11 @@ func (al *AgentLoop) runHITLGate(ctx context.Context, sessionKey string, streamC
 	ws.hitlMu.Lock()
 	defer ws.hitlMu.Unlock()
 
-	al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeThought, Content: "CRITICAL: Tool requires human confirmation."})
+	al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{Message: "CRITICAL: Tool requires human confirmation."}))
 
 	if al.ConfirmHITL == nil {
 		al.warnMissingConfirmHITLOnce()
-		payload, _ := json.Marshal(map[string]string{"tool": tc.Name, "args": tc.ArgsJSON})
-		al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeActionRequired, Content: string(payload)})
+		al.emit(ctx, sessionKey, streamChan, Event(ActionRequiredEvent{Tool: tc.Name, Args: tc.ArgsJSON}))
 		return hitlUnconfigured
 	}
 
@@ -65,17 +63,15 @@ func (al *AgentLoop) runHITLGate(ctx context.Context, sessionKey string, streamC
 	// not a parent cancellation propagated downward. Treat that as the
 	// timeout outcome so the directive text matches what the operator saw.
 	if al.ConfirmHITLTimeout > 0 && ctx.Err() == nil && confirmCtx.Err() != nil {
-		payload, _ := json.Marshal(map[string]any{
-			"tool":       tc.Name,
-			"args":       tc.ArgsJSON,
-			"timeout_ms": al.ConfirmHITLTimeout.Milliseconds(),
-		})
-		al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeHITLTimedOut, Content: string(payload)})
+		al.emit(ctx, sessionKey, streamChan, Event(HITLTimedOutEvent{
+			Tool:    tc.Name,
+			Args:    tc.ArgsJSON,
+			Timeout: al.ConfirmHITLTimeout,
+		}))
 		return hitlTimedOut
 	}
 
-	payload, _ := json.Marshal(map[string]string{"tool": tc.Name, "args": tc.ArgsJSON})
-	al.emit(ctx, sessionKey, streamChan, StreamEvent{Type: EventTypeHITLDenied, Content: string(payload)})
+	al.emit(ctx, sessionKey, streamChan, Event(HITLDeniedEvent{Tool: tc.Name, Args: tc.ArgsJSON}))
 	return hitlDenied
 }
 

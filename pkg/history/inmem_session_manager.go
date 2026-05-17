@@ -126,7 +126,10 @@ func (m *InMemSessionManager) touch(sessionKey string) {
 	}
 }
 
-func (m *InMemSessionManager) GetHistory(ctx context.Context, sessionKey string) []Message {
+// History returns the persisted message log for sessionKey. InMem never
+// fails on read, so the error return is always nil; it is part of the
+// SessionManager contract for backends that can fail (MySQL, File).
+func (m *InMemSessionManager) History(_ context.Context, sessionKey string) ([]Message, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -145,10 +148,10 @@ func (m *InMemSessionManager) GetHistory(ctx context.Context, sessionKey string)
 		if len(result) > 0 && result[0].Role == "system" {
 			result[0].Content = systemPrompt
 		}
-		return result
+		return result, nil
 	}
 
-	return []Message{{Role: "system", Content: systemPrompt}}
+	return []Message{{Role: "system", Content: systemPrompt}}, nil
 }
 
 // UpdateBehaviorSummary is the callback used by BackgroundBehaviorSummarizer to inject long-term memory
@@ -159,41 +162,69 @@ func (m *InMemSessionManager) UpdateBehaviorSummary(sessionKey string, newSummar
 	return nil
 }
 
-// SetHistory stores a copy of the messages for the given session key.
-func (m *InMemSessionManager) SetHistory(_ context.Context, sessionKey string, messages []Message) {
+// SaveHistory atomically replaces the persisted log with msgs. InMem owns
+// the copy of msgs (callers may continue to mutate their slice). When a
+// SummaryProvider is configured and the new message count crosses the
+// background-summarization threshold, this also fires the async summarizer
+// goroutine — same trigger point that the old Save() used to own.
+func (m *InMemSessionManager) SaveHistory(_ context.Context, sessionKey string, msgs []Message) error {
+	cp := make([]Message, len(msgs))
+	copy(cp, msgs)
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := make([]Message, len(messages))
-	copy(cp, messages)
 	m.sessions[sessionKey] = cp
 	m.updatedAt[sessionKey] = time.Now()
 	m.touch(sessionKey)
+	msgLen := len(cp)
+	lastLen := m.lastSumLen[sessionKey]
+	shouldSummarize := m.SummaryProvider != nil &&
+		msgLen >= backgroundSumTriggerThreshold &&
+		msgLen >= lastLen+backgroundSumNewMsgThreshold
+	var newMessages []Message
+	var prevSummary string
+	if shouldSummarize {
+		m.lastSumLen[sessionKey] = msgLen
+		start := max(lastLen, 0)
+		newMessages = make([]Message, msgLen-start)
+		copy(newMessages, cp[start:])
+		prevSummary = m.behaviors[sessionKey]
+	}
+	m.mu.Unlock()
+
+	if shouldSummarize {
+		BackgroundBehaviorSummarizer(sessionKey, newMessages, prevSummary, m.SummaryProvider, m.UpdateBehaviorSummary)
+	}
+	return nil
 }
 
-func (m *InMemSessionManager) GetAsyncTasks(ctx context.Context, sessionKey string) map[string]AsyncTask {
+// AsyncTasks returns a copy of the background tasks parked on sessionKey.
+// InMem never fails on read; error is always nil.
+func (m *InMemSessionManager) AsyncTasks(_ context.Context, sessionKey string) (map[string]AsyncTask, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	m.touch(sessionKey)
 	tasks, ok := m.asyncTasks[sessionKey]
 	if !ok {
-		return map[string]AsyncTask{}
+		return map[string]AsyncTask{}, nil
 	}
 	cp := make(map[string]AsyncTask, len(tasks))
 	for k, v := range tasks {
 		cp[k] = v
 	}
-	return cp
+	return cp, nil
 }
 
-func (m *InMemSessionManager) SetAsyncTasks(ctx context.Context, sessionKey string, tasks map[string]AsyncTask) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// SaveAsyncTasks atomically replaces the async task snapshot for sessionKey.
+func (m *InMemSessionManager) SaveAsyncTasks(_ context.Context, sessionKey string, tasks map[string]AsyncTask) error {
 	cp := make(map[string]AsyncTask, len(tasks))
 	for k, v := range tasks {
 		cp[k] = v
 	}
+	m.mu.Lock()
 	m.asyncTasks[sessionKey] = cp
 	m.touch(sessionKey)
+	m.mu.Unlock()
+	return nil
 }
 
 // Fork creates a new session that is a deep copy of the first atIndex messages
@@ -231,9 +262,9 @@ func (m *InMemSessionManager) Fork(_ context.Context, sessionKey string, atIndex
 	return newKey, nil
 }
 
-// DeleteSession removes all in-memory state for sessionKey.
-// Deleting a non-existent session is a no-op.
-func (m *InMemSessionManager) DeleteSession(_ context.Context, sessionKey string) error {
+// Delete removes all in-memory state for sessionKey. Deleting a non-existent
+// session is a no-op.
+func (m *InMemSessionManager) Delete(_ context.Context, sessionKey string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.purgeKeyLocked(sessionKey)
@@ -332,34 +363,3 @@ func (m *InMemSessionManager) PurgeDeletedBefore(_ context.Context, before time.
 	return purged, nil
 }
 
-func (m *InMemSessionManager) Save(_ context.Context, sessionKey string) error {
-	m.mu.Lock()
-	msgs := m.sessions[sessionKey]
-	msgLen := len(msgs)
-	lastLen := m.lastSumLen[sessionKey]
-
-	shouldSummarize := m.SummaryProvider != nil &&
-		msgLen >= backgroundSumTriggerThreshold &&
-		msgLen >= lastLen+backgroundSumNewMsgThreshold
-
-	var newMessages []Message
-	var prevSummary string
-	if shouldSummarize {
-		m.lastSumLen[sessionKey] = msgLen
-		// Only send messages since last summarization, not the full history
-		start := lastLen
-		if start < 0 {
-			start = 0
-		}
-		newMessages = make([]Message, msgLen-start)
-		copy(newMessages, msgs[start:])
-		prevSummary = m.behaviors[sessionKey]
-	}
-	m.mu.Unlock()
-
-	if shouldSummarize {
-		BackgroundBehaviorSummarizer(sessionKey, newMessages, prevSummary, m.SummaryProvider, m.UpdateBehaviorSummary)
-	}
-
-	return nil
-}

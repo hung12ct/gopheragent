@@ -37,29 +37,29 @@ import (
 // substitution so scalar results produce valid JSON.
 var refPattern = regexp.MustCompile(`"?<output_of:([A-Za-z0-9_\-]+)(?:\.([A-Za-z0-9_.\-]+))?>"?`)
 
-// Ref is a parsed <output_of:...> reference.
-type Ref struct {
+// outputRef is a parsed <output_of:...> reference.
+type outputRef struct {
 	ID   string // tool-call ID being referenced
 	Path string // optional dot-separated JSON path; "" means "full output"
 }
 
-// ParseRefs scans argsJSON for every <output_of:...> reference and returns
+// parseRefs scans argsJSON for every <output_of:...> reference and returns
 // them in appearance order. The same (ID,Path) pair is returned once per
 // occurrence; callers that want uniqueness should dedupe.
-func ParseRefs(argsJSON string) []Ref {
+func parseRefs(argsJSON string) []outputRef {
 	matches := refPattern.FindAllStringSubmatch(argsJSON, -1)
-	out := make([]Ref, 0, len(matches))
+	out := make([]outputRef, 0, len(matches))
 	for _, m := range matches {
-		out = append(out, Ref{ID: m[1], Path: m[2]})
+		out = append(out, outputRef{ID: m[1], Path: m[2]})
 	}
 	return out
 }
 
-// Resolver returns the raw result JSON (or plain string) for a completed
+// refResolver returns the raw result JSON (or plain string) for a completed
 // tool-call ID. ok is false when the ID has not yet produced output.
-type Resolver func(id string) (string, bool)
+type refResolver func(id string) (string, bool)
 
-// Substitute replaces every <output_of:ID> / <output_of:ID.path> token in
+// substituteRefs replaces every <output_of:ID> / <output_of:ID.path> token in
 // argsJSON with the resolved upstream value. Scalar results are JSON-encoded
 // at the substitution site so the surrounding JSON remains well-formed; when
 // the token is wrapped in quotes ("<output_of:...>") the quotes are consumed
@@ -68,7 +68,7 @@ type Resolver func(id string) (string, bool)
 // Returns an error if any reference points to an unknown ID. A reference
 // whose path does not exist in the output resolves to the JSON `null` literal
 // — preserves best-effort chaining instead of aborting the wave.
-func Substitute(argsJSON string, resolve Resolver) (string, error) {
+func substituteRefs(argsJSON string, resolve refResolver) (string, error) {
 	matches := refPattern.FindAllStringSubmatchIndex(argsJSON, -1)
 	if len(matches) == 0 {
 		return argsJSON, nil
@@ -88,7 +88,7 @@ func Substitute(argsJSON string, resolve Resolver) (string, error) {
 		raw, ok := resolve(id)
 		if !ok {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("agent: Substitute: unknown tool-call reference %q", id)
+				firstErr = fmt.Errorf("agent: substituteRefs: unknown tool-call reference %q", id)
 			}
 			sb.WriteString(argsJSON[m[0]:m[1]])
 			cursor = m[1]
@@ -98,7 +98,7 @@ func Substitute(argsJSON string, resolve Resolver) (string, error) {
 		encoded, err := json.Marshal(val)
 		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("agent: Substitute: encode %q.%q: %w", id, path, err)
+				firstErr = fmt.Errorf("agent: substituteRefs: encode %q.%q: %w", id, path, err)
 			}
 			sb.WriteString(argsJSON[m[0]:m[1]])
 			cursor = m[1]
@@ -140,7 +140,7 @@ func extractPath(raw, path string) any {
 	return node
 }
 
-// ScheduleToolCalls orders calls into execution waves respecting
+// scheduleToolCalls orders calls into execution waves respecting
 // <output_of:...> dependencies: every call in wave i can run in parallel, and
 // every call in wave i depends only on calls in waves 0..i-1.
 //
@@ -150,7 +150,7 @@ func extractPath(raw, path string) any {
 //
 // The input slice is not mutated; each wave preserves the caller's original
 // tool-call ordering for deterministic behavior.
-func ScheduleToolCalls(calls []PendingToolCall) ([][]PendingToolCall, error) {
+func scheduleToolCalls(calls []PendingToolCall) ([][]PendingToolCall, error) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -158,7 +158,7 @@ func ScheduleToolCalls(calls []PendingToolCall) ([][]PendingToolCall, error) {
 	order := make(map[string]int, len(calls))
 	for i, c := range calls {
 		if _, dup := byID[c.ID]; dup {
-			return nil, fmt.Errorf("agent: ScheduleToolCalls: duplicate tool-call ID %q", c.ID)
+			return nil, fmt.Errorf("agent: scheduleToolCalls: duplicate tool-call ID %q", c.ID)
 		}
 		byID[c.ID] = c
 		order[c.ID] = i
@@ -172,17 +172,17 @@ func ScheduleToolCalls(calls []PendingToolCall) ([][]PendingToolCall, error) {
 		deps[c.ID] = make(map[string]struct{})
 	}
 	for _, c := range calls {
-		for _, ref := range ParseRefs(c.ArgsJSON) {
-			if _, exists := byID[ref.ID]; !exists {
-				return nil, fmt.Errorf("agent: ScheduleToolCalls: call %q references unknown ID %q", c.ID, ref.ID)
+		for _, r := range parseRefs(c.ArgsJSON) {
+			if _, exists := byID[r.ID]; !exists {
+				return nil, fmt.Errorf("agent: scheduleToolCalls: call %q references unknown ID %q", c.ID, r.ID)
 			}
-			if ref.ID == c.ID {
-				return nil, fmt.Errorf("agent: ScheduleToolCalls: call %q references itself", c.ID)
+			if r.ID == c.ID {
+				return nil, fmt.Errorf("agent: scheduleToolCalls: call %q references itself", c.ID)
 			}
-			if _, seen := deps[c.ID][ref.ID]; seen {
+			if _, seen := deps[c.ID][r.ID]; seen {
 				continue
 			}
-			deps[c.ID][ref.ID] = struct{}{}
+			deps[c.ID][r.ID] = struct{}{}
 			indeg[c.ID]++
 		}
 	}
@@ -198,7 +198,7 @@ func ScheduleToolCalls(calls []PendingToolCall) ([][]PendingToolCall, error) {
 			}
 		}
 		if len(ready) == 0 {
-			return nil, fmt.Errorf("agent: ScheduleToolCalls: cycle detected among tool calls")
+			return nil, fmt.Errorf("agent: scheduleToolCalls: cycle detected among tool calls")
 		}
 		sort.Slice(ready, func(i, j int) bool { return order[ready[i]] < order[ready[j]] })
 

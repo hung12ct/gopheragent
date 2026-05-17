@@ -7,22 +7,22 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/history"
 )
 
-// SoftTrimThreshold is the max rune length of a tool result before it gets pruned.
-const SoftTrimThreshold = 4000
+// softTrimThreshold is the max rune length of a tool result before it gets pruned.
+const softTrimThreshold = 4000
 
-// RetentionHead is the number of runes to keep from the start of a pruned message.
-const RetentionHead = 1500
+// retentionHead is the number of runes to keep from the start of a pruned message.
+const retentionHead = 1500
 
-// RetentionTail is the number of runes to keep from the end of a pruned message.
-const RetentionTail = 1500
+// retentionTail is the number of runes to keep from the end of a pruned message.
+const retentionTail = 1500
 
-// OutlierTrimThreshold is the max rune length before an entire message is discarded.
+// outlierTrimThreshold is the max rune length before an entire message is discarded.
 // (~50k chars is around 12k tokens, often indicating memory leaks or raw database dumps).
-const OutlierTrimThreshold = 50000
+const outlierTrimThreshold = 50000
 
-// ToolArgTruncateLen is the rune length kept by TruncateToolArguments when a
+// toolArgTruncateLen is the rune length kept by truncateToolArguments when a
 // tool result is force-truncated as a last-resort token-budget defense.
-const ToolArgTruncateLen = 500
+const toolArgTruncateLen = 500
 
 // runeSlice returns s[start:end] measured in runes, safe for multi-byte UTF-8.
 // Returns "" when the range is empty, inverted, or entirely out of bounds.
@@ -51,36 +51,33 @@ func runeSlice(s string, start, end int) string {
 	return s[byteStart:]
 }
 
-// PruneContextMessages acts as Layer 1 Defense.
+// pruneContextMessages acts as Layer 1 Defense.
 // It performs a soft trim by cutting the middle of excessively long tool responses
 // but strictly protects the last 'protectedEnds' messages from any modification.
 // All slicing is rune-safe to avoid corrupting multi-byte UTF-8 (CJK, emoji).
-func PruneContextMessages(msgs []history.Message, protectedEnds int) []history.Message {
+func pruneContextMessages(msgs []history.Message, protectedEnds int) []history.Message {
 	if len(msgs) == 0 {
 		return msgs
 	}
 
 	result := make([]history.Message, 0, len(msgs))
 
-	protectStartIdx := len(msgs) - protectedEnds
-	if protectStartIdx < 0 {
-		protectStartIdx = 0
-	}
+	protectStartIdx := max(len(msgs)-protectedEnds, 0)
 
 	for i, msg := range msgs {
 		if (msg.Role == "tool" || msg.Role == "assistant") && i < protectStartIdx {
 			runeLen := utf8.RuneCountInString(msg.Content)
 
-			if runeLen > OutlierTrimThreshold {
-				msg.Content = fmt.Sprintf("\n[System: Outlier Payload Truncated] The tool returned %d characters which exceeds the safety threshold of %d. Payload was completely discarded to avoid context explosion. Retry with tighter parameters.\n", runeLen, OutlierTrimThreshold)
+			if runeLen > outlierTrimThreshold {
+				msg.Content = fmt.Sprintf("\n[System: Outlier Payload Truncated] The tool returned %d characters which exceeds the safety threshold of %d. Payload was completely discarded to avoid context explosion. Retry with tighter parameters.\n", runeLen, outlierTrimThreshold)
 				result = append(result, msg)
 				continue
 			}
 
-			if runeLen > SoftTrimThreshold {
-				head := runeSlice(msg.Content, 0, RetentionHead)
-				tail := runeSlice(msg.Content, runeLen-RetentionTail, runeLen)
-				omitted := runeLen - RetentionHead - RetentionTail
+			if runeLen > softTrimThreshold {
+				head := runeSlice(msg.Content, 0, retentionHead)
+				tail := runeSlice(msg.Content, runeLen-retentionTail, runeLen)
+				omitted := runeLen - retentionHead - retentionTail
 
 				msg.Content = fmt.Sprintf("%s\n\n... [%d chars truncated] ...\n\n%s", head, omitted, tail)
 			}
@@ -93,7 +90,7 @@ func PruneContextMessages(msgs []history.Message, protectedEnds int) []history.M
 
 // hasDanglingToolCalls walks msgs once and returns true if any assistant
 // tool_call lacks a matching tool response. Used as a cheap gate so the
-// allocating rebuild path in PatchDanglingToolCalls only runs when needed.
+// allocating rebuild path in patchDanglingToolCalls only runs when needed.
 func hasDanglingToolCalls(msgs []history.Message) bool {
 	for i := 0; i < len(msgs); i++ {
 		m := msgs[i]
@@ -121,7 +118,7 @@ func hasDanglingToolCalls(msgs []history.Message) bool {
 	return false
 }
 
-// PatchDanglingToolCalls scans message history and injects synthetic tool
+// patchDanglingToolCalls scans message history and injects synthetic tool
 // responses for any tool_call that never received a reply. Without this,
 // provider APIs (Anthropic / OpenAI) reject the request with a 400/500
 // because every tool_use must be paired with a tool_result before the next
@@ -132,7 +129,7 @@ func hasDanglingToolCalls(msgs []history.Message) bool {
 // healthy case. When patching is required, synthetic messages are appended
 // *after* any existing tool responses for the same assistant turn so call
 // order matches the source tool_calls order.
-func PatchDanglingToolCalls(msgs []history.Message) []history.Message {
+func patchDanglingToolCalls(msgs []history.Message) []history.Message {
 	if len(msgs) == 0 || !hasDanglingToolCalls(msgs) {
 		return msgs
 	}
@@ -177,10 +174,10 @@ func PatchDanglingToolCalls(msgs []history.Message) []history.Message {
 	return patched
 }
 
-// TruncateToolArguments forcefully truncates tool outputs to prevent context
+// truncateToolArguments forcefully truncates tool outputs to prevent context
 // window overflow when running tight on token budget. Non-tool messages pass
 // through unchanged. Truncation is rune-safe.
-func TruncateToolArguments(msgs []history.Message) []history.Message {
+func truncateToolArguments(msgs []history.Message) []history.Message {
 	if len(msgs) == 0 {
 		return msgs
 	}
@@ -188,8 +185,8 @@ func TruncateToolArguments(msgs []history.Message) []history.Message {
 	for _, msg := range msgs {
 		if msg.Role == "tool" {
 			runeLen := utf8.RuneCountInString(msg.Content)
-			if runeLen > ToolArgTruncateLen {
-				msg.Content = runeSlice(msg.Content, 0, ToolArgTruncateLen) + "\n... (output truncated by system to save tokens)"
+			if runeLen > toolArgTruncateLen {
+				msg.Content = runeSlice(msg.Content, 0, toolArgTruncateLen) + "\n... (output truncated by system to save tokens)"
 			}
 		}
 		result = append(result, msg)

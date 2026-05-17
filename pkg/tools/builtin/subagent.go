@@ -79,7 +79,7 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 	defer func() {
 		// Always clean up the worker's ephemeral session; ignore error —
 		// the tool's primary result is more important than cleanup failure.
-		_ = t.Sessions.DeleteSession(context.Background(), workerSessionKey)
+		_ = t.Sessions.Delete(context.Background(), workerSessionKey)
 	}()
 
 	workerLoop := agent.NewAgentLoop(t.Sessions, t.Tools, t.LLM)
@@ -102,7 +102,7 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 		return fmt.Sprintf("Report from %s:\n%s", input.AgentName, result), nil
 	}
 
-	parentSessionKey, _ := ctx.Value(agent.SessionKeyCtx("sessionKey")).(string)
+	parentSessionKey, _ := agent.SessionKeyFromContext(ctx)
 	source := "subagent:" + input.AgentName
 
 	workerChan := make(chan agent.StreamEvent, 50)
@@ -115,21 +115,24 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 		// Accumulate the worker's own content as its final report; content that
 		// comes from deeper nested sub-agents (Source already set) is only
 		// observational and must not pollute this worker's answer.
-		if ev.Source == "" && ev.Type == agent.EventTypeContent {
-			buf.WriteString(ev.Content)
-		}
-		if ev.Source == "" && ev.Type == agent.EventTypeError && workerErr == nil {
-			if ev.Err != nil {
-				workerErr = ev.Err
-			} else {
-				workerErr = fmt.Errorf("agent: %s", ev.Content)
+		if ev.Source == "" {
+			switch p := ev.Payload.(type) {
+			case agent.ContentEvent:
+				buf.WriteString(p.Text)
+			case agent.ErrorEvent:
+				if workerErr == nil {
+					if p.Err != nil {
+						workerErr = p.Err
+					} else if p.Message != "" {
+						workerErr = fmt.Errorf("agent: %s", p.Message)
+					}
+				}
+			case agent.HITLDeniedEvent, agent.HITLTimedOutEvent:
+				// Latch the most recent HITL signal so the report surfaces
+				// the cause verbatim instead of relying on the worker's
+				// paraphrase.
+				hitlEvent = ev
 			}
-		}
-		if ev.Source == "" && (ev.Type == agent.EventTypeHITLDenied || ev.Type == agent.EventTypeHITLTimedOut) {
-			// Latch the most recent HITL signal so the report surfaces the
-			// cause to the outer agent verbatim instead of relying on the
-			// worker's paraphrase.
-			hitlEvent = ev
 		}
 
 		emitter(agent.DecorateForwardedEvent(ev, source, parentSessionKey))
@@ -147,15 +150,12 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (strin
 // so the outer agent sees the cause directly rather than the worker's
 // paraphrased final answer.
 func subAgentHITLReport(hitlEvent agent.StreamEvent, innerSummary string) string {
-	if hitlEvent.Type == "" {
-		return innerSummary
-	}
-	switch hitlEvent.Type {
-	case agent.EventTypeHITLTimedOut:
-		p, _ := hitlEvent.Payload().(agent.HITLTimedOutEvent)
+	switch p := hitlEvent.Payload.(type) {
+	case agent.HITLTimedOutEvent:
 		return fmt.Sprintf("HITL_BLOCKED: timeout — the human approval prompt for tool %q expired after %s before the operator responded. The user did NOT refuse. Tell the user the approval window closed and ask them to retry when they are ready to confirm; do not paraphrase this as a denial. Worker summary (may be misleading): %s", p.Tool, p.Timeout, innerSummary)
-	default:
-		p, _ := hitlEvent.Payload().(agent.HITLDeniedEvent)
+	case agent.HITLDeniedEvent:
 		return fmt.Sprintf("HITL_BLOCKED: denied — the human operator denied approval for tool %q. Tell the user directly that they have not granted the permission this action requires, and ask whether they have an alternative approach. Worker summary (may be misleading): %s", p.Tool, innerSummary)
+	default:
+		return innerSummary
 	}
 }

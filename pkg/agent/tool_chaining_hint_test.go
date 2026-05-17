@@ -115,7 +115,7 @@ func (p *systemCapturingProvider) GenerateStream(_ context.Context, memory []his
 	p.mu.Unlock()
 
 	if len(toolCalls) == 0 {
-		ch <- StreamEvent{Type: "content", Content: p.reply}
+		ch <- Event(ContentEvent{Text: p.reply})
 		return LLMResult{Content: p.reply}, nil
 	}
 	return LLMResult{ToolCalls: toolCalls}, nil
@@ -153,7 +153,7 @@ func TestAgentLoop_HintReachesLLM_ButNotPersistedSession(t *testing.T) {
 
 	// Persisted session does NOT contain the hint — only the original prompt
 	// plus the user turn and assistant reply.
-	stored := sm.GetHistory(context.Background(), "s1")
+	stored, _ := sm.History(context.Background(), "s1")
 	for _, m := range stored {
 		if m.Role == "system" && strings.Contains(m.Content, toolChainingSentinel) {
 			t.Fatalf("persisted session leaked the hint: %q", m.Content)

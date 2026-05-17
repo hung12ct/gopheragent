@@ -17,7 +17,10 @@ func ForkAtLastUser(ctx context.Context, sm SessionManager, sessionKey string) (
 	if !ok {
 		return "", fmt.Errorf("agent: ForkAtLastUser: session manager does not implement SessionForker")
 	}
-	msgs := sm.GetHistory(ctx, sessionKey)
+	msgs, err := sm.History(ctx, sessionKey)
+	if err != nil {
+		return "", fmt.Errorf("agent: ForkAtLastUser: load history: %w", err)
+	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
 			return forker.Fork(ctx, sessionKey, i)

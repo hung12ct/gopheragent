@@ -27,22 +27,20 @@ func newToolCallID() string {
 // recorded by any goroutine (e.g. anti-loop detector) breaks out of
 // the wave loop.
 func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, scheduled []PendingToolCall) *waveState {
-	waves, schedErr := ScheduleToolCalls(scheduled)
+	waves, schedErr := scheduleToolCalls(scheduled)
 	if schedErr != nil {
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
-			Type:    "thought",
-			Content: fmt.Sprintf("Tool scheduler: %v — running all calls in one wave.", schedErr),
-		})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
+			Message: fmt.Sprintf("Tool scheduler: %v — running all calls in one wave.", schedErr),
+		}))
 		waves = [][]PendingToolCall{scheduled}
 	}
 
 	ws := newWaveState(len(scheduled))
 	for _, wave := range waves {
 		substitutedWave := substituteWaveArgs(ws, wave, func(toolName string, subErr error) {
-			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
-				Type:    "thought",
-				Content: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", toolName, subErr),
-			})
+			al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
+				Message: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", toolName, subErr),
+			}))
 		})
 
 		var wg sync.WaitGroup
@@ -104,11 +102,11 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		permDecision = al.Permissions.Check(ctx, tCall.Name, tCall.ArgsJSON)
 	}
 	if permDecision == PermissionAllow && tool.RequiresConfirmation() {
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy auto-approved %s (bypassing HITL).", tCall.Name)})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Permission policy auto-approved %s (bypassing HITL).", tCall.Name)}))
 	}
 	if permDecision == PermissionDeny {
 		deniedErr := &PermissionDeniedError{ToolName: tCall.Name}
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Permission policy denied %s — skipping execution.", tCall.Name)}))
 		ws.recordToolMsg(tCall.ID, history.Message{
 			Role:       "tool",
 			Content:    fmt.Sprintf("%v. This is a permission gate, not a tool failure — the policy denied the call deterministically; do not retry. Tell the user the requested action requires a permission they have not granted, and ask whether they have an alternative approach.", deniedErr),
@@ -141,7 +139,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 			}, false)
 			return
 		}
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: "Human APPROVED tool execution."})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: "Human APPROVED tool execution."}))
 	}
 
 	var cacheKey string
@@ -161,30 +159,27 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	st.specMu.Unlock()
 
 	callID := newToolCallID()
-	al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{
-		Type:       EventTypeToolCall,
-		Name:       tCall.Name,
-		ToolCallID: callID,
-		ArgsJSON:   tCall.ArgsJSON,
-		Reused:     speculated,
-		Content:    fmt.Sprintf("Executing: %s", tCall.Name),
-	})
+	al.emit(ctx, st.sessionKey, st.streamChan, Event(ToolCallEvent{
+		ID:       callID,
+		Name:     tCall.Name,
+		ArgsJSON: tCall.ArgsJSON,
+		Reused:   speculated,
+	}))
 
 	if cacheOK {
 		if cached, hit := al.Cache.Get(cacheKey); hit {
-			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)})
+			al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)}))
 			ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}, true)
 			return
 		}
 	}
 
 	toolCtx := tools.WithProgressFunc(ctx, func(msg string) {
-		ev := StreamEvent{
-			Type:       EventTypeToolProgress,
+		ev := Event(ToolProgressEvent{
 			Name:       tCall.Name,
 			ToolCallID: callID,
-			Content:    msg,
-		}
+			Message:    msg,
+		})
 		select {
 		case st.streamChan <- ev:
 			for _, h := range al.EventHandlers {
@@ -214,7 +209,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	var structured any
 	var execErr error
 	if speculated {
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)}))
 		toolResult, structured, execErr = awaitSpeculative(toolCtx, sm)
 	} else if sr, ok := tool.(tools.StructuredResult); ok {
 		// Tool advertises a typed payload — prefer the structured path so
@@ -253,7 +248,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	if !isToolErr {
 		if ir, ok := tool.(tools.InlineRenderer); ok && ir.InlineResult() {
 			isInlineResult = true
-			al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeContent, Content: "\n\n" + content + "\n\n"})
+			al.emit(ctx, st.sessionKey, st.streamChan, Event(ContentEvent{Text: "\n\n" + content + "\n\n"}))
 		}
 	}
 
@@ -269,7 +264,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	}
 	if warnMessage != "" {
 		content += "\n\n" + warnMessage
-		al.emit(ctx, st.sessionKey, st.streamChan, StreamEvent{Type: EventTypeThought, Content: "System inserted an anti-loop warning into context window."})
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: "System inserted an anti-loop warning into context window."}))
 	}
 
 	ws.recordToolMsg(tCall.ID, history.Message{

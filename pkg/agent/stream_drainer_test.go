@@ -22,10 +22,10 @@ func drainerHarness(t *testing.T) (*streamDrainer, *iterationState, chan StreamE
 
 func TestStreamDrainer_AccumulatesContent(t *testing.T) {
 	d, _, _ := drainerHarness(t)
-	if !d.handleEvent(StreamEvent{Type: EventTypeContent, Content: "Hello "}) {
+	if !d.handleEvent(Event(ContentEvent{Text: "Hello "})) {
 		t.Fatal("expected handleEvent to forward")
 	}
-	if !d.handleEvent(StreamEvent{Type: EventTypeContent, Content: "world"}) {
+	if !d.handleEvent(Event(ContentEvent{Text: "world"})) {
 		t.Fatal("expected handleEvent to forward")
 	}
 	if got := d.content(); got != "Hello world" {
@@ -39,9 +39,9 @@ func TestStreamDrainer_AccumulatesContent(t *testing.T) {
 func TestStreamDrainer_ForwardsAllEvents(t *testing.T) {
 	d, _, out := drainerHarness(t)
 	events := []StreamEvent{
-		{Type: EventTypeThought, Content: "thinking"},
-		{Type: EventTypeContent, Content: "hi"},
-		{Type: EventTypeToolCall, Content: "Executing: x"},
+		Event(ThoughtEvent{Message: "thinking"}),
+		Event(ContentEvent{Text: "hi"}),
+		Event(ToolCallEvent{Name: "x"}),
 	}
 	for _, ev := range events {
 		if !d.handleEvent(ev) {
@@ -50,8 +50,8 @@ func TestStreamDrainer_ForwardsAllEvents(t *testing.T) {
 	}
 	for i, want := range events {
 		got := <-out
-		if got.Type != want.Type || got.Content != want.Content {
-			t.Fatalf("event %d: got %+v; want %+v", i, got, want)
+		if got.Type != want.Type {
+			t.Fatalf("event %d: got type %q; want %q", i, got.Type, want.Type)
 		}
 	}
 }
@@ -68,7 +68,7 @@ func TestStreamDrainer_StopsForwardingOnCtxDone(t *testing.T) {
 	cancel()
 	d := newStreamDrainer(&AgentLoop{}, st, ctx)
 
-	if d.handleEvent(StreamEvent{Type: EventTypeContent, Content: "x"}) {
+	if d.handleEvent(Event(ContentEvent{Text: "x"})) {
 		t.Fatal("handleEvent should return false when ctx is cancelled and streamChan blocks")
 	}
 }
