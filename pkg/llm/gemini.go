@@ -117,12 +117,12 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 	if availableTools != nil {
 		var geminiTools []*genai.Tool
 		var funcDecls []*genai.FunctionDeclaration
-		for _, t := range availableTools.GetAll() {
-			schema := t.ParametersSchema()
+		for _, t := range availableTools.All() {
+			desc := t.Descriptor()
 			funcDecls = append(funcDecls, &genai.FunctionDeclaration{
-				Name:        t.Name(),
-				Description: t.Description(),
-				Parameters:  mapRegistrySchemaToGeminiSchema(schema),
+				Name:        desc.Name,
+				Description: desc.Description,
+				Parameters:  mapRegistrySchemaToGeminiSchema(desc.Parameters),
 			})
 		}
 		if len(funcDecls) > 0 {

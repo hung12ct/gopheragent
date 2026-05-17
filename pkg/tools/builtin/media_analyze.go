@@ -48,40 +48,42 @@ func NewMediaAnalyzeTool(analyzer MediaAnalyzer) *MediaAnalyzeTool {
 	return &MediaAnalyzeTool{analyzer: analyzer}
 }
 
-func (t *MediaAnalyzeTool) Name() string { return "media_analyze" }
-
-func (t *MediaAnalyzeTool) Description() string {
-	return "Analyze an image or video using a multimodal model. Accepts an http(s) URL, a Google Cloud Storage URI (gs://), or a data URI. Use for OCR, chart reading, screenshot understanding, video summarisation, or any visual question-answering. Note: video support depends on the underlying provider (Gemini supports video; OpenAI and Claude support images only)."
-}
+const mediaAnalyzeName = "media_analyze"
+const mediaAnalyzeDescription = "Analyze an image or video using a multimodal model. Accepts an http(s) URL, a Google Cloud Storage URI (gs://), or a data URI. Use for OCR, chart reading, screenshot understanding, video summarisation, or any visual question-answering. Note: video support depends on the underlying provider (Gemini supports video; OpenAI and Claude support images only)."
 
 type mediaAnalyzeArgs struct {
 	Media  string `json:"media"  description:"The media to analyze — an http(s) URL, a gs:// Cloud Storage URI (for Gemini video), or a data: URI for inline images."`
 	Prompt string `json:"prompt" description:"What to extract or describe. Be specific (e.g. 'summarise the key events in this video', 'extract all text', 'describe the chart axes and trend')."`
 }
 
-func (t *MediaAnalyzeTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[mediaAnalyzeArgs]()
+func (t *MediaAnalyzeTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        mediaAnalyzeName,
+		Description: mediaAnalyzeDescription,
+		Parameters:  tools.SchemaFor[mediaAnalyzeArgs](),
+		Display:     tools.DefaultDisplay(mediaAnalyzeName, mediaAnalyzeDescription),
+	}
 }
 
-// RequiresConfirmation is false — analysis is read-only.
-func (t *MediaAnalyzeTool) RequiresConfirmation() bool { return false }
-
-func (t *MediaAnalyzeTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *MediaAnalyzeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *MediaAnalyzeTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args mediaAnalyzeArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	args.Media = strings.TrimSpace(args.Media)
 	args.Prompt = strings.TrimSpace(args.Prompt)
 	if args.Media == "" {
-		return "", fmt.Errorf("tools: media is required")
+		return tools.Result{}, fmt.Errorf("tools: media is required")
 	}
 	if args.Prompt == "" {
-		return "", fmt.Errorf("tools: prompt is required")
+		return tools.Result{}, fmt.Errorf("tools: prompt is required")
 	}
 	if t.analyzer == nil {
-		return "", fmt.Errorf("tools: media_analyze has no analyzer configured")
+		return tools.Result{}, fmt.Errorf("tools: media_analyze has no analyzer configured")
 	}
-	return t.analyzer.Analyze(ctx, args.Media, args.Prompt)
+	out, err := t.analyzer.Analyze(ctx, args.Media, args.Prompt)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	return tools.Text(out), nil
 }

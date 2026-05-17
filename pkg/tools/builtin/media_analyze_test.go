@@ -28,8 +28,8 @@ func TestMediaAnalyzeTool_DelegatesToAnalyzer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out != "a red square" {
-		t.Fatalf("output mismatch: %q", out)
+	if out.Text != "a red square" {
+		t.Fatalf("output mismatch: %q", out.Text)
 	}
 	if a.lastMedia != "https://x/y.png" || a.lastPrompt != "what is it?" {
 		t.Fatalf("analyzer got wrong args: %+v", a)
@@ -44,8 +44,8 @@ func TestMediaAnalyzeTool_AcceptsVideoURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out != "a cat video" {
-		t.Fatalf("output mismatch: %q", out)
+	if out.Text != "a cat video" {
+		t.Fatalf("output mismatch: %q", out.Text)
 	}
 	if a.lastMedia != "gs://my-bucket/cat.mp4" {
 		t.Fatalf("unexpected media arg: %q", a.lastMedia)

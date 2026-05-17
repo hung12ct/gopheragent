@@ -88,8 +88,9 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 
 	var openaiTools []openai.Tool
 	if availableTools != nil {
-		for _, t := range availableTools.GetAll() {
-			schema := t.ParametersSchema()
+		for _, t := range availableTools.All() {
+			desc := t.Descriptor()
+			schema := desc.Parameters
 			// OpenAI requires "required" to be an array, never null.
 			required := schema.Required
 			if required == nil {
@@ -98,8 +99,8 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 			openaiTools = append(openaiTools, openai.Tool{
 				Type: openai.ToolTypeFunction,
 				Function: &openai.FunctionDefinition{
-					Name:        t.Name(),
-					Description: t.Description(),
+					Name:        desc.Name,
+					Description: desc.Description,
 					Parameters: map[string]any{
 						"type":       schema.Type,
 						"properties": schema.Properties,

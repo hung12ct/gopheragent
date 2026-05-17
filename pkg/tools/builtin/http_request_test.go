@@ -30,7 +30,7 @@ func TestHTTPRequestTool_GETReturnsBody(t *testing.T) {
 		Body      string `json:"body"`
 		Truncated bool   `json:"truncated"`
 	}
-	if err := json.Unmarshal([]byte(out), &env); err != nil {
+	if err := json.Unmarshal([]byte(out.Text), &env); err != nil {
 		t.Fatalf("bad envelope: %v", err)
 	}
 	if env.Status != 200 {
@@ -64,7 +64,7 @@ func TestHTTPRequestTool_PostForwardsBodyAndHeaders(t *testing.T) {
 	var env struct {
 		Status int `json:"status"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if env.Status != 201 {
 		t.Fatalf("status: %d", env.Status)
 	}
@@ -121,7 +121,7 @@ func TestHTTPRequestTool_TruncatesLargeBody(t *testing.T) {
 		Body      string `json:"body"`
 		Truncated bool   `json:"truncated"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if !env.Truncated {
 		t.Fatal("expected truncation flag")
 	}
@@ -132,7 +132,7 @@ func TestHTTPRequestTool_TruncatesLargeBody(t *testing.T) {
 
 func TestHTTPRequestTool_RequiresConfirmation(t *testing.T) {
 	tool := NewHTTPRequestTool()
-	if !tool.RequiresConfirmation() {
+	if !tool.Descriptor().RequiresConfirmation {
 		t.Fatal("http_request should require confirmation")
 	}
 }
@@ -167,7 +167,7 @@ func TestHTTPRequestTool_AllowedHostBypassesSSRF(t *testing.T) {
 		t.Fatalf("expected success for allowlisted host, got: %v", err)
 	}
 	var env struct{ Status int `json:"status"` }
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if env.Status != 200 {
 		t.Fatalf("status: %d", env.Status)
 	}

@@ -33,7 +33,7 @@ func TestFileReadTool_ReadsFileWithinRoot(t *testing.T) {
 		Truncated bool   `json:"truncated"`
 		SizeBytes int64  `json:"size_bytes"`
 	}
-	if err := json.Unmarshal([]byte(out), &env); err != nil {
+	if err := json.Unmarshal([]byte(out.Text), &env); err != nil {
 		t.Fatalf("bad envelope: %v", err)
 	}
 	if env.Content != "hello world" {
@@ -90,7 +90,7 @@ func TestFileReadTool_OffsetAndLength(t *testing.T) {
 		Content   string `json:"content"`
 		Truncated bool   `json:"truncated"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if env.Content != "3456" {
 		t.Fatalf("content mismatch: %q", env.Content)
 	}

@@ -12,95 +12,82 @@ import (
 // ToolSchema defines the JSON Schema for a tool's parameters.
 // It maps directly to the OpenAI/Anthropic function calling schema format.
 type ToolSchema struct {
-	Type       string                 `json:"type"`                 // typically "object"
+	Type       string         `json:"type"`                 // typically "object"
 	Properties map[string]any `json:"properties,omitempty"` // parameter definitions
-	Required   []string               `json:"required,omitempty"`   // required parameter names
+	Required   []string       `json:"required,omitempty"`   // required parameter names
 }
 
-// Tool defines the interface for all agent tools.
+// ToolDescriptor carries the static metadata of a Tool. Returned by
+// Tool.Descriptor() — every capability flag the loop reads lives here so
+// wrappers preserve them for free (the previous design used opt-in
+// method-set interfaces that dropped silently on wrap).
+type ToolDescriptor struct {
+	Name                 string
+	Description          string
+	Parameters           ToolSchema
+	RequiresConfirmation bool
+	// Cacheable is true when the tool's results are deterministic and safe
+	// for the agent loop to cache by (name, argsJSON). Tools that hit live
+	// data (prices, time, remote APIs without idempotency) leave this false.
+	Cacheable bool
+	// Inline is true when the tool's text output should be streamed to the
+	// frontend as a content event in addition to being fed back to the LLM
+	// as a tool result. Used by image/video tools whose result is a markdown
+	// URL the FE needs to render directly.
+	Inline bool
+	// Display carries UI-facing metadata (label, description, category, icon
+	// hint). Use DefaultDisplay(name, description) for tools without special
+	// UI treatment.
+	Display ToolDisplay
+}
+
+// Result is the return value of Tool.Execute.
 //
-// Display returns UI-facing metadata (friendly label, description,
-// category, icon hint) consumed by chat clients rendering tool calls.
-// Tools with no special UI treatment can return
-// tools.DefaultDisplay(t.Name(), t.Description()) as a one-liner.
+// Text is what flows back to the LLM as the tool_result content — the only
+// field that round-trips to the model. Tools that only return text populate
+// Text alone (use Text() for a one-liner).
+//
+// Structured is an optional typed payload delivered to the agent loop's
+// OnToolResult hook so post-execution mutators can work with fields instead
+// of substring-replacing markdown. Nil when the tool has nothing structured
+// to surface.
+//
+// Parts is optional multi-modal output for providers that accept non-text
+// tool results. Empty when the tool returns text only.
+type Result struct {
+	Text       string
+	Structured any
+	Parts      []MediaPart
+}
+
+// MediaPart is a leaf-package multi-modal output unit. Tools that emit
+// images or files populate this; the agent loop adapts to history.MediaPart
+// at the boundary. Kept inline so pkg/tools stays a leaf package (no upward
+// dep on pkg/history).
+type MediaPart struct {
+	MIMEType string
+	Data     []byte
+	Text     string
+}
+
+// Text is a convenience constructor for text-only results:
+//
+//	return tools.Text("ok"), nil
+func Text(s string) Result { return Result{Text: s} }
+
+// Tool is the minimal interface every agent tool must satisfy.
+//
+// Descriptor returns the static metadata block — name, description,
+// parameters schema, capability flags. Wrappers preserve every capability
+// flag trivially because Descriptor is one accessor returning a value
+// struct (no method-set interface dance).
+//
+// Execute runs the tool with the given JSON arguments and returns a Result.
+// Errors are returned alongside the zero Result so the loop can format the
+// failure as a tool-error message.
 type Tool interface {
-	// Name returns the unique identifier for this tool.
-	Name() string
-	// Description returns a human-readable description of what this tool does.
-	Description() string
-	// ParametersSchema returns the JSON Schema describing the tool's input parameters.
-	ParametersSchema() ToolSchema
-	// RequiresConfirmation returns true if the tool needs human approval before execution.
-	RequiresConfirmation() bool
-	// Display returns UI-facing metadata (label, description, category,
-	// icon hint). See DefaultDisplay for a one-liner fallback.
-	Display() ToolDisplay
-	// Execute runs the tool with the given JSON arguments and returns the result.
-	Execute(ctx context.Context, argsJSON string) (string, error)
-}
-
-// InlineRenderer is optionally implemented by tools whose output should be
-// streamed directly to the frontend as content (e.g. images, videos, HTML widgets).
-// The result is emitted as a "content" StreamEvent in addition to being fed back
-// to the LLM as a normal tool result.
-//
-// WRAPPER WARNING: this is a method-set interface. Wrapping a tool that
-// implements InlineRenderer (e.g. embedding *GenerateImageTool inside an
-// adapter struct that overrides Name() or Execute()) WILL drop the
-// optional method silently — Go's interface satisfaction is structural,
-// and the wrapper struct does not inherit InlineResult() unless you
-// re-declare it. Symptom: the model paraphrases the markdown URL instead
-// of emitting it verbatim, the FE never sees the image. If you wrap a
-// tool that implements InlineRenderer, your wrapper MUST also implement it:
-//
-//	type MyImageWrapper struct{ *builtin.GenerateImageTool }
-//	func (w *MyImageWrapper) InlineResult() bool { return w.GenerateImageTool.InlineResult() }
-type InlineRenderer interface {
-	InlineResult() bool
-}
-
-// Cacheable is optionally implemented by tools that produce deterministic
-// results safe to cache by the agent loop. Tools that do not implement this
-// interface — or return false — bypass caching entirely even when the
-// AgentLoop has a Cache configured. This is explicit opt-in to avoid silent
-// staleness for live-data tools (prices, weather, time, etc.).
-//
-// WRAPPER WARNING: same caveat as InlineRenderer — wrapping a Cacheable
-// tool drops cacheability silently unless the wrapper re-declares the
-// method. Symptom: every call hits the underlying provider even when the
-// agent has a Cache configured. Forward explicitly:
-//
-//	func (w *MyToolWrapper) Cacheable() bool { return w.Tool.Cacheable() }
-type Cacheable interface {
-	Cacheable() bool
-}
-
-// StructuredResult is optionally implemented by tools that produce a
-// typed payload alongside their string result. The string is what flows
-// to the LLM (token cost stays the same); the typed payload is delivered
-// to the agent loop's OnToolResult hook so post-execution mutators can
-// work with fields instead of substring-replacing markdown.
-//
-// Implementation pattern: tools that satisfy StructuredResult typically
-// also implement Tool — the registry needs Execute for the standard path.
-// Keep the two implementations consistent by having Execute delegate to
-// ExecuteStructured and discard the payload:
-//
-//	func (t *MyTool) Execute(ctx context.Context, args string) (string, error) {
-//	    s, _, err := t.ExecuteStructured(ctx, args)
-//	    return s, err
-//	}
-//
-//	func (t *MyTool) ExecuteStructured(ctx context.Context, args string) (string, any, error) {
-//	    // ... real work
-//	    return formatted, MyPayload{Field: x}, nil
-//	}
-//
-// The agent loop type-asserts on StructuredResult and prefers
-// ExecuteStructured when available, so the structured payload reaches
-// OnToolResult automatically.
-type StructuredResult interface {
-	ExecuteStructured(ctx context.Context, argsJSON string) (result string, structured any, err error)
+	Descriptor() ToolDescriptor
+	Execute(ctx context.Context, argsJSON string) (Result, error)
 }
 
 // progressKey is the unexported context key for the progress reporting function.
@@ -183,10 +170,11 @@ func (r *Registry) EnableDebug(logger *slog.Logger) {
 
 // Register adds a tool to the registry. Overwrites any existing tool with the same name.
 func (r *Registry) Register(t Tool) {
+	name := t.Descriptor().Name
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools[t.Name()] = t
-	delete(r.wrapped, t.Name())
+	r.tools[name] = t
+	delete(r.wrapped, name)
 }
 
 // Get retrieves a tool by name. Returns false if not found.
@@ -206,16 +194,16 @@ func (r *Registry) Get(name string) (Tool, bool) {
 
 // Len returns the number of registered tools. Cheap branch for hot-path
 // gates that only need to know "how many" — avoids the sort+slice+copy
-// cost of GetAll.
+// cost of All.
 func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.tools)
 }
 
-// GetAll returns all registered tools in deterministic alphabetical order.
+// All returns every registered tool in deterministic alphabetical order.
 // Debug wrapping is applied when enabled.
-func (r *Registry) GetAll() []Tool {
+func (r *Registry) All() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

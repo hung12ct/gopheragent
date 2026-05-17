@@ -71,28 +71,30 @@ func NewGenerateImageTool(apiKey, model string, storage AssetStorage) (*Generate
 	}, nil
 }
 
-func (t *GenerateImageTool) Name() string { return "generate_image" }
-func (t *GenerateImageTool) Description() string {
-	return "Generate a high-quality image from a text description using DALL-E 3. " +
-		"Always craft a vivid, detailed prompt — style, lighting, mood, composition, camera angle. " +
-		"After generating, display the image directly in the chat."
+const generateImageName = "generate_image"
+const generateImageDescription = "Generate a high-quality image from a text description using DALL-E 3. " +
+	"Always craft a vivid, detailed prompt — style, lighting, mood, composition, camera angle. " +
+	"After generating, display the image directly in the chat."
+
+func (t *GenerateImageTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        generateImageName,
+		Description: generateImageDescription,
+		Parameters:  tools.SchemaFor[generateImageArgs](),
+		Inline:      true,
+		Display:     tools.DefaultDisplay(generateImageName, generateImageDescription),
+	}
 }
-func (t *GenerateImageTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[generateImageArgs]()
-}
-func (t *GenerateImageTool) RequiresConfirmation() bool         { return false }
-func (t *GenerateImageTool) InlineResult() bool                 { return true }
 
 // Execute generates the image, downloads it, saves it to SaveDir, and returns
 // a markdown image tag pointing at URLBase/<filename>.
-func (t *GenerateImageTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	var args generateImageArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: generate_image: invalid args: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: generate_image: invalid args: %w", err)
 	}
 	if strings.TrimSpace(args.Prompt) == "" {
-		return "", fmt.Errorf("tools: generate_image: prompt is required")
+		return tools.Result{}, fmt.Errorf("tools: generate_image: prompt is required")
 	}
 	if args.Size == "" {
 		args.Size = "1024x1024"
@@ -116,10 +118,10 @@ func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (strin
 
 	resp, err := t.client.CreateImage(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("tools: generate_image: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: generate_image: %w", err)
 	}
 	if len(resp.Data) == 0 {
-		return "", fmt.Errorf("tools: generate_image: no image returned")
+		return tools.Result{}, fmt.Errorf("tools: generate_image: no image returned")
 	}
 
 	img := resp.Data[0]
@@ -135,10 +137,10 @@ func (t *GenerateImageTool) Execute(ctx context.Context, argsJSON string) (strin
 		// Fall back to the CDN URL (expires in ~1 hour). Log so a recurring
 		// local-save failure is diagnosable instead of silently degrading.
 		log.Printf("tools: generate_image: local save failed, returning CDN URL: %v", err)
-		return fmt.Sprintf("![%s](%s)\n\n*Prompt: %s*", alt, img.URL, revisedPrompt), nil
+		return tools.Text(fmt.Sprintf("![%s](%s)\n\n*Prompt: %s*", alt, img.URL, revisedPrompt)), nil
 	}
 
-	return fmt.Sprintf("![%s](%s)\n\n*Prompt: %s*", alt, localURL, revisedPrompt), nil
+	return tools.Text(fmt.Sprintf("![%s](%s)\n\n*Prompt: %s*", alt, localURL, revisedPrompt)), nil
 }
 
 // download fetches an image from src, hands the bytes to storage, and

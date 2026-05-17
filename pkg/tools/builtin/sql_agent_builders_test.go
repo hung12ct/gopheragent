@@ -10,32 +10,33 @@ import (
 
 func TestCallSQLAgentTool_DefaultIdentity(t *testing.T) {
 	tool := NewCallSQLAgentTool(nil, "", nil, nil)
-	if got := tool.Name(); got != "call_sql_agent" {
-		t.Fatalf("Name default: got %q, want %q", got, "call_sql_agent")
+	desc := tool.Descriptor()
+	if desc.Name != "call_sql_agent" {
+		t.Fatalf("Name default: got %q, want %q", desc.Name, "call_sql_agent")
 	}
-	if !tool.RequiresConfirmation() {
+	if !desc.RequiresConfirmation {
 		t.Fatalf("RequiresConfirmation default: got false, want true")
 	}
-	if got := tool.Display().Label; got != "call_sql_agent" {
-		t.Fatalf("Display default label: got %q, want %q", got, "call_sql_agent")
+	if desc.Display.Label != "call_sql_agent" {
+		t.Fatalf("Display default label: got %q, want %q", desc.Display.Label, "call_sql_agent")
 	}
 }
 
 func TestCallSQLAgentTool_WithName(t *testing.T) {
 	tool := NewCallSQLAgentTool(nil, "", nil, nil).WithName("query_external_creatives")
-	if got := tool.Name(); got != "query_external_creatives" {
-		t.Fatalf("WithName: got %q, want %q", got, "query_external_creatives")
+	desc := tool.Descriptor()
+	if desc.Name != "query_external_creatives" {
+		t.Fatalf("WithName: got %q, want %q", desc.Name, "query_external_creatives")
 	}
-	// Default Display should reflect the new name.
-	if got := tool.Display().Label; got != "query_external_creatives" {
-		t.Fatalf("Display label after WithName: got %q, want %q", got, "query_external_creatives")
+	if desc.Display.Label != "query_external_creatives" {
+		t.Fatalf("Display label after WithName: got %q, want %q", desc.Display.Label, "query_external_creatives")
 	}
 }
 
 func TestCallSQLAgentTool_WithDisplay(t *testing.T) {
 	custom := tools.ToolDisplay{Label: "Querying creatives", Category: "analytics", IconHint: "database"}
 	tool := NewCallSQLAgentTool(nil, "", nil, nil).WithDisplay(custom)
-	got := tool.Display()
+	got := tool.Descriptor().Display
 	if got.Label != custom.Label || got.Category != custom.Category || got.IconHint != custom.IconHint {
 		t.Fatalf("WithDisplay: got %+v, want %+v", got, custom)
 	}
@@ -43,11 +44,11 @@ func TestCallSQLAgentTool_WithDisplay(t *testing.T) {
 
 func TestCallSQLAgentTool_WithRequiresConfirmation(t *testing.T) {
 	tool := NewCallSQLAgentTool(nil, "", nil, nil).WithRequiresConfirmation(false)
-	if tool.RequiresConfirmation() {
+	if tool.Descriptor().RequiresConfirmation {
 		t.Fatalf("WithRequiresConfirmation(false): got true, want false")
 	}
 	tool.WithRequiresConfirmation(true)
-	if !tool.RequiresConfirmation() {
+	if !tool.Descriptor().RequiresConfirmation {
 		t.Fatalf("WithRequiresConfirmation(true): got false, want true")
 	}
 }
@@ -68,22 +69,19 @@ func TestCallSQLAgentTool_WithAllowMutations(t *testing.T) {
 }
 
 func TestExecuteSQLTool_RejectsMutationsWhenDisabled(t *testing.T) {
-	// Mutation-off (default) — Execute must refuse INSERT/UPDATE/DELETE
-	// before touching the DB. We pass db=nil to prove no DB call happens
-	// on the rejection path.
 	exec := &executeSQLTool{db: nil, allowMutations: false}
 	out, err := exec.Execute(context.Background(), `{"sql_query":"UPDATE customers SET active = false WHERE id = 1"}`)
 	if err != nil {
 		t.Fatalf("Execute returned a hard error instead of a structured rejection: %v", err)
 	}
-	if !strings.Contains(out, "not permitted") || !strings.Contains(out, "WithAllowMutations") {
-		t.Fatalf("rejection payload should mention permission + the enabling builder, got %s", out)
+	if !strings.Contains(out.Text, "not permitted") || !strings.Contains(out.Text, "WithAllowMutations") {
+		t.Fatalf("rejection payload should mention permission + the enabling builder, got %s", out.Text)
 	}
 }
 
 func TestExecuteSQLTool_DescriptionReflectsMutationFlag(t *testing.T) {
-	off := (&executeSQLTool{allowMutations: false}).Description()
-	on := (&executeSQLTool{allowMutations: true}).Description()
+	off := (&executeSQLTool{allowMutations: false}).Descriptor().Description
+	on := (&executeSQLTool{allowMutations: true}).Descriptor().Description
 	if !strings.Contains(off, "read-only") || strings.Contains(off, "INSERT") {
 		t.Fatalf("read-only description regressed: %s", off)
 	}
@@ -108,8 +106,9 @@ func TestCallSQLAgentTool_BuildersChain(t *testing.T) {
 		WithName("custom").
 		WithDisplay(tools.ToolDisplay{Label: "Custom Label"}).
 		WithRequiresConfirmation(false)
-	if tool.Name() != "custom" || tool.Display().Label != "Custom Label" || tool.RequiresConfirmation() {
-		t.Fatalf("chained builders: got name=%q label=%q confirm=%v", tool.Name(), tool.Display().Label, tool.RequiresConfirmation())
+	desc := tool.Descriptor()
+	if desc.Name != "custom" || desc.Display.Label != "Custom Label" || desc.RequiresConfirmation {
+		t.Fatalf("chained builders: got name=%q label=%q confirm=%v", desc.Name, desc.Display.Label, desc.RequiresConfirmation)
 	}
 }
 
@@ -129,12 +128,12 @@ func TestCallSQLAgentTool_WithExecuteSQLConfirmation(t *testing.T) {
 }
 
 func TestExecuteSQLTool_RequiresConfirmationReflectsFlag(t *testing.T) {
-	off := (&executeSQLTool{}).RequiresConfirmation()
-	on := (&executeSQLTool{requiresConfirmation: true}).RequiresConfirmation()
+	off := (&executeSQLTool{}).Descriptor().RequiresConfirmation
+	on := (&executeSQLTool{requiresConfirmation: true}).Descriptor().RequiresConfirmation
 	if off {
-		t.Fatalf("default executeSQLTool.RequiresConfirmation() should be false, got true")
+		t.Fatalf("default executeSQLTool.RequiresConfirmation should be false, got true")
 	}
 	if !on {
-		t.Fatalf("executeSQLTool.RequiresConfirmation() should follow the flag, got false")
+		t.Fatalf("executeSQLTool.RequiresConfirmation should follow the flag, got false")
 	}
 }

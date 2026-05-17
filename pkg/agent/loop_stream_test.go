@@ -20,13 +20,17 @@ type echoTool struct {
 	confirm bool
 }
 
-func (t *echoTool) Name() string                          { return t.name }
-func (t *echoTool) Description() string                   { return "echoes input" }
-func (t *echoTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (t *echoTool) RequiresConfirmation() bool             { return t.confirm }
-func (t *echoTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *echoTool) Execute(_ context.Context, args string) (string, error) {
-	return "echo:" + args, nil
+func (t *echoTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:                 t.name,
+		Description:          "echoes input",
+		RequiresConfirmation: t.confirm,
+		Display:              tools.DefaultDisplay(t.name, "echoes input"),
+	}
+}
+
+func (t *echoTool) Execute(_ context.Context, args string) (tools.Result, error) {
+	return tools.Text("echo:" + args), nil
 }
 
 type scriptProvider struct {
@@ -639,13 +643,16 @@ type countingEchoTool struct {
 	counter *int
 }
 
-func (t *countingEchoTool) Name() string                              { return t.name }
-func (t *countingEchoTool) Description() string                       { return "counting echo" }
-func (t *countingEchoTool) ParametersSchema() tools.ToolSchema  { return tools.ToolSchema{} }
-func (t *countingEchoTool) RequiresConfirmation() bool                { return false }
-func (t *countingEchoTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *countingEchoTool) Execute(_ context.Context, args string) (string, error) {
-	*t.counter++
-	return "echo:" + args, nil
+func (t *countingEchoTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        t.name,
+		Description: "counting echo",
+		Cacheable:   true,
+		Display:     tools.DefaultDisplay(t.name, "counting echo"),
+	}
 }
-func (t *countingEchoTool) Cacheable() bool { return true }
+
+func (t *countingEchoTool) Execute(_ context.Context, args string) (tools.Result, error) {
+	*t.counter++
+	return tools.Text("echo:" + args), nil
+}

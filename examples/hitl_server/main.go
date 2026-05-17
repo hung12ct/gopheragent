@@ -132,24 +132,27 @@ func (b *approvalBroker) Decide(id string, approved bool) error {
 // not actually run a shell — the point is to exercise the HITL flow.
 type shellTool struct{}
 
-func (shellTool) Name() string        { return "shell" }
-func (shellTool) Description() string { return "Execute a shell command (simulation)." }
-func (shellTool) ParametersSchema() tools.ToolSchema {
-	return tools.ToolSchema{
-		Type: "object",
-		Properties: map[string]any{
-			"command": map[string]any{
-				"type":        "string",
-				"description": "Shell command to run.",
+func (shellTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        "shell",
+		Description: "Execute a shell command (simulation).",
+		Parameters: tools.ToolSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Shell command to run.",
+				},
 			},
+			Required: []string{"command"},
 		},
-		Required: []string{"command"},
+		RequiresConfirmation: true,
+		Display:              tools.DefaultDisplay("shell", "Execute a shell command (simulation)."),
 	}
 }
-func (shellTool) RequiresConfirmation() bool { return true }
-func (_t shellTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(_t.Name(), _t.Description()) }
-func (shellTool) Execute(_ context.Context, argsJSON string) (string, error) {
-	return fmt.Sprintf("(simulated) executed: %s", argsJSON), nil
+
+func (shellTool) Execute(_ context.Context, argsJSON string) (tools.Result, error) {
+	return tools.Text(fmt.Sprintf("(simulated) executed: %s", argsJSON)), nil
 }
 
 // ── Server wiring ───────────────────────────────────────────────────────────

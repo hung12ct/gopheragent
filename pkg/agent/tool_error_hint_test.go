@@ -97,16 +97,19 @@ type failingTool struct {
 	failOnce bool
 }
 
-func (t *failingTool) Name() string                    { return "doomed" }
-func (t *failingTool) Description() string             { return "always fails" }
-func (t *failingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (t *failingTool) RequiresConfirmation() bool      { return false }
-func (t *failingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *failingTool) Execute(_ context.Context, _ string) (string, error) {
+func (t *failingTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        "doomed",
+		Description: "always fails",
+		Display:     tools.DefaultDisplay("doomed", "always fails"),
+	}
+}
+
+func (t *failingTool) Execute(_ context.Context, _ string) (tools.Result, error) {
 	t.mu.Lock()
 	t.nCalls++
 	t.mu.Unlock()
-	return "", errors.New("UPSTREAM_503: gateway said no")
+	return tools.Result{}, errors.New("UPSTREAM_503: gateway said no")
 }
 
 func TestToolError_WrappedInToolResult(t *testing.T) {

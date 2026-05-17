@@ -112,40 +112,43 @@ func NewMemorySetTool(store MemoryStore) *MemorySetTool {
 	return &MemorySetTool{Store: store}
 }
 
-func (t *MemorySetTool) Name() string { return "memory_set" }
-func (t *MemorySetTool) Description() string {
-	return "Save a string value under a named key for the current session. Overwrites any previous value."
-}
+const memorySetName = "memory_set"
+const memorySetDescription = "Save a string value under a named key for the current session. Overwrites any previous value."
+
 type memorySetArgs struct {
 	Key   string `json:"key"   description:"Memory key (stable identifier, e.g. 'user_preferences')."`
 	Value string `json:"value" description:"Value to store. Serialise structured data yourself (e.g. JSON)."`
 }
 
-func (t *MemorySetTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[memorySetArgs]()
+func (t *MemorySetTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        memorySetName,
+		Description: memorySetDescription,
+		Parameters:  tools.SchemaFor[memorySetArgs](),
+		Display:     tools.DefaultDisplay(memorySetName, memorySetDescription),
+	}
 }
-func (t *MemorySetTool) RequiresConfirmation() bool { return false }
-func (t *MemorySetTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *MemorySetTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+
+func (t *MemorySetTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	var args memorySetArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	args.Key = strings.TrimSpace(args.Key)
 	if args.Key == "" {
-		return "", fmt.Errorf("tools: key is required")
+		return tools.Result{}, fmt.Errorf("tools: key is required")
 	}
 	if t.Store == nil {
-		return "", fmt.Errorf("tools: memory_set has no store configured")
+		return tools.Result{}, fmt.Errorf("tools: memory_set has no store configured")
 	}
 	if err := t.Store.Set(ctx, sessionKey, args.Key, args.Value); err != nil {
-		return "", fmt.Errorf("tools: memory_set: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: memory_set: %w", err)
 	}
-	return fmt.Sprintf(`{"ok":true,"key":%q}`, args.Key), nil
+	return tools.Text(fmt.Sprintf(`{"ok":true,"key":%q}`, args.Key)), nil
 }
 
 // MemoryGetTool reads a previously saved value from the current session.
@@ -158,38 +161,41 @@ func NewMemoryGetTool(store MemoryStore) *MemoryGetTool {
 	return &MemoryGetTool{Store: store}
 }
 
-func (t *MemoryGetTool) Name() string { return "memory_get" }
-func (t *MemoryGetTool) Description() string {
-	return "Read a value previously saved with memory_set for the current session."
-}
+const memoryGetName = "memory_get"
+const memoryGetDescription = "Read a value previously saved with memory_set for the current session."
+
 type memoryGetArgs struct {
 	Key string `json:"key" description:"Memory key to read."`
 }
 
-func (t *MemoryGetTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[memoryGetArgs]()
+func (t *MemoryGetTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        memoryGetName,
+		Description: memoryGetDescription,
+		Parameters:  tools.SchemaFor[memoryGetArgs](),
+		Display:     tools.DefaultDisplay(memoryGetName, memoryGetDescription),
+	}
 }
-func (t *MemoryGetTool) RequiresConfirmation() bool { return false }
-func (t *MemoryGetTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *MemoryGetTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+
+func (t *MemoryGetTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	var args memoryGetArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	args.Key = strings.TrimSpace(args.Key)
 	if args.Key == "" {
-		return "", fmt.Errorf("tools: key is required")
+		return tools.Result{}, fmt.Errorf("tools: key is required")
 	}
 	if t.Store == nil {
-		return "", fmt.Errorf("tools: memory_get has no store configured")
+		return tools.Result{}, fmt.Errorf("tools: memory_get has no store configured")
 	}
 	v, ok, err := t.Store.Get(ctx, sessionKey, args.Key)
 	if err != nil {
-		return "", fmt.Errorf("tools: memory_get: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: memory_get: %w", err)
 	}
 	envelope := map[string]any{
 		"key":   args.Key,
@@ -198,9 +204,9 @@ func (t *MemoryGetTool) Execute(ctx context.Context, argsJSON string) (string, e
 	}
 	out, err := json.Marshal(envelope)
 	if err != nil {
-		return "", fmt.Errorf("tools: marshal: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: marshal: %w", err)
 	}
-	return string(out), nil
+	return tools.Text(string(out)), nil
 }
 
 // MemoryDeleteTool removes a key from the current session's memory.
@@ -213,39 +219,42 @@ func NewMemoryDeleteTool(store MemoryStore) *MemoryDeleteTool {
 	return &MemoryDeleteTool{Store: store}
 }
 
-func (t *MemoryDeleteTool) Name() string { return "memory_delete" }
-func (t *MemoryDeleteTool) Description() string {
-	return "Delete a key from the current session's memory. No error when the key does not exist."
-}
+const memoryDeleteName = "memory_delete"
+const memoryDeleteDescription = "Delete a key from the current session's memory. No error when the key does not exist."
+
 type memoryDeleteArgs struct {
 	Key string `json:"key" description:"Memory key to delete."`
 }
 
-func (t *MemoryDeleteTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[memoryDeleteArgs]()
+func (t *MemoryDeleteTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        memoryDeleteName,
+		Description: memoryDeleteDescription,
+		Parameters:  tools.SchemaFor[memoryDeleteArgs](),
+		Display:     tools.DefaultDisplay(memoryDeleteName, memoryDeleteDescription),
+	}
 }
-func (t *MemoryDeleteTool) RequiresConfirmation() bool { return false }
-func (t *MemoryDeleteTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *MemoryDeleteTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+
+func (t *MemoryDeleteTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	var args memoryDeleteArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("tools: invalid arguments: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
 	}
 	args.Key = strings.TrimSpace(args.Key)
 	if args.Key == "" {
-		return "", fmt.Errorf("tools: key is required")
+		return tools.Result{}, fmt.Errorf("tools: key is required")
 	}
 	if t.Store == nil {
-		return "", fmt.Errorf("tools: memory_delete has no store configured")
+		return tools.Result{}, fmt.Errorf("tools: memory_delete has no store configured")
 	}
 	if err := t.Store.Delete(ctx, sessionKey, args.Key); err != nil {
-		return "", fmt.Errorf("tools: memory_delete: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: memory_delete: %w", err)
 	}
-	return fmt.Sprintf(`{"ok":true,"key":%q}`, args.Key), nil
+	return tools.Text(fmt.Sprintf(`{"ok":true,"key":%q}`, args.Key)), nil
 }
 
 // MemoryListTool returns all keys stored in the current session's memory.
@@ -258,26 +267,29 @@ func NewMemoryListTool(store MemoryStore) *MemoryListTool {
 	return &MemoryListTool{Store: store}
 }
 
-func (t *MemoryListTool) Name() string { return "memory_list" }
-func (t *MemoryListTool) Description() string {
-	return "List all keys currently stored in the session's memory."
+const memoryListName = "memory_list"
+const memoryListDescription = "List all keys currently stored in the session's memory."
+
+func (t *MemoryListTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        memoryListName,
+		Description: memoryListDescription,
+		Parameters:  tools.SchemaFor[struct{}](),
+		Display:     tools.DefaultDisplay(memoryListName, memoryListDescription),
+	}
 }
-func (t *MemoryListTool) ParametersSchema() tools.ToolSchema {
-	return tools.SchemaFor[struct{}]()
-}
-func (t *MemoryListTool) RequiresConfirmation() bool { return false }
-func (t *MemoryListTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *MemoryListTool) Execute(ctx context.Context, _ string) (string, error) {
+
+func (t *MemoryListTool) Execute(ctx context.Context, _ string) (tools.Result, error) {
 	sessionKey, err := memorySessionKey(ctx)
 	if err != nil {
-		return "", err
+		return tools.Result{}, err
 	}
 	if t.Store == nil {
-		return "", fmt.Errorf("tools: memory_list has no store configured")
+		return tools.Result{}, fmt.Errorf("tools: memory_list has no store configured")
 	}
 	keys, err := t.Store.List(ctx, sessionKey)
 	if err != nil {
-		return "", fmt.Errorf("tools: memory_list: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: memory_list: %w", err)
 	}
 	if keys == nil {
 		keys = []string{}
@@ -288,7 +300,7 @@ func (t *MemoryListTool) Execute(ctx context.Context, _ string) (string, error) 
 	}
 	out, err := json.Marshal(envelope)
 	if err != nil {
-		return "", fmt.Errorf("tools: marshal: %w", err)
+		return tools.Result{}, fmt.Errorf("tools: marshal: %w", err)
 	}
-	return string(out), nil
+	return tools.Text(string(out)), nil
 }

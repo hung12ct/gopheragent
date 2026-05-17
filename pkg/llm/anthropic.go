@@ -127,12 +127,13 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 
 	var anthropicTools []anthropic.ToolUnionParam
 	if availableTools != nil {
-		for _, t := range availableTools.GetAll() {
-			schema := t.ParametersSchema()
+		for _, t := range availableTools.All() {
+			desc := t.Descriptor()
+			schema := desc.Parameters
 			anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{
 				OfTool: &anthropic.ToolParam{
-					Name:        t.Name(),
-					Description: anthropic.String(t.Description()),
+					Name:        desc.Name,
+					Description: anthropic.String(desc.Description),
 					InputSchema: anthropic.ToolInputSchemaParam{
 						Properties: schema.Properties,
 						Required:   schema.Required,

@@ -17,14 +17,17 @@ type countingTool struct {
 	calls atomic.Int32
 }
 
-func (c *countingTool) Name() string                       { return c.name }
-func (c *countingTool) Description() string                { return "counts calls" }
-func (c *countingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (c *countingTool) RequiresConfirmation() bool         { return false }
-func (c *countingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(c.Name(), c.Description()) }
-func (c *countingTool) Execute(_ context.Context, args string) (string, error) {
+func (c *countingTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        c.name,
+		Description: "counts calls",
+		Display:     tools.DefaultDisplay(c.name, "counts calls"),
+	}
+}
+
+func (c *countingTool) Execute(_ context.Context, args string) (tools.Result, error) {
 	c.calls.Add(1)
-	return "ok:" + args, nil
+	return tools.Text("ok:" + args), nil
 }
 
 func fanoutCalls(n int) []PendingToolCall {

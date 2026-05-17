@@ -28,7 +28,7 @@ func TestCodeInterpreterTool_RunsPython(t *testing.T) {
 		ExitCode int    `json:"exit_code"`
 		TimedOut bool   `json:"timed_out"`
 	}
-	if err := json.Unmarshal([]byte(out), &env); err != nil {
+	if err := json.Unmarshal([]byte(out.Text), &env); err != nil {
 		t.Fatalf("bad envelope: %v", err)
 	}
 	if strings.TrimSpace(env.Stdout) != "4" {
@@ -56,7 +56,7 @@ func TestCodeInterpreterTool_CapturesStderrAndExitCode(t *testing.T) {
 		Stderr   string `json:"stderr"`
 		ExitCode int    `json:"exit_code"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if !strings.Contains(env.Stderr, "boom") {
 		t.Fatalf("stderr: %q", env.Stderr)
 	}
@@ -78,7 +78,7 @@ func TestCodeInterpreterTool_TimesOut(t *testing.T) {
 	var env struct {
 		TimedOut bool `json:"timed_out"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if !env.TimedOut {
 		t.Fatalf("expected timeout flag, envelope: %s", out)
 	}
@@ -93,7 +93,7 @@ func TestCodeInterpreterTool_RejectsUnknownLanguage(t *testing.T) {
 }
 
 func TestCodeInterpreterTool_RequiresConfirmation(t *testing.T) {
-	if !NewCodeInterpreterTool().RequiresConfirmation() {
+	if !NewCodeInterpreterTool().Descriptor().RequiresConfirmation {
 		t.Fatal("code_interpreter must require confirmation")
 	}
 }

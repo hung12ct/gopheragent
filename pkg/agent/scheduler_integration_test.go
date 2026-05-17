@@ -21,16 +21,19 @@ type recordingTool struct {
 	seen []string
 }
 
-func (t *recordingTool) Name() string                   { return t.name }
-func (t *recordingTool) Description() string            { return "records invocations" }
-func (t *recordingTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (t *recordingTool) RequiresConfirmation() bool     { return false }
-func (t *recordingTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *recordingTool) Execute(_ context.Context, args string) (string, error) {
+func (t *recordingTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        t.name,
+		Description: "records invocations",
+		Display:     tools.DefaultDisplay(t.name, "records invocations"),
+	}
+}
+
+func (t *recordingTool) Execute(_ context.Context, args string) (tools.Result, error) {
 	t.mu.Lock()
 	t.seen = append(t.seen, args)
 	t.mu.Unlock()
-	return t.result, nil
+	return tools.Text(t.result), nil
 }
 
 func (t *recordingTool) receivedArgs() []string {

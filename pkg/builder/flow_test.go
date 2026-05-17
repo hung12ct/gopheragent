@@ -12,12 +12,17 @@ import (
 
 type dummyTool struct{ name string }
 
-func (d *dummyTool) Name() string                                              { return d.name }
-func (d *dummyTool) Description() string                                       { return "test" }
-func (d *dummyTool) ParametersSchema() tools.ToolSchema                        { return tools.ToolSchema{} }
-func (d *dummyTool) RequiresConfirmation() bool                                { return false }
-func (d *dummyTool) Display() tools.ToolDisplay { return tools.DefaultDisplay(d.Name(), d.Description()) }
-func (d *dummyTool) Execute(_ context.Context, _ string) (string, error)       { return "", nil }
+func (d *dummyTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        d.name,
+		Description: "test",
+		Display:     tools.DefaultDisplay(d.name, "test"),
+	}
+}
+
+func (d *dummyTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Result{}, nil
+}
 
 func writeYAML(t *testing.T, content string) string {
 	t.Helper()

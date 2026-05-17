@@ -22,13 +22,13 @@ func Chain(t Tool, mws ...Middleware) Tool {
 	return t
 }
 
-// wrappedTool delegates all Tool methods to its inner Tool but overrides Execute.
+// wrappedTool delegates Descriptor to its embedded Tool but overrides Execute.
 type wrappedTool struct {
 	Tool
-	executeFn func(ctx context.Context, argsJSON string) (string, error)
+	executeFn func(ctx context.Context, argsJSON string) (Result, error)
 }
 
-func (w *wrappedTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (w *wrappedTool) Execute(ctx context.Context, argsJSON string) (Result, error) {
 	return w.executeFn(ctx, argsJSON)
 }
 
@@ -97,11 +97,12 @@ func WithLogging(logger *slog.Logger, opts ...LoggingOption) Middleware {
 		cfg.successLevel = slog.LevelInfo
 	}
 	return func(next Tool) Tool {
+		name := next.Descriptor().Name
 		return &wrappedTool{
 			Tool: next,
-			executeFn: func(ctx context.Context, argsJSON string) (string, error) {
+			executeFn: func(ctx context.Context, argsJSON string) (Result, error) {
 				attrs := []slog.Attr{
-					slog.String("tool", next.Name()),
+					slog.String("tool", name),
 					slog.String("tool_call_id", ToolCallIDFromContext(ctx)),
 				}
 				if cfg.extractor != nil {
@@ -114,7 +115,7 @@ func WithLogging(logger *slog.Logger, opts ...LoggingOption) Middleware {
 				if err != nil {
 					logger.LogAttrs(ctx, slog.LevelError, "tool error", append(exitAttrs, slog.Any("error", err))...)
 				} else {
-					logger.LogAttrs(ctx, cfg.successLevel, "tool ok", append(exitAttrs, slog.Int("result_bytes", len(result)))...)
+					logger.LogAttrs(ctx, cfg.successLevel, "tool ok", append(exitAttrs, slog.Int("result_bytes", len(result.Text)))...)
 				}
 				return result, err
 			},
@@ -140,12 +141,13 @@ func truncateArgs(args string, maxBytes int) string {
 //	})
 func WithTiming(onDone func(toolName string, d time.Duration, err error)) Middleware {
 	return func(next Tool) Tool {
+		name := next.Descriptor().Name
 		return &wrappedTool{
 			Tool: next,
-			executeFn: func(ctx context.Context, argsJSON string) (string, error) {
+			executeFn: func(ctx context.Context, argsJSON string) (Result, error) {
 				start := time.Now()
 				result, err := next.Execute(ctx, argsJSON)
-				onDone(next.Name(), time.Since(start), err)
+				onDone(name, time.Since(start), err)
 				return result, err
 			},
 		}
@@ -158,7 +160,7 @@ func WithTimeout(d time.Duration) Middleware {
 	return func(next Tool) Tool {
 		return &wrappedTool{
 			Tool: next,
-			executeFn: func(ctx context.Context, argsJSON string) (string, error) {
+			executeFn: func(ctx context.Context, argsJSON string) (Result, error) {
 				tCtx, cancel := context.WithTimeout(ctx, d)
 				defer cancel()
 				return next.Execute(tCtx, argsJSON)
@@ -182,7 +184,7 @@ func WithRateLimit(rps float64) Middleware {
 
 		return &wrappedTool{
 			Tool: next,
-			executeFn: func(ctx context.Context, argsJSON string) (string, error) {
+			executeFn: func(ctx context.Context, argsJSON string) (Result, error) {
 				mu.Lock()
 				nextAllowed := lastCall.Add(interval)
 				wait := time.Until(nextAllowed)
@@ -192,7 +194,7 @@ func WithRateLimit(rps float64) Middleware {
 					select {
 					case <-time.After(wait):
 					case <-ctx.Done():
-						return "", fmt.Errorf("rate limit wait cancelled: %w", ctx.Err())
+						return Result{}, fmt.Errorf("rate limit wait cancelled: %w", ctx.Err())
 					}
 				}
 
@@ -206,7 +208,7 @@ func WithRateLimit(rps float64) Middleware {
 	}
 }
 
-// WithSchemaValidation validates argsJSON against the tool's ParametersSchema
+// WithSchemaValidation validates argsJSON against the tool's ToolDescriptor.Parameters
 // before delegating to Execute. It implements a practical subset of JSON
 // Schema: JSON well-formedness, object-type check, required-property check,
 // and per-property primitive-type check (string / number / integer / boolean
@@ -214,37 +216,39 @@ func WithRateLimit(rps float64) Middleware {
 // No enum, pattern, minimum, additionalProperties, $ref, or nested property
 // recursion beyond the top level.
 //
-// Tools whose ParametersSchema() returns a zero value (no type, no
+// Tools whose Descriptor().Parameters is a zero value (no type, no
 // properties, no required) are passed through unchanged.
 //
-// The schema is captured once per wrap so ParametersSchema() is not re-read
+// The schema is captured once per wrap so Descriptor() is not re-read
 // on every call.
 func WithSchemaValidation() Middleware {
 	return func(next Tool) Tool {
-		schema := next.ParametersSchema()
+		desc := next.Descriptor()
+		schema := desc.Parameters
+		name := desc.Name
 		empty := schema.Type == "" && len(schema.Properties) == 0 && len(schema.Required) == 0
 		return &wrappedTool{
 			Tool: next,
-			executeFn: func(ctx context.Context, argsJSON string) (string, error) {
+			executeFn: func(ctx context.Context, argsJSON string) (Result, error) {
 				if empty {
 					return next.Execute(ctx, argsJSON)
 				}
 				var raw any
 				if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
-					return "", fmt.Errorf("tools: schema validation failed for %s: malformed JSON: %w", next.Name(), err)
+					return Result{}, fmt.Errorf("tools: schema validation failed for %s: malformed JSON: %w", name, err)
 				}
 				if schema.Type == "object" {
 					obj, ok := raw.(map[string]any)
 					if !ok {
-						return "", fmt.Errorf("tools: schema validation failed for %s: expected JSON object", next.Name())
+						return Result{}, fmt.Errorf("tools: schema validation failed for %s: expected JSON object", name)
 					}
 					for _, req := range schema.Required {
 						if _, present := obj[req]; !present {
-							return "", fmt.Errorf("tools: schema validation failed for %s: missing required property %q", next.Name(), req)
+							return Result{}, fmt.Errorf("tools: schema validation failed for %s: missing required property %q", name, req)
 						}
 					}
-					for name, def := range schema.Properties {
-						v, present := obj[name]
+					for pname, def := range schema.Properties {
+						v, present := obj[pname]
 						if !present {
 							continue
 						}
@@ -257,7 +261,7 @@ func WithSchemaValidation() Middleware {
 							continue
 						}
 						if !matchJSONType(declared, v) {
-							return "", fmt.Errorf("tools: schema validation failed for %s: property %q: expected %s, got %T", next.Name(), name, declared, v)
+							return Result{}, fmt.Errorf("tools: schema validation failed for %s: property %q: expected %s, got %T", name, pname, declared, v)
 						}
 					}
 				}

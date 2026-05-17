@@ -30,7 +30,7 @@ func TestMemoryTools_SetGetRoundTrip(t *testing.T) {
 		Found bool   `json:"found"`
 		Value string `json:"value"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if !env.Found || env.Value != "alice" {
 		t.Fatalf("unexpected envelope: %+v", env)
 	}
@@ -48,11 +48,11 @@ func TestMemoryTools_SessionsAreIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _ := get.Execute(memCtx("s1"), `{"key":"k"}`)
-	if !strings.Contains(out, `"value":"one"`) {
+	if !strings.Contains(out.Text, `"value":"one"`) {
 		t.Fatalf("s1 cross-talk: %s", out)
 	}
 	out, _ = get.Execute(memCtx("s2"), `{"key":"k"}`)
-	if !strings.Contains(out, `"value":"two"`) {
+	if !strings.Contains(out.Text, `"value":"two"`) {
 		t.Fatalf("s2 cross-talk: %s", out)
 	}
 }
@@ -68,7 +68,7 @@ func TestMemoryTools_GetMissingKey(t *testing.T) {
 		Found bool   `json:"found"`
 		Value string `json:"value"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if env.Found || env.Value != "" {
 		t.Fatalf("missing key should not be found: %+v", env)
 	}
@@ -86,7 +86,7 @@ func TestMemoryTools_Delete(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	out, _ := get.Execute(ctx, `{"key":"k"}`)
-	if !strings.Contains(out, `"found":false`) {
+	if !strings.Contains(out.Text, `"found":false`) {
 		t.Fatalf("key still present: %s", out)
 	}
 }
@@ -108,7 +108,7 @@ func TestMemoryTools_ListReturnsSortedKeys(t *testing.T) {
 		Keys  []string `json:"keys"`
 		Count int      `json:"count"`
 	}
-	_ = json.Unmarshal([]byte(out), &env)
+	_ = json.Unmarshal([]byte(out.Text), &env)
 	if env.Count != 3 {
 		t.Fatalf("count: %d", env.Count)
 	}

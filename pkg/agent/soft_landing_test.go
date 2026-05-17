@@ -92,11 +92,14 @@ func (p *toolEverProvider) idStr() string {
 
 type noopTool struct{ name string }
 
-func (t *noopTool) Name() string                       { return t.name }
-func (t *noopTool) Description() string                { return "no-op" }
-func (t *noopTool) ParametersSchema() tools.ToolSchema { return tools.ToolSchema{} }
-func (t *noopTool) RequiresConfirmation() bool         { return false }
-func (t *noopTool) Display() tools.ToolDisplay         { return tools.DefaultDisplay(t.Name(), t.Description()) }
-func (t *noopTool) Execute(_ context.Context, _ string) (string, error) {
-	return `"ok"`, nil
+func (t *noopTool) Descriptor() tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Name:        t.name,
+		Description: "no-op",
+		Display:     tools.DefaultDisplay(t.name, "no-op"),
+	}
+}
+
+func (t *noopTool) Execute(_ context.Context, _ string) (tools.Result, error) {
+	return tools.Text(`"ok"`), nil
 }
