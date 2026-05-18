@@ -76,6 +76,25 @@ const (
 	LimitKindProviderMaxTokens LimitKind = "provider_max_tokens"
 )
 
+// LimitReason is an optional sub-classification for LimitExhaustedEvent.
+// Empty reason = "no further detail" (clean truncation, plain cap trip).
+// Anthropic's docs call out the incomplete-tool-use case as one that adopters
+// should handle differently: a clean text truncation can be presented as
+// "model cut off; continue?", but a truncation that ate a tool_use mid-JSON
+// strands the turn (the model wanted to call a tool but never finished naming
+// the arguments) — auto-retry with a larger MaxTokens is the documented
+// recovery. Custom providers may invent their own reasons.
+type LimitReason string
+
+const (
+	// LimitReasonIncompleteToolUse: the provider truncated the stream
+	// mid-tool_use, leaving a partial JSON Input that the SDK could not
+	// finalize. Adopters should retry the request with a larger MaxTokens
+	// rather than treat the response as complete. Currently emitted by the
+	// Anthropic provider only.
+	LimitReasonIncompleteToolUse LimitReason = "incomplete_tool_use"
+)
+
 // EventPayload is a sealed interface implemented by every typed event payload.
 // Every payload reports its matching StreamEventType so the Event() helper
 // can build a self-consistent StreamEvent in one call. Use a type switch on
@@ -258,10 +277,16 @@ func (SessionCreatedEvent) eventType() StreamEventType { return EventTypeSession
 // configured ceiling and Used is the actual count at the moment of the
 // trip. For provider truncation kinds, Used is unset (the provider does
 // not report token usage in the same shape).
+//
+// Reason is an optional sub-classification — currently used by the Anthropic
+// provider to flag LimitReasonIncompleteToolUse so adopters can distinguish
+// "model cut off cleanly" from "model truncated mid-tool_use, retry required"
+// without inspecting the LLMResult themselves. Zero value = no further detail.
 type LimitExhaustedEvent struct {
-	Kind  LimitKind `json:"kind"`
-	Limit int       `json:"limit"`
-	Used  int       `json:"used,omitempty"`
+	Kind   LimitKind   `json:"kind"`
+	Limit  int         `json:"limit"`
+	Used   int         `json:"used,omitempty"`
+	Reason LimitReason `json:"reason,omitempty"`
 }
 
 func (LimitExhaustedEvent) isEventPayload()            {}

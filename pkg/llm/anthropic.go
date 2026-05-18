@@ -191,10 +191,27 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	defer stream.Close()
 
 	accumulated := anthropic.Message{}
+	truncated := false
 	for stream.Next() {
 		event := stream.Current()
 		if err := accumulated.Accumulate(event); err != nil {
-			return agent.LLMResult{}, fmt.Errorf("anthropic accumulate error: %w", err)
+			// Accumulate fails when the SDK re-marshals an accumulated
+			// tool_use whose Input json.RawMessage was cut off mid-stream
+			// (typical when MaxTokens hits inside a large tool argument).
+			// If at least one content block already landed, treat this as
+			// soft truncation: emit the typed cap event so adopters can
+			// raise MaxTokens, and ship whatever's intact. Partial tool_use
+			// blocks are dropped during extraction below.
+			if len(accumulated.Content) == 0 {
+				return agent.LLMResult{}, fmt.Errorf("anthropic accumulate error: %w", err)
+			}
+			streamChan <- agent.Event(agent.LimitExhaustedEvent{
+				Kind:   agent.LimitKindProviderMaxTokens,
+				Limit:  int(p.MaxTokens),
+				Reason: agent.LimitReasonIncompleteToolUse,
+			})
+			truncated = true
+			break
 		}
 
 		switch variant := event.AsAny().(type) {
@@ -227,14 +244,15 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		}
 	}
 
-	if stream.Err() != nil {
+	if !truncated && stream.Err() != nil {
 		return agent.LLMResult{}, fmt.Errorf("anthropic stream error: %w", stream.Err())
 	}
 
 	// Surface the per-call MaxTokens truncation as a typed cap event so
 	// adopters can render "model truncated; raise MaxTokens" instead of
-	// silently shipping half-rendered code blocks.
-	if string(accumulated.StopReason) == "max_tokens" {
+	// silently shipping half-rendered code blocks. Skipped when soft
+	// truncation already fired the same event above.
+	if !truncated && string(accumulated.StopReason) == "max_tokens" {
 		streamChan <- agent.LimitExhaustedStreamEvent(agent.LimitKindProviderMaxTokens, int(p.MaxTokens), 0)
 	}
 
@@ -247,7 +265,12 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		case anthropic.ToolUseBlock:
 			argsBytes, err := json.Marshal(v.Input)
 			if err != nil {
-				return agent.LLMResult{}, fmt.Errorf("failed to marshal tool input for %s: %w", v.Name, err)
+				// A complete tool_use always has well-formed Input (the
+				// SDK validates at ContentBlockStopEvent), so a marshal
+				// failure here means the stream cut off before the block
+				// finalized. Drop the partial call — dispatching it would
+				// just produce a bad-args tool error.
+				continue
 			}
 			// When the caller requested structured output, Anthropic answers
 			// by calling the synthesized tool — its Input IS the JSON the
