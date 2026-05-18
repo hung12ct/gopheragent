@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sync"
+
+	"github.com/hung12ct/gopheragent/pkg/history"
 )
 
 // loopKillThreshold is the number of identical consecutive calls before the loop is killed.
@@ -45,6 +47,57 @@ type loopDetector struct {
 // newLoopDetector creates a fresh loop detector. Create one per agent run.
 func newLoopDetector() *loopDetector {
 	return &loopDetector{}
+}
+
+// loopDetectorFromHistory builds a loop detector pre-seeded with every paired
+// assistant tool_call + tool_result found in msgs. Without this, a fresh
+// detector resets on every iterateMessages entry (StartChat / Regenerate /
+// Continue) and misses cross-turn loops — Phin observed Claude Sonnet 4.6
+// calling mongo_sample on the same empty collection across four separate
+// turns without ever tripping the per-turn detector.
+//
+// False positives are prevented by Detect()'s own break-on-different-name
+// logic: even if the ring holds calls to many tools, only the contiguous
+// trailing run of the same tool counts against the current call. Cap the
+// seed work at maxRecentCalls — anything older would be overwritten by the
+// ring anyway.
+func loopDetectorFromHistory(msgs []history.Message) *loopDetector {
+	ld := newLoopDetector()
+	if len(msgs) == 0 {
+		return ld
+	}
+	// Pre-index tool results by ID so paired lookup is O(1) per ToolCall.
+	results := make(map[string]string, len(msgs)/2+1)
+	for i := range msgs {
+		if msgs[i].Role == "tool" && msgs[i].ToolCallID != "" {
+			results[msgs[i].ToolCallID] = msgs[i].Content
+		}
+	}
+	// Collect entries in chronological order. We cap at maxRecentCalls
+	// before hashing — older calls would be evicted by the ring on AddCall,
+	// so hashing them is wasted FNV work. Use a small dynamically-grown
+	// slice and trim the head once it exceeds capacity.
+	type pair struct{ name, args, result string }
+	seeded := make([]pair, 0, maxRecentCalls)
+	for i := range msgs {
+		if msgs[i].Role != "assistant" || len(msgs[i].ToolCalls) == 0 {
+			continue
+		}
+		for _, tc := range msgs[i].ToolCalls {
+			r, ok := results[tc.ID]
+			if !ok {
+				continue
+			}
+			seeded = append(seeded, pair{name: tc.Name, args: tc.Arguments, result: r})
+			if len(seeded) > maxRecentCalls {
+				seeded = seeded[len(seeded)-maxRecentCalls:]
+			}
+		}
+	}
+	for _, p := range seeded {
+		ld.AddCall(p.name, p.args, p.result)
+	}
+	return ld
 }
 
 // AddCall records a tool invocation with hashed args and result for pattern detection.
