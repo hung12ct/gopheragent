@@ -3,6 +3,8 @@ package agent
 import (
 	"fmt"
 	"testing"
+
+	"github.com/hung12ct/gopheragent/pkg/history"
 )
 
 func TestLoopDetector_NoFalsePositiveBelowThreshold(t *testing.T) {
@@ -99,6 +101,80 @@ func BenchmarkLoopDetector_AddAndDetect(b *testing.B) {
 			ld.AddCall("tool1", `{"q":"search"}`, "some result text")
 		}
 		ld.Detect()
+	}
+}
+
+func TestLoopDetectorFromHistory_SeedsAcrossTurns(t *testing.T) {
+	// Reproduce Phin's pain: Claude calls mongo_sample with the same args
+	// on the same empty collection across three prior turns. A fresh
+	// detector resets each turn and never warns. The seeded detector
+	// counts those prior calls so the 3rd identical call in the new turn
+	// trips the loopWarnThreshold immediately.
+	msgs := []history.Message{
+		{Role: "user", Content: "look at the empty collection"},
+		{Role: "assistant", ToolCalls: []history.ToolCall{
+			{ID: "1", Name: "mongo_sample", Arguments: `{"coll":"x"}`},
+		}},
+		{Role: "tool", ToolCallID: "1", Content: "[]"},
+		{Role: "assistant", Content: "Empty."},
+		{Role: "user", Content: "look again"},
+		{Role: "assistant", ToolCalls: []history.ToolCall{
+			{ID: "2", Name: "mongo_sample", Arguments: `{"coll":"x"}`},
+		}},
+		{Role: "tool", ToolCallID: "2", Content: "[]"},
+		{Role: "assistant", Content: "Still empty."},
+	}
+	ld := loopDetectorFromHistory(msgs)
+	if ld.Len() != 2 {
+		t.Fatalf("expected 2 seeded entries, got %d", ld.Len())
+	}
+	// Simulate a third identical call in the current turn — should warn.
+	ld.AddCall("mongo_sample", `{"coll":"x"}`, "[]")
+	warn, err := ld.Detect()
+	if err != nil {
+		t.Fatalf("unexpected kill: %v", err)
+	}
+	if warn == "" {
+		t.Fatal("expected cross-turn warning after seeding two prior identical calls and adding one more")
+	}
+}
+
+func TestLoopDetectorFromHistory_DanglingToolUseSkipped(t *testing.T) {
+	// An assistant tool_use without a matching tool result (interrupted
+	// turn, partial truncation) must not be seeded — there's no
+	// ResultHash to count against future identical calls.
+	msgs := []history.Message{
+		{Role: "assistant", ToolCalls: []history.ToolCall{
+			{ID: "orphan", Name: "mongo_sample", Arguments: `{"coll":"x"}`},
+		}},
+	}
+	ld := loopDetectorFromHistory(msgs)
+	if ld.Len() != 0 {
+		t.Fatalf("dangling tool_use must not seed; got Len=%d", ld.Len())
+	}
+}
+
+func TestLoopDetectorFromHistory_DifferentTrailingToolNoFalsePositive(t *testing.T) {
+	// Many prior calls to tool_A; the current turn calls tool_B. Detect()
+	// must not flag tool_B as a loop just because the ring is full of tool_A.
+	msgs := []history.Message{}
+	for i := 0; i < loopKillThreshold+1; i++ {
+		id := fmt.Sprintf("a%d", i)
+		msgs = append(msgs,
+			history.Message{Role: "assistant", ToolCalls: []history.ToolCall{
+				{ID: id, Name: "tool_a", Arguments: `{"x":1}`},
+			}},
+			history.Message{Role: "tool", ToolCallID: id, Content: "same"},
+		)
+	}
+	ld := loopDetectorFromHistory(msgs)
+	ld.AddCall("tool_b", `{"y":1}`, "result")
+	warn, err := ld.Detect()
+	if err != nil {
+		t.Fatalf("unexpected kill on tool switch: %v", err)
+	}
+	if warn != "" {
+		t.Fatalf("must not warn — tool switched; got: %s", warn)
 	}
 }
 
