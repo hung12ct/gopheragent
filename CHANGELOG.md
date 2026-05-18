@@ -2,6 +2,18 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.26.2] — 2026-05-18
+
+Patch release. Anthropic streaming hardening — a Phin trace showed `(*Message).Accumulate` killing the entire turn when the stream ended mid-tool_use under the default 8192 MaxTokens. Adds soft-truncation recovery plus a typed `Reason` so adopters can implement targeted auto-retry instead of treating every cap event the same.
+
+### Added
+
+- `LimitReason` enum + `Reason LimitReason` field on `LimitExhaustedEvent`. New `LimitReasonIncompleteToolUse` constant flags the case where a `max_tokens` truncation ate a `tool_use` mid-JSON — the model wanted to call a tool but never finished naming the arguments, so adopters must retry with a larger budget rather than treat the response as complete. Clean `stop_reason="max_tokens"` truncations keep the empty `Reason` so the prior event shape stays intact for adopters that ignore the field. (`pkg/agent/event_types.go`)
+
+### Fixed
+
+- **Anthropic provider — accumulator no longer kills the turn on truncated `tool_use`.** When the SDK's `(*Message).Accumulate` failed on the trailing event of a stream that ended mid-tool_use (`error calling MarshalJSON for type json.RawMessage: unexpected end of JSON input`), the previous behaviour wrapped that as `anthropic accumulate error: ...` and aborted the response — adopters saw a generic stream failure with no signal to bump MaxTokens. Now: if any complete content block already landed, the provider emits a `LimitExhaustedEvent` with `Reason=incomplete_tool_use`, breaks out of the accumulate loop, and lets the existing extraction ship whatever's intact. The post-loop `stream.Err()` and `StopReason="max_tokens"` checks are gated on the non-truncated path so the cap event never double-fires. The extraction loop's tool_use marshal step now skips partial blocks (a complete block always has well-formed Input per the SDK contract, so a marshal failure post-hoc only happens for truncated blocks — dispatching them would just produce a bad-args tool error). Empty-content path keeps the fatal-error surface for genuine SDK breakage. (`pkg/llm/anthropic.go`)
+
 ## [v0.26.1] — 2026-05-17
 
 Patch release. One Fixed item — completes the v0.25.0 OpenAI null-content fix after a second Phin report.
@@ -306,6 +318,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.26.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.2
 [v0.26.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.1
 [v0.26.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.0
 [v0.25.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.25.0

@@ -31,6 +31,29 @@ func TestLimitExhaustedStreamEvent_RoundTripsThroughPayload(t *testing.T) {
 	}
 }
 
+func TestLimitExhaustedEvent_ReasonCarriesIncompleteToolUse(t *testing.T) {
+	// The Anthropic provider emits this exact shape when Accumulate fails
+	// mid-tool_use; adopters that auto-retry on truncation read .Reason to
+	// decide whether the response is salvageable or strictly needs a retry.
+	ev := Event(LimitExhaustedEvent{
+		Kind:   LimitKindProviderMaxTokens,
+		Limit:  8192,
+		Reason: LimitReasonIncompleteToolUse,
+	})
+	p, ok := ev.Payload.(LimitExhaustedEvent)
+	if !ok {
+		t.Fatalf("expected LimitExhaustedEvent, got %T", ev.Payload)
+	}
+	if p.Reason != LimitReasonIncompleteToolUse {
+		t.Fatalf("Reason: got %q, want %q", p.Reason, LimitReasonIncompleteToolUse)
+	}
+	// Sanity-check the zero-Reason case still round-trips for existing kinds.
+	plain := Event(LimitExhaustedEvent{Kind: LimitKindMaxIters, Limit: 15}).Payload.(LimitExhaustedEvent)
+	if plain.Reason != "" {
+		t.Fatalf("zero Reason must remain empty for non-tool-use kinds, got %q", plain.Reason)
+	}
+}
+
 func TestMaxIters_AlsoEmitsLimitExhausted(t *testing.T) {
 	ct := &countingTool{name: "counter"}
 	provider := &scriptProvider{turns: []LLMResult{
