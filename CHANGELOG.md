@@ -2,9 +2,21 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.26.3] — 2026-05-18
+
+Agent-loop hardening release. Two additive changes targeting failure modes the per-turn `iterateMessages` couldn't cover: cross-turn loop spirals and mid-stream user injection. Both are zero-cost when not exercised — no impact on adopters who don't opt in or who don't hit the failure shape.
+
+### Added
+
+- **`WithPendingUserChannel(ctx, ch)` + `PendingUserChannelFromContext(ctx)`.** Lets adopter UIs queue user messages typed while a turn is still streaming. `iterateMessages` drains the channel non-blockingly at the top of every iteration (between the previous tool wave and the next LLM call) and merges every queued message into one user turn so providers like Anthropic — which reject consecutive user messages — keep working. Multi-message merge joins `Content` with double-newline, concatenates `Parts`, propagates `CacheHint`. Role is pinned to `"user"` so adopters can't accidentally inject `"system"` / `"assistant"` frames through this path. Empty messages (no Content and no Parts) are skipped; a closed channel stops the drain without injecting a zero-value message. Hot path is a single nil check + `ctx.Value` lookup when the channel isn't configured; merge path pre-sizes both result slices from `len(drained)` and the summed `len(Parts)`. Does not ctx-cancel an in-flight LLM call — would fight the deterministic ReAct contract; the model sees new user context on its *next* iteration. (`pkg/agent/pending_user.go`)
+
+### Fixed
+
+- **Cross-turn loop detector reset.** `loopDetector` was constructed fresh at `iterateMessages` entry, so it caught within-turn repetition (3 identical consecutive calls → `[SYSTEM WARNING]`, 5 → kill) but reset on every new turn / `StartChat` / `Regenerate` / `Continue`. A model calling the same tool with identical arguments across four separate turns therefore showed `identicalCount=1` to each turn's detector and never warned. Fix: new `loopDetectorFromHistory(msgs)` constructor walks msgs once, pre-indexes `role:"tool"` results by `ToolCallID`, then iterates assistant `ToolCalls` in chronological order to seed the same `(ToolName, ArgsHash, ResultHash)` shape `AddCall` produces during a live turn. Capped at `maxRecentCalls=30` before hashing. `Detect()`'s existing break-on-different-name logic keeps false positives away — a ring full of prior calls to `tool_A` never counts against a `tool_B` call in the new turn. Dangling tool_use (assistant `ToolCalls` without a matching tool result) is skipped. (`pkg/agent/anti_loop.go`, `pkg/agent/loop_stream.go`)
+
 ## [v0.26.2] — 2026-05-18
 
-Patch release. Anthropic streaming hardening — a Phin trace showed `(*Message).Accumulate` killing the entire turn when the stream ended mid-tool_use under the default 8192 MaxTokens. Adds soft-truncation recovery plus a typed `Reason` so adopters can implement targeted auto-retry instead of treating every cap event the same.
+Patch release. Anthropic streaming hardening — when the stream ends mid-tool_use under the default 8192 MaxTokens (easy to hit with large code-gen tool inputs), `(*Message).Accumulate` errors on the trailing `message_delta` and the previous behavior killed the entire turn. Adds soft-truncation recovery plus a typed `Reason` so adopters can implement targeted auto-retry instead of treating every cap event the same.
 
 ### Added
 
@@ -16,7 +28,7 @@ Patch release. Anthropic streaming hardening — a Phin trace showed `(*Message)
 
 ## [v0.26.1] — 2026-05-17
 
-Patch release. One Fixed item — completes the v0.25.0 OpenAI null-content fix after a second Phin report.
+Patch release. One Fixed item — completes the v0.25.0 OpenAI null-content fix after a follow-up report surfaced additional roles affected.
 
 ### Fixed
 
@@ -318,6 +330,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.26.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.3
 [v0.26.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.2
 [v0.26.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.1
 [v0.26.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.0
