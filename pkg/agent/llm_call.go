@@ -79,7 +79,30 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 		}
 	}
 	al.saveSession(ctx, st.sessionKey, msgs)
+	al.emitRunCostIfConfigured(ctx, st.sessionKey, st.streamChan)
 	al.emit(ctx, st.sessionKey, st.streamChan, Event(DoneEvent{}))
+}
+
+// emitRunCostIfConfigured emits a RunCostEvent right before DoneEvent
+// when a PriceTable is configured AND the Run actually used tokens.
+// Skipped when the accumulator is missing (PriceTable nil) or the
+// total is zero (no LLM calls reported usage — typical for scripted
+// providers in tests). Kept as a separate method so handleFinalAnswer
+// stays small.
+func (al *AgentLoop) emitRunCostIfConfigured(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) {
+	acc := runCostAccFromContext(ctx)
+	if acc == nil {
+		return
+	}
+	usage := acc.snapshot()
+	if usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
+		return
+	}
+	al.emit(ctx, sessionKey, streamChan, Event(RunCostEvent{
+		Model: al.PriceModel,
+		Usage: usage,
+		USD:   al.PriceTable.Compute(al.PriceModel, usage),
+	}))
 }
 
 // callLLM runs one LLM stream attempt. Returns the accumulated content,
@@ -128,6 +151,9 @@ func (al *AgentLoop) callLLM(ctx context.Context, st *iterationState, msgs []his
 	}
 	if err == nil && res.Usage.TotalTokens > 0 {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(UsageEvent{Usage: res.Usage}))
+		if acc := runCostAccFromContext(ctx); acc != nil {
+			acc.add(res.Usage)
+		}
 	}
 	return content, res, drainer.contentEmitted(), err
 }

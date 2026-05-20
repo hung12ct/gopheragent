@@ -596,6 +596,72 @@ func TestFireConsolidator_HonorsFirePolicy(t *testing.T) {
 	}
 }
 
+func TestShutdown_NoopWhenNoBackgroundWork(t *testing.T) {
+	al := &AgentLoop{Sessions: history.NewInMemSessionManager("sys")}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := al.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown with no bg work should be instant, got %v", err)
+	}
+}
+
+func TestShutdown_WaitsForInflightConsolidator(t *testing.T) {
+	store := memory.NewInMemStore()
+	// Provider holds the consolidator goroutine for 100ms.
+	slowProv := &slowJSONProvider{json: `{"notes":[{"key":"k","content":"v"}]}`, delay: 100 * time.Millisecond}
+	c := &Consolidator{Store: store, LLM: slowProv, MinTranscriptMessages: 1, FirePolicy: FirePolicy{NTurns: 1}}
+
+	sm := history.NewInMemSessionManager("base")
+	reg := tools.NewRegistry()
+	loop := New(sm, reg, &systemPromptCapturingProvider{},
+		WithMemory(store, MemoryConfig{}),
+		WithMemoryScope(func(_ context.Context, _ string) string { return "u" }),
+		WithMemoryConsolidator(c),
+	)
+	if _, err := loop.RunIteration(context.Background(), "s", "turn"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	// Shutdown must wait at least the goroutine's delay.
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := loop.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 90*time.Millisecond {
+		t.Fatalf("Shutdown returned in %v — should have waited ~100ms for consolidator", elapsed)
+	}
+	// Confirm consolidation actually completed.
+	notes, _ := store.List(context.Background(), "u", memory.ListOpts{})
+	if len(notes) != 1 {
+		t.Fatalf("consolidation should have completed before Shutdown returned, got %d notes", len(notes))
+	}
+}
+
+func TestShutdown_HonorsContextDeadline(t *testing.T) {
+	store := memory.NewInMemStore()
+	slowProv := &slowJSONProvider{json: `{"notes":[]}`, delay: 500 * time.Millisecond}
+	c := &Consolidator{Store: store, LLM: slowProv, MinTranscriptMessages: 1, FirePolicy: FirePolicy{NTurns: 1}}
+
+	sm := history.NewInMemSessionManager("base")
+	reg := tools.NewRegistry()
+	loop := New(sm, reg, &systemPromptCapturingProvider{},
+		WithMemory(store, MemoryConfig{}),
+		WithMemoryScope(func(_ context.Context, _ string) string { return "u" }),
+		WithMemoryConsolidator(c),
+	)
+	if _, err := loop.RunIteration(context.Background(), "s", "turn"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	// Deadline shorter than the consolidator delay.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := loop.Shutdown(ctx); err == nil {
+		t.Fatal("Shutdown should have returned ctx.DeadlineExceeded")
+	}
+}
+
 func TestFireConsolidator_NoopWhenNil(t *testing.T) {
 	al := &AgentLoop{Sessions: history.NewInMemSessionManager("sys")}
 	// Should not panic and should return immediately.
@@ -657,6 +723,22 @@ func (erroringStore) ReplaceAll(_ context.Context, _ string, _ []memory.Note) er
 }
 
 var errStoreSynthetic = errors.New("memory: synthetic store failure")
+
+// slowJSONProvider sleeps before returning a fixed JSON body — used
+// to give Shutdown tests a measurable in-flight window to wait on.
+type slowJSONProvider struct {
+	json  string
+	delay time.Duration
+}
+
+func (p *slowJSONProvider) GenerateStream(ctx context.Context, _ []history.Message, _ *tools.Registry, _ chan<- StreamEvent) (LLMResult, error) {
+	select {
+	case <-time.After(p.delay):
+	case <-ctx.Done():
+		return LLMResult{}, ctx.Err()
+	}
+	return LLMResult{Content: p.json}, nil
+}
 
 // consolidatorPanicProvider panics if called — used to assert short
 // transcripts never reach the provider.

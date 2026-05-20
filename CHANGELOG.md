@@ -2,7 +2,19 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
-## [v0.29.0] — 2026-05-20
+## [v0.30.0] — 2026-05-20
+
+Ergonomics + ops pass. Five additive primitives that lower the bar for adopters writing tools, tests, and production deployments. None of them break the v0.29.0 API.
+
+### Added
+
+- **`llmfake.ScriptedProvider`** — in-tree `LLMProvider` fake mirroring `pkg/history/historyfake`. Drive an agent through a deterministic sequence of `Turn{Content, ToolCalls, Usage, Err, Func}` without hand-rolling a one-off provider per test file. `Strict` mode catches "agent kept iterating past my script"; `DefaultTurn` lets non-strict tests terminate cleanly without scripting the final reply. Concurrent-safe; `TurnsTaken()` lets tests assert exact call count. (`pkg/llm/llmfake/scripted.go`)
+- **`tools.RegisterFunc[T any]`** — generic helper that builds a `Tool` from a typed function. Halves LOC for typed-arg tools by deriving the parameter schema via `SchemaFor[T]`, unmarshalling `argsJSON` into `T`, and wrapping the callback in an inline `Tool` impl. `FuncToolOpts` covers the capability flags (`RequiresConfirmation`, `Cacheable`, `Inline`, `Display`) without forcing a per-tool struct + `Descriptor()` + `Execute()` body. (`pkg/tools/funcs.go`)
+- **`BudgetTracker.Rewind(sessionKey, refund)`** — refunds previously-charged tokens against the per-session budget. Use cases: a cancelled mid-stream turn whose partial output won't be billed, a Regenerate that replaces a prior answer, a sub-agent failure that the parent decides not to retry. Floors at zero per field (a buggy caller can't push the counter negative); empty `sessionKey` is a no-op (intentionally — not a "clear all" shortcut). Closes the BACKLOG item open since adopter integration reports. (`pkg/agent/budget.go`)
+- **`AgentLoop.Shutdown(ctx)`** — blocks until every background goroutine the loop launched (today: post-Run consolidators detached via `context.WithoutCancel`) has finished or `ctx` fires. Returns `ctx.Err` on deadline expiry. Typical use in a graceful HTTP teardown: stop accepting requests, then `loop.Shutdown(deadlineCtx)`. Tracked via a `sync.WaitGroup` on `AgentLoop`; instrumentation only fires when there's actual background work, so cost is one Add/Done per detached goroutine. (`pkg/agent/loop_stream.go`)
+- **`PriceTable` + `RunCostEvent` + `EventTypeRunCost`** — per-Run cost rollup. `WithPriceTable(table, modelName)` wires a `map[model]ModelPricing{InputPerMTokens, OutputPerMTokens}`. The loop accumulates `TokenUsage` across every LLM call inside a Run via a ctx-stashed accumulator (zero hot-path cost when `PriceTable` is nil) and emits `RunCostEvent{Model, Usage, USD}` right before `DoneEvent`. Unknown model keys produce `USD=0` with `Usage` still populated so adopters with dynamic pricing can compute downstream. Router-style multi-model setups whose pricing varies per call should leave this unset and roll up from `UsageEvent` themselves. `EventVisitor.VisitRunCost` added (breaking only for direct visitor implementers; same v0.22.0/v0.28.0 pattern). (`pkg/agent/cost.go`, `pkg/agent/event_types.go`)
+
+
 
 Cost-discipline pass on the Consolidator's auto-fire path. v0.28.0 auto-fired after every completed `Run` once `WithMemoryConsolidator` was wired — for a chat-heavy user at 100 turns/day that's 100 extra LLM calls/day/user just for consolidation, and adopters only discovered the cost by reading source. v0.29.0 throttles by default and adds a two-knob `FirePolicy` adopters tune in one place.
 
@@ -389,6 +401,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.30.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.30.0
 [v0.29.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.29.0
 [v0.28.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.28.0
 [v0.27.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.27.0

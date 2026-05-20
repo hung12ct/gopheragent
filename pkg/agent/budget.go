@@ -112,3 +112,46 @@ func (bt *BudgetTracker) Reset(sessionKey string) {
 	}
 	delete(bt.usage, sessionKey)
 }
+
+// Rewind subtracts the given TokenUsage from a session's accumulated total,
+// effectively refunding tokens that were charged but won't be billed.
+//
+// Use cases:
+//   - The user cancels a turn that was already mid-stream; the tokens that
+//     reached the provider get charged but the partial output is discarded.
+//     Refund so the user isn't double-billed against their cap.
+//   - Regenerate replaces a prior answer; the old answer's tokens stop
+//     counting against the live budget once the new turn lands.
+//   - Sub-agent worker failed cleanly and the parent decides not to retry;
+//     refund so the parent's session budget doesn't burn capacity on a
+//     dropped result.
+//
+// Floors at zero per field so a buggy caller can't push the counter negative
+// (which would then under-count future legitimate usage). Refunding a session
+// that has no recorded usage is a no-op.
+//
+// Safe for concurrent use.
+func (bt *BudgetTracker) Rewind(sessionKey string, refund TokenUsage) {
+	if sessionKey == "" {
+		return
+	}
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+	cur, ok := bt.usage[sessionKey]
+	if !ok {
+		return
+	}
+	cur.PromptTokens = subFloorZero(cur.PromptTokens, refund.PromptTokens)
+	cur.CompletionTokens = subFloorZero(cur.CompletionTokens, refund.CompletionTokens)
+	cur.TotalTokens = subFloorZero(cur.TotalTokens, refund.TotalTokens)
+	bt.usage[sessionKey] = cur
+}
+
+// subFloorZero returns max(a-b, 0). Inlined helper so the three-field
+// Rewind body stays readable.
+func subFloorZero(a, b int) int {
+	if b >= a {
+		return 0
+	}
+	return a - b
+}
