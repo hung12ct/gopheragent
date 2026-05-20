@@ -2,6 +2,20 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.29.0] — 2026-05-20
+
+Cost-discipline pass on the Consolidator's auto-fire path. v0.28.0 auto-fired after every completed `Run` once `WithMemoryConsolidator` was wired — for a chat-heavy user at 100 turns/day that's 100 extra LLM calls/day/user just for consolidation, and adopters only discovered the cost by reading source. v0.29.0 throttles by default and adds a two-knob `FirePolicy` adopters tune in one place.
+
+### Added
+
+- **`Consolidator.FirePolicy{Disabled, NTurns, MinInterval}`** — controls how often the AgentLoop's post-Run hook actually invokes `Consolidate`. `Disabled = true` skips auto-fire entirely (manual cron pattern). `NTurns > 0` waits N completed Runs per scope between fires. `MinInterval > 0` enforces a wall-clock gap per scope. Both throttles AND when set together — both must allow before a fire happens. The first ever fire for a scope is always allowed regardless of policy (so single-shot users never get stranded). State lives on the Consolidator as a small per-scope `sync.Mutex`-guarded map; cost is one map lookup + counter bump per Run. (`pkg/agent/memory.go`)
+- **`agent.DefaultFirePolicy = FirePolicy{MinInterval: 10 * time.Minute}`** — applied when `Consolidator.FirePolicy` is the zero value. 10 minutes aligns with typical conversation "burst" length and amortizes the LLM cost roughly 10–15× for chat workloads vs. firing every Run. Past 10 minutes the Anthropic prompt cache (5m TTL) has already expired, so there's no extra cache penalty to wait.
+
+### Changed (breaking defaults)
+
+- **Auto-consolidation no longer fires every Run by default.** Wiring `WithMemoryConsolidator(c)` with a zero-value `FirePolicy` now follows `DefaultFirePolicy` (10-minute interval). Adopters who want v0.28.0's every-Run behavior set `c.FirePolicy = FirePolicy{NTurns: 1}`. Adopters who want manual-only (cron, logout hook) set `FirePolicy{Disabled: true}` and call `Consolidate` themselves.
+- **`Consolidator.MinTranscriptMessages` default raised 3 → 6.** Single-question chats (≤ 5 messages) almost never produce durable cross-session knowledge worth the LLM round trip. Adopters with denser per-turn content (e.g. structured tool calls in every turn) override to 3 or lower. Manual `Consolidate` calls and tests that pass a 3-message transcript should set `MinTranscriptMessages: 1` explicitly to opt out of the gate.
+
 ## [v0.28.0] — 2026-05-20
 
 Cross-session memory hardening. The v0.27.0 design extracted notes but left two failure modes wide open: the LLM could pick variable keys (`fact_2026_05_20`, `pref_v2`) and accumulate forever, and an adopter calling `Store.Put` directly without a Consolidator faced the same unbounded growth. Both are closed via four structural changes; the Consolidator now does extract + dedupe + prune in one LLM call.
@@ -375,6 +389,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.29.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.29.0
 [v0.28.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.28.0
 [v0.27.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.27.0
 [v0.26.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.3

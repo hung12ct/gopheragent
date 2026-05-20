@@ -818,6 +818,14 @@ func (al *AgentLoop) fireConsolidator(ctx context.Context, sessionKey string) {
 	if scope == "" {
 		return
 	}
+	// Apply the FirePolicy throttle BEFORE the goroutine spawn — the
+	// per-scope bookkeeping (turn counter, lastFiredAt) must serialize
+	// across concurrent Run completions. shouldFire stamps lastFiredAt
+	// eagerly so a second Run that completes while the prior fire is
+	// still running doesn't double-trigger.
+	if !al.MemoryConsolidator.shouldFire(scope) {
+		return
+	}
 	detached := context.WithoutCancel(ctx)
 	go al.runConsolidator(detached, sessionKey, scope)
 }

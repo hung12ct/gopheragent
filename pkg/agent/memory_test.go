@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/memory"
@@ -169,7 +170,7 @@ func TestConsolidate_SkipsShortTranscripts(t *testing.T) {
 func TestConsolidate_WritesNotesFromLLM(t *testing.T) {
 	store := memory.NewInMemStore()
 	prov := &consolidatorJSONProvider{json: `{"notes":[{"key":"pref","content":"user likes Go"},{"key":"db","content":"users table uses created_dt"}]}`}
-	c := &Consolidator{Store: store, LLM: prov}
+	c := &Consolidator{Store: store, LLM: prov, MinTranscriptMessages: 1}
 
 	transcript := []history.Message{
 		{Role: "user", Content: "let's discuss"},
@@ -202,7 +203,7 @@ func TestConsolidate_MergesExistingWithNew(t *testing.T) {
 		{"key":"keep","content":"user is in UTC+7"},
 		{"key":"new","content":"user now prefers Go"}
 	]}`}
-	c := &Consolidator{Store: store, LLM: prov}
+	c := &Consolidator{Store: store, LLM: prov, MinTranscriptMessages: 1}
 
 	transcript := []history.Message{
 		{Role: "user", Content: "from now on use Go not Python"},
@@ -242,7 +243,7 @@ func TestConsolidate_CapsAtMaxNotes(t *testing.T) {
 		{"key":"d","content":"4"},
 		{"key":"e","content":"5"}
 	]}`}
-	c := &Consolidator{Store: store, LLM: prov, MaxNotes: 3}
+	c := &Consolidator{Store: store, LLM: prov, MaxNotes: 3, MinTranscriptMessages: 1}
 
 	transcript := []history.Message{
 		{Role: "user", Content: "x"}, {Role: "assistant", Content: "y"}, {Role: "user", Content: "z"},
@@ -263,7 +264,7 @@ func TestConsolidate_DedupesDuplicateKeysFromLLM(t *testing.T) {
 		{"key":"dup","content":"second-version"},
 		{"key":"other","content":"x"}
 	]}`}
-	c := &Consolidator{Store: store, LLM: prov}
+	c := &Consolidator{Store: store, LLM: prov, MinTranscriptMessages: 1}
 	transcript := []history.Message{
 		{Role: "user", Content: "x"}, {Role: "assistant", Content: "y"}, {Role: "user", Content: "z"},
 	}
@@ -458,6 +459,141 @@ func TestFireConsolidator_SkipsOnEmptyScope(t *testing.T) {
 	}
 	// Should not panic, should not call provider, should not fire any event.
 	al.fireConsolidator(context.Background(), "s1")
+}
+
+func TestShouldFire_FirstFireAlwaysAllowed(t *testing.T) {
+	c := &Consolidator{FirePolicy: FirePolicy{MinInterval: time.Hour, NTurns: 100}}
+	if !c.shouldFire("user:alice") {
+		t.Fatal("first ever fire for a scope must be allowed regardless of policy")
+	}
+}
+
+func TestShouldFire_DisabledNeverFires(t *testing.T) {
+	c := &Consolidator{FirePolicy: FirePolicy{Disabled: true}}
+	for range 5 {
+		if c.shouldFire("user:alice") {
+			t.Fatal("Disabled policy must never allow a fire")
+		}
+	}
+}
+
+func TestShouldFire_MinIntervalBlocksRapidFires(t *testing.T) {
+	c := &Consolidator{FirePolicy: FirePolicy{MinInterval: time.Hour}}
+	if !c.shouldFire("user:alice") {
+		t.Fatal("first fire blocked")
+	}
+	for range 5 {
+		if c.shouldFire("user:alice") {
+			t.Fatal("MinInterval=1h must block rapid follow-up fires")
+		}
+	}
+}
+
+func TestShouldFire_NTurnsBlocksUntilThreshold(t *testing.T) {
+	// No MinInterval so the test exercises NTurns only.
+	c := &Consolidator{FirePolicy: FirePolicy{NTurns: 3}}
+	if !c.shouldFire("u") {
+		t.Fatal("first fire blocked")
+	}
+	// Two follow-up Runs blocked, third allowed.
+	for i := range 2 {
+		if c.shouldFire("u") {
+			t.Fatalf("Run %d should be blocked by NTurns=3", i+2)
+		}
+	}
+	if !c.shouldFire("u") {
+		t.Fatal("Run 4 should be allowed: NTurns threshold met")
+	}
+}
+
+func TestShouldFire_PerScopeIsolation(t *testing.T) {
+	c := &Consolidator{FirePolicy: FirePolicy{MinInterval: time.Hour}}
+	if !c.shouldFire("alice") {
+		t.Fatal("alice first fire blocked")
+	}
+	// bob's first fire must succeed even though alice just fired —
+	// the throttle is per-scope.
+	if !c.shouldFire("bob") {
+		t.Fatal("bob first fire blocked by alice's throttle (per-scope isolation broken)")
+	}
+}
+
+func TestShouldFire_DefaultPolicyApplied(t *testing.T) {
+	// Zero-value FirePolicy must resolve to DefaultFirePolicy
+	// (MinInterval: 10m). First fire allowed; second within the
+	// interval blocked.
+	c := &Consolidator{}
+	if !c.shouldFire("u") {
+		t.Fatal("first fire blocked under default policy")
+	}
+	if c.shouldFire("u") {
+		t.Fatal("second fire within 10m must be blocked under default policy")
+	}
+}
+
+func TestShouldFire_BothThrottlesMustAllow(t *testing.T) {
+	// MinInterval expired but NTurns not yet → blocked.
+	c := &Consolidator{FirePolicy: FirePolicy{
+		MinInterval: time.Nanosecond, // effectively always satisfied after first
+		NTurns:      10,
+	}}
+	if !c.shouldFire("u") {
+		t.Fatal("first fire blocked")
+	}
+	// MinInterval is 1ns so time satisfies; NTurns requires 10 turns.
+	if c.shouldFire("u") {
+		t.Fatal("AND semantic broken: NTurns should still block even though MinInterval passed")
+	}
+}
+
+func TestFireConsolidator_HonorsFirePolicy(t *testing.T) {
+	// Real Consolidate path under Run, with FirePolicy{NTurns: 3}.
+	// Three Runs: first fires, next two are blocked.
+	store := memory.NewInMemStore()
+	prov := &consolidatorJSONProvider{json: `{"notes":[{"key":"k","content":"v"}]}`}
+	c := &Consolidator{
+		Store:                 store,
+		LLM:                   prov,
+		MinTranscriptMessages: 1,
+		FirePolicy:            FirePolicy{NTurns: 3},
+	}
+	sm := history.NewInMemSessionManager("base")
+	reg := tools.NewRegistry()
+	var consolidated []MemoryConsolidatedEvent
+	var mu sync.Mutex
+	loop := New(sm, reg, &systemPromptCapturingProvider{},
+		WithMemory(store, MemoryConfig{}),
+		WithMemoryScope(func(_ context.Context, _ string) string { return "user:alice" }),
+		WithMemoryConsolidator(c),
+		WithOnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+			if p, ok := ev.Payload.(MemoryConsolidatedEvent); ok {
+				mu.Lock()
+				consolidated = append(consolidated, p)
+				mu.Unlock()
+			}
+		}),
+	)
+	for i := range 3 {
+		if _, err := loop.RunIteration(context.Background(), "s1", "turn "+strconv.Itoa(i)); err != nil {
+			t.Fatalf("RunIteration %d: %v", i, err)
+		}
+	}
+	// Wait briefly for the detached consolidator goroutine to emit.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(consolidated)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(consolidated) != 1 {
+		t.Fatalf("expected exactly 1 consolidation across 3 Runs under NTurns=3, got %d", len(consolidated))
+	}
 }
 
 func TestFireConsolidator_NoopWhenNil(t *testing.T) {
