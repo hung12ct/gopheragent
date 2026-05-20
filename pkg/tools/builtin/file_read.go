@@ -105,12 +105,12 @@ func executeFileRead(_ context.Context, cfg FileReadConfig, args fileReadArgs) (
 		}
 	}
 
-	cap := cfg.MaxBytes
-	if args.Length > 0 && args.Length < cap {
-		cap = args.Length
+	limit := cfg.MaxBytes
+	if args.Length > 0 && args.Length < limit {
+		limit = args.Length
 	}
 
-	buf, err := io.ReadAll(io.LimitReader(f, cap))
+	buf, err := io.ReadAll(io.LimitReader(f, limit))
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("tools: read: %w", err)
 	}
