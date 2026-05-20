@@ -2,6 +2,18 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.27.0] — 2026-05-20
+
+Cross-session memory release. New `pkg/memory` package plus three opt-in agent options let an agent carry distilled knowledge from one session into the next — preferences, learned facts, mistakes — without retraining. The loader injects formatted notes into every Run's system prompt; an optional Consolidator runs against closed transcripts and writes back to the same store. Disabled path is a single nil-check per LLM call.
+
+### Added
+
+- **`pkg/memory` — Store interface + InMemStore + Note + FormatNotes.** `Note{Key, Content, Tags, CreatedAt, UpdatedAt}` is the unit; `Store.Put / List / Delete` is the contract; `InMemStore` is an RWMutex-protected map backend (reads dominate writes; safe under `-race`). `FormatNotes(notes []Note) string` renders the canonical "## Long-term memory" block — stable output for the same input set, so prompt-cache prefixes stay deterministic. No LLM dependency; pure persistence + formatting. Empty store or nil slice round-trip to the empty string so callers can concatenate unconditionally. (`pkg/memory/memory.go`, `pkg/memory/inmem.go`)
+- **`agent.WithMemory(store)`** — wires a `memory.Store` onto the loop. `runLogicLoop` calls `Store.List` once per Run for the resolved scope, stashes the formatted block on ctx, and `buildMsgsForLLM` appends it to the system message via a sentinel-tagged path that is idempotent across retries and across iterations within one Run. Store untouched when the option isn't set — the hot path is a single ctx-value lookup returning nil. (`pkg/agent/options.go`, `pkg/agent/loop_stream.go`, `pkg/agent/memory.go`)
+- **`agent.WithMemoryScope(fn)` + `MemoryScopeFunc`** — resolves the scope key the loader and consolidator address. Default returns `sessionKey` unchanged (per-conversation isolation); override to read a user/tenant ID off ctx and return e.g. `"user:" + id` for multi-session sharing. The same scope is reused for the post-Run consolidator fire so reads and writes always agree. (`pkg/agent/memory.go`)
+- **`agent.Consolidator` + `agent.WithMemoryConsolidator(c)`.** `Consolidator{Store, LLM, Prompt, MaxNotes, MinTranscriptMessages}` distills a closed transcript into Notes via `GenerateJSONInto` against a strict JSON-Schema (`{notes:[{key,content,tags?}]}`). Short transcripts (default `< 3` non-system messages) skip silently. The system prompt is overridable; default template asks for "durable knowledge that helps future sessions" and excludes session-specific paraphrases. When `WithMemoryConsolidator` is set, the loop spawns a detached goroutine after every Run via `context.WithoutCancel` so request-scoped cancellation (HTTP disconnect, client abort) never aborts an in-flight consolidation. The goroutine re-reads the transcript from `SessionManager.History` rather than capturing the working slice — clean snapshot post-`saveSession`. (`pkg/agent/memory.go`, `pkg/agent/loop_stream.go`)
+- **`examples/memory_demo/`** — runnable two-session demo with a scripted in-process provider (no API key required). Session 1 produces three notes via the Consolidator; session 2 starts fresh and the loader injects those notes into the system prompt before the first LLM call. Used as the smoke test for the cross-session loop. (`examples/memory_demo/main.go`)
+
 ## [v0.26.3] — 2026-05-18
 
 Agent-loop hardening release. Two additive changes targeting failure modes the per-turn `iterateMessages` couldn't cover: cross-turn loop spirals and mid-stream user injection. Both are zero-cost when not exercised — no impact on adopters who don't opt in or who don't hit the failure shape.
@@ -330,6 +342,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.27.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.27.0
 [v0.26.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.3
 [v0.26.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.2
 [v0.26.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.1
