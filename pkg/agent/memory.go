@@ -72,28 +72,58 @@ func defaultMemoryScope(_ context.Context, sessionKey string) string {
 // 4-chars/token rule elsewhere in the package.
 const memoryCharsPerToken = 4
 
-// loadMemoryNotes returns the formatted note block for the configured
-// scope, bounded by MemoryConfig. Returns "" when memory is disabled,
-// the scope has no notes, or the store errors (errors are logged, not
-// surfaced — memory is best-effort context, never load-bearing for
-// correctness).
-func (al *AgentLoop) loadMemoryNotes(ctx context.Context, sessionKey string) string {
-	if al.Memory == nil {
-		return ""
-	}
-	cfg := memoryConfigOrDefault(al.MemoryCfg)
+// resolveMemoryScope runs the configured MemoryScopeFn (or the
+// default) and returns the resolved scope. Empty result signals the
+// fail-closed path: typically an unauthenticated request whose
+// resolver explicitly returned "" so memory must not be touched on
+// this Run. Both the loader and the consolidator honor the empty
+// signal by skipping their work.
+func (al *AgentLoop) resolveMemoryScope(ctx context.Context, sessionKey string) string {
 	scopeFn := al.MemoryScopeFn
 	if scopeFn == nil {
 		scopeFn = defaultMemoryScope
 	}
-	scope := scopeFn(ctx, sessionKey)
+	return scopeFn(ctx, sessionKey)
+}
+
+// loadMemoryForRun is the loader driver: resolves the scope, fetches
+// notes bounded by MemoryConfig, trims to TokenBudget, and returns
+// (scope, formatted block, note count) so the caller can both stash
+// the block on ctx and emit a MemoryLoadedEvent with accurate metrics.
+//
+// scope == "" means memory is fully disabled for this Run (Memory
+// nil, or the resolver returned "" — fail-closed). The caller skips
+// the audit event in that case; "memory not used" is not an event
+// worth logging.
+//
+// scope != "" but block == "" means the store errored or the scope
+// is empty; the audit event still fires so adopters can record the
+// attempt with NoteCount=0.
+func (al *AgentLoop) loadMemoryForRun(ctx context.Context, sessionKey string) (scope, block string, count int) {
+	if al.Memory == nil {
+		return "", "", 0
+	}
+	scope = al.resolveMemoryScope(ctx, sessionKey)
+	if scope == "" {
+		return "", "", 0
+	}
+	cfg := memoryConfigOrDefault(al.MemoryCfg)
 	notes, err := al.Memory.List(ctx, scope, memory.ListOpts{Limit: cfg.MaxNotes})
 	if err != nil {
 		log.Printf("[gopheragent] memory list error for scope %q: %v", scope, err)
-		return ""
+		return scope, "", 0
 	}
 	notes = trimToTokenBudget(notes, cfg.TokenBudget)
-	return memory.FormatNotes(notes)
+	return scope, memory.FormatNotes(notes), len(notes)
+}
+
+// loadMemoryNotes returns just the formatted block. Kept as a thin
+// wrapper so tests targeting the loader contract don't need to track
+// the scope/count return shape. Internal callers prefer
+// loadMemoryForRun.
+func (al *AgentLoop) loadMemoryNotes(ctx context.Context, sessionKey string) string {
+	_, block, _ := al.loadMemoryForRun(ctx, sessionKey)
+	return block
 }
 
 // trimToTokenBudget returns the longest prefix of notes whose formatted

@@ -165,7 +165,11 @@ func (r *recordingVisitor) VisitHITLDenied(HITLDeniedEvent)            { r.visit
 func (r *recordingVisitor) VisitHITLTimedOut(HITLTimedOutEvent)        { r.visited = "hitl_timed_out" }
 func (r *recordingVisitor) VisitRegenerated(RegeneratedEvent)          { r.visited = "regenerated" }
 func (r *recordingVisitor) VisitContinued(ContinuedEvent)              { r.visited = "continued" }
-func (r *recordingVisitor) VisitUnknown(UnknownEvent)                  { r.visited = "unknown" }
+func (r *recordingVisitor) VisitMemoryLoaded(MemoryLoadedEvent)        { r.visited = "memory_loaded" }
+func (r *recordingVisitor) VisitMemoryConsolidated(MemoryConsolidatedEvent) {
+	r.visited = "memory_consolidated"
+}
+func (r *recordingVisitor) VisitUnknown(UnknownEvent) { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 	cases := []struct {
