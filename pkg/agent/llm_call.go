@@ -82,6 +82,28 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 	al.emit(ctx, st.sessionKey, st.streamChan, Event(DoneEvent{}))
 }
 
+// emitRunCostIfConfigured emits a RunCostEvent when a PriceTable is
+// configured AND the Run actually accumulated tokens. Called from the
+// deferred cleanup installed by installRunCostAccumulator so it fires
+// on every terminal path — final answer, MaxIters cap, fatal LLM
+// error — not just the success path. Skipped when the accumulator
+// is missing (PriceTable nil) or the total is zero.
+func (al *AgentLoop) emitRunCostIfConfigured(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) {
+	acc := runCostAccFromContext(ctx)
+	if acc == nil {
+		return
+	}
+	usage := acc.snapshot()
+	if usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
+		return
+	}
+	al.emit(ctx, sessionKey, streamChan, Event(RunCostEvent{
+		Model: al.PriceModel,
+		Usage: usage,
+		USD:   al.PriceTable.Compute(al.PriceModel, usage),
+	}))
+}
+
 // callLLM runs one LLM stream attempt. Returns the accumulated content,
 // the structured LLMResult, whether any content event was emitted (used
 // to gate retry safety), and the call error.
@@ -128,6 +150,9 @@ func (al *AgentLoop) callLLM(ctx context.Context, st *iterationState, msgs []his
 	}
 	if err == nil && res.Usage.TotalTokens > 0 {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(UsageEvent{Usage: res.Usage}))
+		if acc := runCostAccFromContext(ctx); acc != nil {
+			acc.add(res.Usage)
+		}
 	}
 	return content, res, drainer.contentEmitted(), err
 }

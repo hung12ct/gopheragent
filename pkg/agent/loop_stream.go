@@ -408,10 +408,32 @@ type AgentLoop struct {
 	// configuration error caught at Consolidate time.
 	MemoryConsolidator *Consolidator
 
+	// PriceTable, when non-nil, enables per-Run cost rollup. The loop
+	// accumulates TokenUsage across every LLM call in a Run and emits
+	// a RunCostEvent right before DoneEvent with the dollars computed
+	// from PriceTable[PriceModel]. Adopters running multi-model
+	// router setups whose pricing varies per call should leave this
+	// nil and roll cost up themselves from UsageEvent.
+	PriceTable PriceTable
+
+	// PriceModel is the key looked up in PriceTable for cost
+	// computation. Set to the canonical name of the model this loop
+	// drives (e.g. "claude-sonnet-4-6"). Unknown keys produce a
+	// RunCostEvent with USD=0 and Usage still populated.
+	PriceModel string
+
 	// confirmHITLWarnOnce gates the one-time misconfig warning emitted by
 	// runHITLGate when ConfirmHITL is nil. Loop-scoped so each instance
 	// warns independently; never reset across calls.
 	confirmHITLWarnOnce sync.Once
+
+	// bgWg tracks background goroutines the loop launches and detaches
+	// from the caller's ctx (today: consolidator after every Run).
+	// Shutdown waits on this counter so a graceful HTTP teardown can
+	// wait for in-flight memory writes to complete instead of dropping
+	// them. Per-Run runLogicLoop is *not* tracked here — it terminates
+	// via the caller's ctx and the iterator's range-loop exit.
+	bgWg sync.WaitGroup
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
@@ -756,6 +778,16 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 		}
 	}
 
+	// Per-Run cost accumulator: stashed on ctx so callLLM can bump it
+	// from any iteration without threading new params. The deferred
+	// emitCost fires on every terminal exit (final answer, MaxIters,
+	// MaxToolCallsPerSession, fatal LLM error) instead of only on the
+	// final-answer success path. Nil PriceTable → no-op closure +
+	// no ctx allocation.
+	var emitCost func()
+	ctx, emitCost = al.installRunCostAccumulator(ctx, sessionKey, streamChan)
+	defer emitCost()
+
 	// Load memory notes once per Run and stash on ctx; buildMsgsForLLM
 	// reads the cached value on every iteration so notes show up on every
 	// LLM call without re-hitting the Store. Persisted history is left
@@ -818,14 +850,26 @@ func (al *AgentLoop) fireConsolidator(ctx context.Context, sessionKey string) {
 	if scope == "" {
 		return
 	}
+	// Apply the FirePolicy throttle BEFORE the goroutine spawn — the
+	// per-scope bookkeeping (turn counter, lastFiredAt) must serialize
+	// across concurrent Run completions. shouldFire stamps lastFiredAt
+	// eagerly so a second Run that completes while the prior fire is
+	// still running doesn't double-trigger.
+	if !al.MemoryConsolidator.shouldFire(scope) {
+		return
+	}
 	detached := context.WithoutCancel(ctx)
+	al.bgWg.Add(1)
 	go al.runConsolidator(detached, sessionKey, scope)
 }
 
 // runConsolidator is the detached goroutine body. Extracted so the
 // closure stays small (no 5+ captures per project decomposition rules)
 // and the audit emission has one obvious site to reason about.
+//
+// Decrements al.bgWg on exit so Shutdown can wait for in-flight work.
 func (al *AgentLoop) runConsolidator(ctx context.Context, sessionKey, scope string) {
+	defer al.bgWg.Done()
 	transcript, herr := al.Sessions.History(ctx, sessionKey)
 	if herr != nil {
 		log.Printf("[gopheragent] consolidator: history read failed for %q: %v", sessionKey, herr)
@@ -844,6 +888,35 @@ func (al *AgentLoop) runConsolidator(ctx context.Context, sessionKey, scope stri
 		ev.Error = err.Error()
 	}
 	al.emitPostStream(ctx, sessionKey, Event(ev))
+}
+
+// Shutdown blocks until every background goroutine the loop launched
+// (today: post-Run consolidators) has finished, or until ctx fires.
+// Returns ctx.Err when the deadline expires with work still in flight.
+//
+// Typical use lives at the end of an HTTP server's graceful-stop path:
+//
+//	srv.Shutdown(ctx)            // stop accepting new requests
+//	loop.Shutdown(ctxWithDeadline) // wait for detached bg work
+//
+// Shutdown does NOT prevent new background work from being scheduled —
+// adopters that need a hard stop should stop calling Run before
+// Shutdown so no new consolidators get spawned. The loop itself stays
+// reusable after Shutdown returns.
+//
+// Calling Shutdown with no in-flight work returns nil immediately.
+func (al *AgentLoop) Shutdown(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		al.bgWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // emitPostStream fires only the EventHandlers chain — used for events

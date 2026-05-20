@@ -2,6 +2,32 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.30.0] — 2026-05-20
+
+Ergonomics + ops pass. Five additive primitives that lower the bar for adopters writing tools, tests, and production deployments. None of them break the v0.29.0 API.
+
+### Added
+
+- **`llmfake.ScriptedProvider`** — in-tree `LLMProvider` fake mirroring `pkg/history/historyfake`. Drive an agent through a deterministic sequence of `Turn{Content, ToolCalls, Usage, Err, Func}` without hand-rolling a one-off provider per test file. `Strict` mode catches "agent kept iterating past my script"; `DefaultTurn` lets non-strict tests terminate cleanly without scripting the final reply. Concurrent-safe; `TurnsTaken()` lets tests assert exact call count. (`pkg/llm/llmfake/scripted.go`)
+- **`tools.RegisterFunc[T any]`** — generic helper that builds a `Tool` from a typed function. Halves LOC for typed-arg tools by deriving the parameter schema via `SchemaFor[T]`, unmarshalling `argsJSON` into `T`, and wrapping the callback in an inline `Tool` impl. `FuncToolOpts` covers the capability flags (`RequiresConfirmation`, `Cacheable`, `Inline`, `Display`) without forcing a per-tool struct + `Descriptor()` + `Execute()` body. (`pkg/tools/funcs.go`)
+- **`BudgetTracker.Rewind(sessionKey, refund)`** — refunds previously-charged tokens against the per-session budget. Use cases: a cancelled mid-stream turn whose partial output won't be billed, a Regenerate that replaces a prior answer, a sub-agent failure that the parent decides not to retry. Floors at zero per field (a buggy caller can't push the counter negative); empty `sessionKey` is a no-op (intentionally — not a "clear all" shortcut). Closes the BACKLOG item open since adopter integration reports. (`pkg/agent/budget.go`)
+- **`AgentLoop.Shutdown(ctx)`** — blocks until every background goroutine the loop launched (today: post-Run consolidators detached via `context.WithoutCancel`) has finished or `ctx` fires. Returns `ctx.Err` on deadline expiry. Typical use in a graceful HTTP teardown: stop accepting requests, then `loop.Shutdown(deadlineCtx)`. Tracked via a `sync.WaitGroup` on `AgentLoop`; instrumentation only fires when there's actual background work, so cost is one Add/Done per detached goroutine. (`pkg/agent/loop_stream.go`)
+- **`PriceTable` + `RunCostEvent` + `EventTypeRunCost`** — per-Run cost rollup. `WithPriceTable(table, modelName)` wires a `map[model]ModelPricing{InputPerMTokens, OutputPerMTokens}`. The loop accumulates `TokenUsage` across every LLM call inside a Run via a ctx-stashed accumulator (zero hot-path cost when `PriceTable` is nil) and emits `RunCostEvent{Model, Usage, USD}` right before `DoneEvent`. Unknown model keys produce `USD=0` with `Usage` still populated so adopters with dynamic pricing can compute downstream. Router-style multi-model setups whose pricing varies per call should leave this unset and roll up from `UsageEvent` themselves. `EventVisitor.VisitRunCost` added (breaking only for direct visitor implementers; same v0.22.0/v0.28.0 pattern). (`pkg/agent/cost.go`, `pkg/agent/event_types.go`)
+
+
+
+Cost-discipline pass on the Consolidator's auto-fire path. v0.28.0 auto-fired after every completed `Run` once `WithMemoryConsolidator` was wired — for a chat-heavy user at 100 turns/day that's 100 extra LLM calls/day/user just for consolidation, and adopters only discovered the cost by reading source. v0.29.0 throttles by default and adds a two-knob `FirePolicy` adopters tune in one place.
+
+### Added
+
+- **`Consolidator.FirePolicy{Disabled, NTurns, MinInterval}`** — controls how often the AgentLoop's post-Run hook actually invokes `Consolidate`. `Disabled = true` skips auto-fire entirely (manual cron pattern). `NTurns > 0` waits N completed Runs per scope between fires. `MinInterval > 0` enforces a wall-clock gap per scope. Both throttles AND when set together — both must allow before a fire happens. The first ever fire for a scope is always allowed regardless of policy (so single-shot users never get stranded). State lives on the Consolidator as a small per-scope `sync.Mutex`-guarded map; cost is one map lookup + counter bump per Run. (`pkg/agent/memory.go`)
+- **`agent.DefaultFirePolicy = FirePolicy{MinInterval: 10 * time.Minute}`** — applied when `Consolidator.FirePolicy` is the zero value. 10 minutes aligns with typical conversation "burst" length and amortizes the LLM cost roughly 10–15× for chat workloads vs. firing every Run. Past 10 minutes the Anthropic prompt cache (5m TTL) has already expired, so there's no extra cache penalty to wait.
+
+### Changed (breaking defaults)
+
+- **Auto-consolidation no longer fires every Run by default.** Wiring `WithMemoryConsolidator(c)` with a zero-value `FirePolicy` now follows `DefaultFirePolicy` (10-minute interval). Adopters who want v0.28.0's every-Run behavior set `c.FirePolicy = FirePolicy{NTurns: 1}`. Adopters who want manual-only (cron, logout hook) set `FirePolicy{Disabled: true}` and call `Consolidate` themselves.
+- **`Consolidator.MinTranscriptMessages` default raised 3 → 6.** Single-question chats (≤ 5 messages) almost never produce durable cross-session knowledge worth the LLM round trip. Adopters with denser per-turn content (e.g. structured tool calls in every turn) override to 3 or lower. Manual `Consolidate` calls and tests that pass a 3-message transcript should set `MinTranscriptMessages: 1` explicitly to opt out of the gate.
+
 ## [v0.28.0] — 2026-05-20
 
 Cross-session memory hardening. The v0.27.0 design extracted notes but left two failure modes wide open: the LLM could pick variable keys (`fact_2026_05_20`, `pref_v2`) and accumulate forever, and an adopter calling `Store.Put` directly without a Consolidator faced the same unbounded growth. Both are closed via four structural changes; the Consolidator now does extract + dedupe + prune in one LLM call.
@@ -375,6 +401,8 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.30.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.30.0
+[v0.29.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.29.0
 [v0.28.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.28.0
 [v0.27.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.27.0
 [v0.26.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.3

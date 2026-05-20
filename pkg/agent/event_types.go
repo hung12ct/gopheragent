@@ -72,6 +72,11 @@ const (
 	// outcome. Carries Before/After counts and any error so adopters
 	// can wire a compliance log without polling the store.
 	EventTypeMemoryConsolidated StreamEventType = "memory_consolidated"
+	// EventTypeRunCost is emitted right before DoneEvent on Runs that
+	// produced a final answer. Carries rolled-up token usage and the
+	// computed dollar cost under the configured PriceTable. Skipped
+	// when no PriceTable is configured (zero-cost when unused).
+	EventTypeRunCost StreamEventType = "run_cost"
 )
 
 // LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
@@ -357,6 +362,25 @@ type MemoryConsolidatedEvent struct {
 func (MemoryConsolidatedEvent) isEventPayload()            {}
 func (MemoryConsolidatedEvent) eventType() StreamEventType { return EventTypeMemoryConsolidated }
 
+// RunCostEvent is the typed payload of EventTypeRunCost. Emitted at
+// the end of a successful Run when PriceTable is configured. Adopters
+// surface USD on the UI, push to billing telemetry, or alert on
+// per-Run cost spikes without re-aggregating UsageEvents themselves.
+//
+// USD is computed from the rolled-up Usage under the AgentLoop's
+// configured Model + PriceTable. When the Model isn't in the table,
+// USD is zero but Usage still reflects the true accumulated tokens —
+// useful for adopters who want to compute cost themselves with a
+// dynamic price source.
+type RunCostEvent struct {
+	Model string     `json:"model,omitempty"`
+	Usage TokenUsage `json:"usage"`
+	USD   float64    `json:"usd"`
+}
+
+func (RunCostEvent) isEventPayload()            {}
+func (RunCostEvent) eventType() StreamEventType { return EventTypeRunCost }
+
 // HITLTimedOutEvent is the typed payload of EventTypeHITLTimedOut. Mirrors
 // HITLDeniedEvent and additionally carries the configured Timeout so a UI
 // can show "approval expired after 2m" without reaching back into agent
@@ -491,6 +515,10 @@ func decodePayload(t StreamEventType, raw []byte) EventPayload {
 		var p MemoryConsolidatedEvent
 		_ = json.Unmarshal(raw, &p)
 		return p
+	case EventTypeRunCost:
+		var p RunCostEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	default:
 		return UnknownEvent{OriginalType: t, RawJSON: string(raw)}
 	}
@@ -524,6 +552,7 @@ type EventVisitor interface {
 	VisitContinued(ContinuedEvent)
 	VisitMemoryLoaded(MemoryLoadedEvent)
 	VisitMemoryConsolidated(MemoryConsolidatedEvent)
+	VisitRunCost(RunCostEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -571,6 +600,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitMemoryLoaded(p)
 	case MemoryConsolidatedEvent:
 		v.VisitMemoryConsolidated(p)
+	case RunCostEvent:
+		v.VisitRunCost(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	default:

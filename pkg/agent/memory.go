@@ -6,6 +6,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/memory"
@@ -261,6 +263,118 @@ type Consolidator struct {
 	// default of 3 — anything shorter rarely contains durable
 	// knowledge worth the LLM round trip.
 	MinTranscriptMessages int
+	// FirePolicy controls how often the AgentLoop's post-Run hook
+	// invokes Consolidate. The zero value applies DefaultFirePolicy
+	// (MinInterval = 10m, no turn-count throttle) — a sane "don't
+	// burn money" default for chat workloads where bursts of
+	// related turns shouldn't each trigger a fresh LLM call. Set
+	// Disabled = true to skip auto-fire entirely and drive
+	// Consolidate manually from a cron / logout hook. See FirePolicy
+	// for the per-field semantics.
+	//
+	// Direct calls to Consolidate (outside the AgentLoop hook) bypass
+	// the policy — adopters running scheduled batch consolidations
+	// retain full control of timing.
+	FirePolicy FirePolicy
+
+	// fireMu guards fireState. Held briefly during the shouldFire
+	// check + bookkeeping; never held across the LLM call.
+	fireMu    sync.Mutex
+	fireState map[string]*scopeFireState
+}
+
+// FirePolicy throttles the AgentLoop's auto-fire path so a long
+// session doesn't bill one LLM call per turn for consolidation.
+//
+// All three fields are independent; they're evaluated in order with
+// short-circuit semantics:
+//   - Disabled  : if true, fire is suppressed unconditionally.
+//   - MinInterval : if non-zero, suppresses fires within wall-clock
+//     interval of the prior fire for the same scope.
+//   - NTurns    : if non-zero, suppresses fires until N completed Runs
+//     have accumulated since the prior fire for the same scope.
+//
+// Combining MinInterval and NTurns AND's the conditions — both must
+// allow before a fire happens. The first Run for a scope (no prior
+// fire) is always allowed regardless of policy unless Disabled.
+//
+// Manual Consolidate calls bypass FirePolicy. Adopters running a
+// nightly batch can set Disabled = true and call Consolidate
+// directly from their scheduler.
+type FirePolicy struct {
+	// Disabled, when true, the AgentLoop's post-Run hook never
+	// auto-fires. Adopters call Consolidate themselves.
+	Disabled bool
+	// NTurns suppresses auto-fires until this many completed Runs
+	// have happened for the same scope since the last fire. 0
+	// disables this throttle. Useful when conversations are slow
+	// (one turn per hour) and the time-based throttle alone would
+	// fire too often relative to information density.
+	NTurns int
+	// MinInterval enforces a minimum wall-clock gap between fires
+	// for the same scope. 0 disables this throttle.
+	MinInterval time.Duration
+}
+
+// DefaultFirePolicy is applied when Consolidator.FirePolicy is the
+// zero value. The 10-minute interval matches the typical span of a
+// conversation "burst" and amortizes the LLM cost roughly 10–15× for
+// chat-heavy workloads vs. firing every Run. The first Run for a
+// scope still fires (initial lastFiredAt is zero).
+var DefaultFirePolicy = FirePolicy{MinInterval: 10 * time.Minute}
+
+// scopeFireState tracks per-scope throttle bookkeeping. Mutated only
+// while Consolidator.fireMu is held.
+type scopeFireState struct {
+	turnsSinceFire int
+	lastFiredAt    time.Time // zero = never fired
+}
+
+// shouldFire reports whether the current Run is allowed to launch a
+// consolidation under the configured FirePolicy. Returns true at most
+// once per (MinInterval + NTurns) window per scope, and stamps
+// lastFiredAt to "now" eagerly so a concurrent second Run launched
+// before the consolidation goroutine finishes doesn't race-fire.
+//
+// Disabled policy always returns false — callers should not invoke
+// shouldFire when Disabled, but the inner check is defensive.
+func (c *Consolidator) shouldFire(scope string) bool {
+	policy := c.FirePolicy
+	if (policy == FirePolicy{}) {
+		policy = DefaultFirePolicy
+	}
+	if policy.Disabled {
+		return false
+	}
+
+	c.fireMu.Lock()
+	defer c.fireMu.Unlock()
+	if c.fireState == nil {
+		c.fireState = make(map[string]*scopeFireState)
+	}
+	st, ok := c.fireState[scope]
+	if !ok {
+		st = &scopeFireState{}
+		c.fireState[scope] = st
+	}
+	st.turnsSinceFire++
+
+	// First fire for this scope: always allowed.
+	if st.lastFiredAt.IsZero() {
+		st.lastFiredAt = time.Now()
+		st.turnsSinceFire = 0
+		return true
+	}
+	// Both throttles must allow.
+	if policy.MinInterval > 0 && time.Since(st.lastFiredAt) < policy.MinInterval {
+		return false
+	}
+	if policy.NTurns > 0 && st.turnsSinceFire < policy.NTurns {
+		return false
+	}
+	st.lastFiredAt = time.Now()
+	st.turnsSinceFire = 0
+	return true
 }
 
 // ConsolidateResult reports what changed in a single Consolidate call.
@@ -322,7 +436,11 @@ func (c *Consolidator) Consolidate(ctx context.Context, scope string, transcript
 	}
 	minMsgs := c.MinTranscriptMessages
 	if minMsgs <= 0 {
-		minMsgs = 3
+		// Default 6 (≥3 round-trips). Single-question chats — user
+		// asks, agent answers, optional one follow-up — almost never
+		// produce durable cross-session knowledge worth the LLM cost.
+		// Adopters with denser per-turn content set this to 3 or lower.
+		minMsgs = 6
 	}
 	if countNonSystem(transcript) < minMsgs {
 		existing, _ := c.Store.List(ctx, scope, memory.ListOpts{})

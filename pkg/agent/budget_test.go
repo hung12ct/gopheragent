@@ -121,6 +121,65 @@ func TestBudgetTracker_ResetClearsSession(t *testing.T) {
 	}
 }
 
+func TestBudgetTracker_RewindSubtracts(t *testing.T) {
+	bt := NewBudgetTracker(0)
+	h := bt.Handler()
+	h(context.Background(), "s", usageEvent(t, 60, 40, 100))
+
+	bt.Rewind("s", TokenUsage{PromptTokens: 20, CompletionTokens: 10, TotalTokens: 30})
+	got := bt.Usage("s")
+	if got.PromptTokens != 40 || got.CompletionTokens != 30 || got.TotalTokens != 70 {
+		t.Fatalf("Rewind mismatch: %+v", got)
+	}
+}
+
+func TestBudgetTracker_RewindFloorsAtZero(t *testing.T) {
+	bt := NewBudgetTracker(0)
+	h := bt.Handler()
+	h(context.Background(), "s", usageEvent(t, 10, 5, 15))
+
+	bt.Rewind("s", TokenUsage{PromptTokens: 100, CompletionTokens: 100, TotalTokens: 200})
+	got := bt.Usage("s")
+	if got.PromptTokens != 0 || got.CompletionTokens != 0 || got.TotalTokens != 0 {
+		t.Fatalf("Rewind should floor at zero, got %+v", got)
+	}
+}
+
+func TestBudgetTracker_RewindUnknownSessionNoop(t *testing.T) {
+	bt := NewBudgetTracker(0)
+	// Should not panic, should not create a phantom entry.
+	bt.Rewind("never-seen", TokenUsage{TotalTokens: 50})
+	if got := bt.Usage("never-seen"); got.TotalTokens != 0 {
+		t.Fatalf("expected unknown session to stay empty, got %+v", got)
+	}
+}
+
+func TestBudgetTracker_RewindEmptyKeyNoop(t *testing.T) {
+	bt := NewBudgetTracker(0)
+	h := bt.Handler()
+	h(context.Background(), "real", usageEvent(t, 10, 10, 20))
+	// Empty key must NOT iterate every session; this would be a surprise.
+	bt.Rewind("", TokenUsage{TotalTokens: 99})
+	if got := bt.Usage("real").TotalTokens; got != 20 {
+		t.Fatalf("Rewind('') should be a no-op (not clear all), got %d", got)
+	}
+}
+
+func TestBudgetTracker_RewindReleasesBudget(t *testing.T) {
+	// Real flow: budget exhausted, Rewind frees room for another call.
+	bt := NewBudgetTracker(100)
+	h := bt.Handler()
+	g := bt.Guard()
+	h(context.Background(), "s", usageEvent(t, 50, 50, 100))
+	if err := g(context.Background(), "s", 0); err == nil {
+		t.Fatal("expected guard to deny at-budget")
+	}
+	bt.Rewind("s", TokenUsage{TotalTokens: 30})
+	if err := g(context.Background(), "s", 0); err != nil {
+		t.Fatalf("guard should allow after Rewind: %v", err)
+	}
+}
+
 func TestBudgetTracker_ConcurrentAccess(t *testing.T) {
 	bt := NewBudgetTracker(0)
 	h := bt.Handler()

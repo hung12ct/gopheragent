@@ -100,6 +100,14 @@ func (al *AgentLoop) continueLogicLoop(ctx context.Context, sessionKey string, s
 	defer close(streamChan)
 	ctx = WithSessionKey(ctx, sessionKey)
 
+	// Mirror runLogicLoop: per-Run cost accumulator fires on every
+	// terminal exit when PriceTable is configured. Without this,
+	// Regenerate and Continue Runs would never emit RunCostEvent and
+	// adopters tracking billing would miss them silently.
+	var emitCost func()
+	ctx, emitCost = al.installRunCostAccumulator(ctx, sessionKey, streamChan)
+	defer emitCost()
+
 	msgs, err := al.Sessions.History(ctx, sessionKey)
 	if err != nil {
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: continue: load history: %w", err)))
