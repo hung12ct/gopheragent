@@ -80,3 +80,26 @@ func runCostAccFromContext(ctx context.Context) *runCostAcc {
 	v, _ := ctx.Value(runCostKey{}).(*runCostAcc)
 	return v
 }
+
+// installRunCostAccumulator stashes a fresh accumulator on ctx and
+// returns it alongside a cleanup callback that emits RunCostEvent at
+// the end of the Run. Caller pattern:
+//
+//	ctx, emitCost := al.installRunCostAccumulator(ctx, sessionKey, streamChan)
+//	defer emitCost()
+//
+// When PriceTable is nil, the returned ctx is unchanged and emitCost
+// is a no-op closure — zero allocation in the hot path beyond the
+// branch on PriceTable. Every Run entry point that drives
+// iterateMessages (runLogicLoop, continueLogicLoop) must call this so
+// MaxIters / MaxToolCallsPerSession / fatal-error terminal paths all
+// emit the cost rollup, not just the final-answer success path.
+func (al *AgentLoop) installRunCostAccumulator(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) (context.Context, func()) {
+	if al.PriceTable == nil {
+		return ctx, func() {}
+	}
+	ctx = withRunCostAcc(ctx, &runCostAcc{})
+	return ctx, func() {
+		al.emitRunCostIfConfigured(ctx, sessionKey, streamChan)
+	}
+}

@@ -79,16 +79,15 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 		}
 	}
 	al.saveSession(ctx, st.sessionKey, msgs)
-	al.emitRunCostIfConfigured(ctx, st.sessionKey, st.streamChan)
 	al.emit(ctx, st.sessionKey, st.streamChan, Event(DoneEvent{}))
 }
 
-// emitRunCostIfConfigured emits a RunCostEvent right before DoneEvent
-// when a PriceTable is configured AND the Run actually used tokens.
-// Skipped when the accumulator is missing (PriceTable nil) or the
-// total is zero (no LLM calls reported usage — typical for scripted
-// providers in tests). Kept as a separate method so handleFinalAnswer
-// stays small.
+// emitRunCostIfConfigured emits a RunCostEvent when a PriceTable is
+// configured AND the Run actually accumulated tokens. Called from the
+// deferred cleanup installed by installRunCostAccumulator so it fires
+// on every terminal path — final answer, MaxIters cap, fatal LLM
+// error — not just the success path. Skipped when the accumulator
+// is missing (PriceTable nil) or the total is zero.
 func (al *AgentLoop) emitRunCostIfConfigured(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) {
 	acc := runCostAccFromContext(ctx)
 	if acc == nil {

@@ -779,13 +779,14 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	}
 
 	// Per-Run cost accumulator: stashed on ctx so callLLM can bump it
-	// from any iteration without threading new params, and
-	// handleFinalAnswer can read the rolled-up total to emit RunCostEvent.
-	// Nil PriceTable → no accumulator installed → all cost paths
-	// short-circuit. Zero hot-path cost when unused.
-	if al.PriceTable != nil {
-		ctx = withRunCostAcc(ctx, &runCostAcc{})
-	}
+	// from any iteration without threading new params. The deferred
+	// emitCost fires on every terminal exit (final answer, MaxIters,
+	// MaxToolCallsPerSession, fatal LLM error) instead of only on the
+	// final-answer success path. Nil PriceTable → no-op closure +
+	// no ctx allocation.
+	var emitCost func()
+	ctx, emitCost = al.installRunCostAccumulator(ctx, sessionKey, streamChan)
+	defer emitCost()
 
 	// Load memory notes once per Run and stash on ctx; buildMsgsForLLM
 	// reads the cached value on every iteration so notes show up on every
