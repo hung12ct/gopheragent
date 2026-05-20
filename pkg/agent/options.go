@@ -243,14 +243,22 @@ func WithoutAutoCacheSystem() Option {
 	return func(al *AgentLoop) { al.AutoCacheSystem = false }
 }
 
-// WithMemory enables cross-session memory by attaching a Store. On every
-// fresh session start the loop reads notes for the resolved scope and
-// prepends them to the system message; without this option the memory
-// loader is a no-op at zero hot-path cost. Pair with WithMemoryScope to
-// share memory across sessions for the same user/tenant, and with
-// WithMemoryConsolidator to auto-distill closed sessions into notes.
-func WithMemory(store memory.Store) Option {
-	return func(al *AgentLoop) { al.Memory = store }
+// WithMemory enables cross-session memory by attaching a Store and a
+// loader configuration. On every Run the loop reads notes for the
+// resolved scope (bounded by cfg) and appends them to the system
+// message. Without this option the memory loader is a no-op at zero
+// hot-path cost. Pair with WithMemoryScope to share memory across
+// sessions for the same user/tenant, and with WithMemoryConsolidator
+// to auto-distill closed sessions into notes.
+//
+// cfg's zero value applies the documented defaults: TokenBudget=500,
+// MaxNotes=50. Override either field on the call site to tune the
+// per-Run memory cost.
+func WithMemory(store memory.Store, cfg MemoryConfig) Option {
+	return func(al *AgentLoop) {
+		al.Memory = store
+		al.MemoryCfg = cfg
+	}
 }
 
 // WithMemoryScope overrides the default scope resolver (which returns

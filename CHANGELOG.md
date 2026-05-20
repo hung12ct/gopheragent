@@ -2,7 +2,33 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
-## [v0.27.0] — 2026-05-20
+## [v0.28.0] — 2026-05-20
+
+Cross-session memory hardening. The v0.27.0 design extracted notes but left two failure modes wide open: the LLM could pick variable keys (`fact_2026_05_20`, `pref_v2`) and accumulate forever, and an adopter calling `Store.Put` directly without a Consolidator faced the same unbounded growth. Both are closed via four structural changes; the Consolidator now does extract + dedupe + prune in one LLM call.
+
+### Added
+
+- **`memory.ListOpts{Limit, Tags, UpdatedAfter}`** — bounded reads at the persistence layer. Loader passes `Limit = MemoryConfig.MaxNotes` so a runaway scope can't dump its entire contents into the next system prompt.
+- **`memory.Store.ReplaceAll(ctx, scope, notes)`** — atomic full-scope replacement. Used by the Consolidator's merge path so the curated new state lands without exposing a window where deletions and inserts are observable separately. Caller-side `CreatedAt` timestamps are preserved when an incoming Key matches an existing note. (`pkg/memory/memory.go`, `pkg/memory/inmem.go`)
+- **`memory.WithMaxNotesPerScope(n)` + `DefaultMaxNotesPerScope = 100`** — per-scope hard cap on `InMemStore`. `Put` evicts least-recently-updated (deterministic tie-break by Key) when adding a new key would overflow. `ReplaceAll` honors the same cap. **`NewInMemStore()` now applies `DefaultMaxNotesPerScope = 100` by default**; pass `WithMaxNotesPerScope(0)` to opt out explicitly. This closes the "caller bypasses Consolidator and Puts forever" failure path. (`pkg/memory/inmem.go`)
+- **`agent.MemoryConfig{TokenBudget, MaxNotes}`** — loader-side bounds. Defaults: `TokenBudget = 500` tokens, `MaxNotes = 50`. The loader reads via `ListOpts.Limit = MaxNotes`, then trims further via `trimToTokenBudget` so the formatted block never blows past the prompt budget. (`pkg/agent/memory.go`)
+- **`agent.ConsolidateResult{Before, After}`** — returned by `Consolidator.Consolidate` (was `(int, error)`). Useful for telemetry / logging without re-reading the store.
+
+### Changed (breaking)
+
+- **`memory.Store.List(ctx, scope, opts ListOpts)`** — added `opts` argument. Adopters with custom Store implementations must update their signatures. The empty `ListOpts{}` value preserves prior "return everything" semantics.
+- **`memory.Store.ReplaceAll(ctx, scope, notes)`** — new required method on the interface.
+- **`agent.WithMemory(store, cfg MemoryConfig)`** — added the `cfg` argument. Pass `MemoryConfig{}` to keep prior unbounded-loader behavior with the new defaults applied.
+- **`Consolidator.Consolidate`** now reads the scope's existing notes, includes them in the LLM prompt alongside the transcript, asks for the curated full set, and `ReplaceAll`s atomically. Return type is `(ConsolidateResult, error)`. The single LLM call does extract + dedupe + prune — variable-key drift is caught by the merger collapsing semantic duplicates and the `MaxNotes` cap.
+- **`Consolidator.MaxNotes` default raised from 8 to 30** — the cap now applies to the curated total after merge, not per-fire output, so the practical retention ceiling is higher.
+
+### Fixed
+
+- **Unbounded note accumulation** — three independent ceilings now apply: (1) the LLM prompt asks the merger to keep `≤ MaxNotes`, (2) the Consolidator truncates the output slice at `MaxNotes` after JSON parse, (3) `InMemStore.ReplaceAll` and `InMemStore.Put` enforce `WithMaxNotesPerScope` independently. Removing any one still leaves growth bounded.
+- **Variable-key drift** — the merge-aware prompt explicitly instructs the model to reuse existing keys for the same fact; LLM-side duplicate keys within a single response are collapsed by the Consolidator (`first occurrence wins`); old keys that lost their backing fact get dropped by the curator's "DROP" rule.
+- **Eviction non-determinism** — `evictOldest` and `List` both break UpdatedAt ties by Key so rapid same-nanosecond Puts produce stable, testable ordering.
+
+
 
 Cross-session memory release. New `pkg/memory` package plus three opt-in agent options let an agent carry distilled knowledge from one session into the next — preferences, learned facts, mistakes — without retraining. The loader injects formatted notes into every Run's system prompt; an optional Consolidator runs against closed transcripts and writes back to the same store. Disabled path is a single nil-check per LLM call.
 
@@ -342,6 +368,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.28.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.28.0
 [v0.27.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.27.0
 [v0.26.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.3
 [v0.26.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.26.2

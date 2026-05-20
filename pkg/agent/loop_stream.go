@@ -380,13 +380,18 @@ type AgentLoop struct {
 	AutoCacheSystem bool
 
 	// Memory, when non-nil, enables cross-session note injection. On
-	// every fresh session (no prior user/assistant turns), the loop
-	// queries Memory.List for the resolved scope and prepends formatted
-	// notes to the system message. The block is stable per (scope,
-	// note set) so prompt-cache prefixes stay warm. See memory.Store
-	// for the persistence contract and pkg/memory/FormatNotes for the
-	// rendering shape. nil disables the loader at zero hot-path cost.
+	// every Run the loop reads notes for the resolved scope (bounded
+	// by MemoryCfg), formats them with memory.FormatNotes, and
+	// appends the block to the system message via a sentinel-tagged
+	// path that's idempotent across LLM retries within an iteration
+	// and stable across iterations within a Run. nil disables the
+	// loader at zero hot-path cost.
 	Memory memory.Store
+
+	// MemoryCfg bounds the loader's per-Run cost. Zero-valued fields
+	// resolve to documented defaults (TokenBudget=500, MaxNotes=50).
+	// See MemoryConfig for details.
+	MemoryCfg MemoryConfig
 
 	// MemoryScopeFn resolves the scope key used for memory reads and
 	// for any Consolidator auto-fires. nil (default) returns sessionKey

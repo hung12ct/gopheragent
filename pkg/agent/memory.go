@@ -11,9 +11,45 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/memory"
 )
 
+// MemoryConfig tunes the loader's per-Run cost. The defaults applied by
+// loadMemoryNotes when fields are zero are documented per-field below.
+//
+// Both bounds are enforced: the loader pulls at most MaxNotes from the
+// store, then trims further to fit TokenBudget. Either alone may be
+// sufficient — TokenBudget is the harder ceiling because it tracks the
+// prompt impact directly; MaxNotes is a cheaper short-circuit that
+// avoids loading huge result sets just to throw most of them away.
+type MemoryConfig struct {
+	// TokenBudget caps the prompt-token cost of the injected memory
+	// block. 0 applies the default of 500 — enough for ~15 notes at
+	// typical content length without dominating most system prompts.
+	// Negative values are treated as 0. Estimation uses a 4-chars/
+	// token heuristic; accurate within ±20% for English.
+	TokenBudget int
+	// MaxNotes caps the per-Run note count passed to FormatNotes. 0
+	// applies the default of 50 — the typical upper bound a deployment
+	// wants before TokenBudget would start trimming anyway. Negative
+	// values are treated as 0.
+	MaxNotes int
+}
+
+// memoryConfigOrDefault returns cfg with zero-valued fields replaced by
+// the documented defaults. Centralizes the default policy so call sites
+// don't drift over time.
+func memoryConfigOrDefault(cfg MemoryConfig) MemoryConfig {
+	if cfg.TokenBudget <= 0 {
+		cfg.TokenBudget = 500
+	}
+	if cfg.MaxNotes <= 0 {
+		cfg.MaxNotes = 50
+	}
+	return cfg
+}
+
 // MemoryScopeFunc maps an (ctx, sessionKey) pair to the scope used for
-// memory reads and writes. The default — derived inside the loop — returns
-// sessionKey unchanged, which keeps memory isolated per-conversation.
+// memory reads and writes. The default — derived inside the loop —
+// returns sessionKey unchanged, which keeps memory isolated
+// per-conversation.
 //
 // Override to share memory across sessions for the same user/tenant:
 //
@@ -31,38 +67,81 @@ func defaultMemoryScope(_ context.Context, sessionKey string) string {
 	return sessionKey
 }
 
+// memoryCharsPerToken is the heuristic used by the loader to convert
+// the TokenBudget into a character budget. Matches estimateTokens'
+// 4-chars/token rule elsewhere in the package.
+const memoryCharsPerToken = 4
+
 // loadMemoryNotes returns the formatted note block for the configured
-// scope. Returns "" when memory is disabled, the scope has no notes, or
-// the store errors (errors are logged, not surfaced — memory is
-// best-effort context, never load-bearing for correctness).
+// scope, bounded by MemoryConfig. Returns "" when memory is disabled,
+// the scope has no notes, or the store errors (errors are logged, not
+// surfaced — memory is best-effort context, never load-bearing for
+// correctness).
 func (al *AgentLoop) loadMemoryNotes(ctx context.Context, sessionKey string) string {
 	if al.Memory == nil {
 		return ""
 	}
+	cfg := memoryConfigOrDefault(al.MemoryCfg)
 	scopeFn := al.MemoryScopeFn
 	if scopeFn == nil {
 		scopeFn = defaultMemoryScope
 	}
 	scope := scopeFn(ctx, sessionKey)
-	notes, err := al.Memory.List(ctx, scope)
+	notes, err := al.Memory.List(ctx, scope, memory.ListOpts{Limit: cfg.MaxNotes})
 	if err != nil {
 		log.Printf("[gopheragent] memory list error for scope %q: %v", scope, err)
 		return ""
 	}
+	notes = trimToTokenBudget(notes, cfg.TokenBudget)
 	return memory.FormatNotes(notes)
 }
 
-// memoryNotesKey is the ctx-value key for the formatted memory block. The
-// loop stashes a single resolved string at runLogicLoop entry; every
+// trimToTokenBudget returns the longest prefix of notes whose formatted
+// rendering fits inside maxTokens. Pure function so the loader stays
+// straightforward and the bound is testable in isolation.
+//
+// The estimate uses memoryCharsPerToken and the same per-bullet
+// overhead FormatNotes produces (a leading "- " plus a newline). The
+// header overhead (the "## Long-term memory" prelude) is included up
+// front — if even the header doesn't fit, the loader returns no notes,
+// which FormatNotes then renders as "".
+func trimToTokenBudget(notes []memory.Note, maxTokens int) []memory.Note {
+	if len(notes) == 0 || maxTokens <= 0 {
+		return notes
+	}
+	budgetChars := maxTokens * memoryCharsPerToken
+	// Subtract the FormatNotes header overhead before iterating.
+	const headerChars = len("\n\n## Long-term memory\nFacts learned from prior sessions with this user. Use them to skip clarifying questions and avoid repeating past mistakes.\n")
+	if budgetChars <= headerChars {
+		return nil
+	}
+	budgetChars -= headerChars
+	used := 0
+	for i, n := range notes {
+		if n.Content == "" {
+			continue
+		}
+		// "- " + content + "\n"
+		cost := 3 + len(n.Content)
+		if used+cost > budgetChars {
+			return notes[:i]
+		}
+		used += cost
+	}
+	return notes
+}
+
+// memoryNotesKey is the ctx-value key for the formatted memory block.
+// The loop stashes a single resolved string at runLogicLoop entry; every
 // buildMsgsForLLM call within that Run reads it back via
 // memoryNotesFromContext. Stashing on ctx (vs. a loop field) keeps
 // concurrent sessions isolated without mutexes.
 type memoryNotesKey struct{}
 
 // withMemoryNotes returns ctx with notes attached. notes is the
-// already-formatted block produced by memory.FormatNotes — the call site
-// formats once per Run and ctx-propagates the string. Empty notes still
-// install the key with "" so downstream reads stay deterministic.
+// already-formatted block produced by memory.FormatNotes — the call
+// site formats once per Run and ctx-propagates the string. Empty notes
+// still install the key with "" so downstream reads stay deterministic.
 func withMemoryNotes(ctx context.Context, notes string) context.Context {
 	return context.WithValue(ctx, memoryNotesKey{}, notes)
 }
@@ -115,31 +194,37 @@ func (al *AgentLoop) withMemoryNotesInSystem(ctx context.Context, msgs []history
 	return append([]history.Message{{Role: "system", Content: memoryNotesSentinel + strings.TrimLeft(notes, "\n")}}, out...)
 }
 
-// Consolidator distills a closed session's transcript into a small set of
-// reusable Notes and writes them to a memory.Store.
+// Consolidator distills a closed session's transcript into Notes,
+// merging with the scope's existing notes so dedupes, refinements, and
+// stale-knowledge pruning happen in one LLM call. The output is the
+// curated full state of the scope; the Store is updated atomically via
+// ReplaceAll.
 //
-// The default contract is one structured LLM call per Consolidate, so
-// budget at most ~1k input tokens of transcript plus the configured
-// MaxNotes worth of output. Skip Consolidate when the transcript is
-// short — there's nothing to learn from a two-turn exchange.
+// The merge design is what bounds long-term growth: every Consolidate
+// call sees the prior notes and decides whether to keep, merge, or
+// drop each one. A model that picks variable keys can't accumulate
+// forever because the merger collapses semantic duplicates and caps
+// the output count at MaxNotes.
 //
 // Concurrency: Consolidate is safe to call concurrently for distinct
-// scopes; same-scope concurrency is allowed but may produce duplicate
-// notes if two consolidations race on the same content. Callers that
-// auto-consolidate after every Run should serialize per-scope.
+// scopes; same-scope concurrency is allowed but may produce
+// last-writer-wins ReplaceAll behavior. Callers that auto-consolidate
+// after every Run should serialize per-scope (the AgentLoop's
+// fireConsolidator path does this implicitly by running once per Run
+// in a detached goroutine).
 type Consolidator struct {
 	// Store is where extracted notes land. Required.
 	Store memory.Store
-	// LLM is the provider used to extract notes. Required.
+	// LLM is the provider used to extract and merge notes. Required.
 	LLM LLMProvider
-	// Prompt overrides the default extraction instruction. Empty
-	// string falls back to defaultConsolidatorPrompt below — a neutral
-	// "extract durable facts/preferences/mistakes" template that works
-	// across domains.
+	// Prompt overrides the default merge-and-extract instruction.
+	// Empty string falls back to defaultConsolidatorPrompt below — a
+	// neutral template that works across domains.
 	Prompt string
-	// MaxNotes caps how many notes a single Consolidate emits. 0
-	// applies the default of 8 — enough to capture a session's
-	// distinct facts without bloating the next session's prompt.
+	// MaxNotes caps the curated note count after merge. 0 applies the
+	// default of 30 — small enough to stay under typical loader
+	// TokenBudget after FormatNotes overhead, large enough to retain
+	// the long tail of useful per-user knowledge.
 	MaxNotes int
 	// MinTranscriptMessages skips consolidation when the transcript
 	// has fewer than this many non-system messages. 0 applies the
@@ -148,23 +233,39 @@ type Consolidator struct {
 	MinTranscriptMessages int
 }
 
-const defaultConsolidatorPrompt = `You are a memory consolidator. Read the transcript below and extract durable knowledge that will help future sessions with the same user.
+// ConsolidateResult reports what changed in a single Consolidate call.
+// Useful for telemetry/logging without re-reading the store. The
+// "before" count is the size of the existing scope, "after" is the
+// merged result.
+type ConsolidateResult struct {
+	Before int
+	After  int
+}
 
-Emit at most {MAX_NOTES} notes. Each note must be:
+const defaultConsolidatorPrompt = `You are a memory consolidator for an AI agent. You receive two inputs:
+
+1. EXISTING notes from prior sessions with this user — they may be stale, duplicated, slightly worded differently, or contradicted by what happened in the new transcript.
+2. NEW TRANSCRIPT from the latest session.
+
+Your job is to produce the CURATED FULL SET of at most {MAX_NOTES} notes that should persist as memory for future sessions. The output replaces the existing notes entirely — anything you omit is forgotten.
+
+Curation rules:
+- DROP notes the transcript contradicts (e.g. "user prefers metric" but they explicitly asked for imperial in this transcript).
+- MERGE notes that overlap (same fact, different wording → one note with the clearest phrasing).
+- ADD new durable facts, preferences, corrections, or learned mistakes the transcript reveals.
+- DROP notes that are session-specific or unlikely to apply again.
+- Prefer fewer, denser, higher-signal notes over many overlapping ones.
+- Use STABLE, descriptive keys ("jira.default_workspace", not "pref_2026_05_20"). Prefer to overwrite an existing key by reusing it rather than inventing a new one for the same fact.
+
+Each note must be:
 - A single self-contained fact, preference, correction, or learned mistake.
 - Phrased in present tense, third person ("user prefers X", "the foo table uses column bar").
 - Concrete (no "agent should be careful").
 - Useful in a future session even without this transcript.
 
-Skip:
-- Anything specific to this one session (e.g. "the user just asked about X").
-- Anything the agent could re-derive cheaply from tools or context.
-- Restatements of generic best practices.
-
 Respond as JSON matching the schema.`
 
-// consolidatorOutput is the JSON the LLM emits. Each ExtractedNote becomes
-// one memory.Note via Consolidator.Consolidate.
+// consolidatorOutput is the JSON shape the LLM emits.
 type consolidatorOutput struct {
 	Notes []extractedNote `json:"notes"`
 }
@@ -175,29 +276,36 @@ type extractedNote struct {
 	Tags    []string `json:"tags,omitempty"`
 }
 
-// Consolidate reads transcript and writes any extracted notes to the
-// store under scope. Returns the number of notes written and any error.
+// Consolidate merges the scope's existing notes with knowledge extracted
+// from transcript and atomically replaces the stored set. Returns the
+// before/after counts and any error.
 //
-// Errors from the LLM call or store writes are returned. A nil transcript
-// (or one below MinTranscriptMessages) is a no-op that returns (0, nil) —
-// callers can blindly fire Consolidate after every turn without filtering.
-func (c *Consolidator) Consolidate(ctx context.Context, scope string, transcript []history.Message) (int, error) {
+// A nil/short transcript (below MinTranscriptMessages) is a no-op that
+// returns the current size with no error — callers can fire
+// Consolidate unconditionally after every Run without filtering.
+func (c *Consolidator) Consolidate(ctx context.Context, scope string, transcript []history.Message) (ConsolidateResult, error) {
 	if c.Store == nil {
-		return 0, fmt.Errorf("agent: consolidator: Store is nil")
+		return ConsolidateResult{}, fmt.Errorf("agent: consolidator: Store is nil")
 	}
 	if c.LLM == nil {
-		return 0, fmt.Errorf("agent: consolidator: LLM is nil")
+		return ConsolidateResult{}, fmt.Errorf("agent: consolidator: LLM is nil")
 	}
 	minMsgs := c.MinTranscriptMessages
 	if minMsgs <= 0 {
 		minMsgs = 3
 	}
 	if countNonSystem(transcript) < minMsgs {
-		return 0, nil
+		existing, _ := c.Store.List(ctx, scope, memory.ListOpts{})
+		return ConsolidateResult{Before: len(existing), After: len(existing)}, nil
 	}
 	maxNotes := c.MaxNotes
 	if maxNotes <= 0 {
-		maxNotes = 8
+		maxNotes = 30
+	}
+
+	existing, err := c.Store.List(ctx, scope, memory.ListOpts{})
+	if err != nil {
+		return ConsolidateResult{}, fmt.Errorf("agent: consolidator: read existing: %w", err)
 	}
 
 	prompt := c.Prompt
@@ -206,14 +314,16 @@ func (c *Consolidator) Consolidate(ctx context.Context, scope string, transcript
 	}
 	prompt = strings.ReplaceAll(prompt, "{MAX_NOTES}", strconv.Itoa(maxNotes))
 
+	userPayload := buildConsolidatorUserPayload(existing, transcript)
+
 	req := GenerateJSONRequest{
 		Messages: []history.Message{
 			{Role: "system", Content: prompt},
-			{Role: "user", Content: "Transcript:\n" + renderTranscriptForConsolidation(transcript)},
+			{Role: "user", Content: userPayload},
 		},
 		Output: StructuredOutput{
 			Name:        "consolidated_notes",
-			Description: "Durable knowledge extracted from a session transcript.",
+			Description: "Curated full set of memory notes for the scope.",
 			Schema:      consolidatorSchema(),
 			Strict:      true,
 		},
@@ -221,29 +331,58 @@ func (c *Consolidator) Consolidate(ctx context.Context, scope string, transcript
 
 	var out consolidatorOutput
 	if _, err := GenerateJSONInto(ctx, c.LLM, req, &out); err != nil {
-		return 0, fmt.Errorf("agent: consolidator: %w", err)
+		return ConsolidateResult{Before: len(existing)}, fmt.Errorf("agent: consolidator: %w", err)
 	}
 
-	written := 0
+	curated := make([]memory.Note, 0, len(out.Notes))
+	seen := make(map[string]struct{}, len(out.Notes))
 	for _, n := range out.Notes {
-		if written >= maxNotes {
+		if len(curated) >= maxNotes {
 			break
 		}
 		if n.Key == "" || n.Content == "" {
 			continue
 		}
-		note := memory.Note{Key: n.Key, Content: n.Content, Tags: n.Tags}
-		if err := c.Store.Put(ctx, scope, note); err != nil {
-			return written, fmt.Errorf("agent: consolidator: store put: %w", err)
+		// De-dupe by key in the LLM output itself — a single response
+		// returning the same key twice would otherwise produce a
+		// ReplaceAll error or a silently-collapsed entry.
+		if _, dup := seen[n.Key]; dup {
+			continue
 		}
-		written++
+		seen[n.Key] = struct{}{}
+		curated = append(curated, memory.Note{Key: n.Key, Content: n.Content, Tags: n.Tags})
 	}
-	return written, nil
+	if err := c.Store.ReplaceAll(ctx, scope, curated); err != nil {
+		return ConsolidateResult{Before: len(existing)}, fmt.Errorf("agent: consolidator: replace: %w", err)
+	}
+	return ConsolidateResult{Before: len(existing), After: len(curated)}, nil
 }
 
-// consolidatorSchema returns the JSON-Schema enforced on the LLM output.
-// Kept in a function so the map is fresh per call (callers that mutate
-// the schema by accident don't corrupt later requests).
+// buildConsolidatorUserPayload renders the existing-notes + transcript
+// block that goes into the user message. Kept separate so the format
+// is easy to evolve without touching Consolidate's control flow.
+func buildConsolidatorUserPayload(existing []memory.Note, transcript []history.Message) string {
+	var b strings.Builder
+	b.WriteString("EXISTING NOTES:\n")
+	if len(existing) == 0 {
+		b.WriteString("(none — this is the first consolidation for this scope)\n")
+	} else {
+		for _, n := range existing {
+			b.WriteString("- key=")
+			b.WriteString(n.Key)
+			b.WriteString(": ")
+			b.WriteString(n.Content)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\nNEW TRANSCRIPT:\n")
+	b.WriteString(renderTranscriptForConsolidation(transcript))
+	return b.String()
+}
+
+// consolidatorSchema returns the JSON-Schema enforced on the LLM
+// output. Fresh map per call so accidental mutation by a caller doesn't
+// poison subsequent requests.
 func consolidatorSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -270,11 +409,11 @@ func consolidatorSchema() map[string]any {
 	}
 }
 
-// renderTranscriptForConsolidation flattens a message slice into a plain
-// "role: content" log. Tool calls and tool results are included since
-// they're often where mistakes/corrections live. System messages are
-// dropped — the consolidator doesn't need to re-learn the agent's own
-// instructions.
+// renderTranscriptForConsolidation flattens a message slice into a
+// plain "role: content" log. Tool calls and tool results are included
+// since they're often where mistakes/corrections live. System messages
+// are dropped — the consolidator doesn't need to re-learn the agent's
+// own instructions.
 func renderTranscriptForConsolidation(msgs []history.Message) string {
 	var b strings.Builder
 	for _, m := range msgs {

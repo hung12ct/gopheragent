@@ -48,7 +48,7 @@ func main() {
 	}
 
 	loop := agent.New(sm, reg, provider,
-		agent.WithMemory(store),
+		agent.WithMemory(store, agent.MemoryConfig{TokenBudget: 500, MaxNotes: 30}),
 		agent.WithMemoryScope(scopeFn),
 		agent.WithMemoryConsolidator(consolidator),
 	)
@@ -102,10 +102,10 @@ func (p *scriptedProvider) queueDialogue(turns []string) {
 }
 
 func (p *scriptedProvider) GenerateStream(_ context.Context, msgs []history.Message, _ *tools.Registry, ch chan<- agent.StreamEvent) (agent.LLMResult, error) {
-	// Detect the consolidator's structured-output request: its system
-	// message starts with "You are a memory consolidator." Return a JSON
-	// body matching the schema.
-	if len(msgs) > 0 && strings.HasPrefix(msgs[0].Content, "You are a memory consolidator.") {
+	// Detect the consolidator's structured-output request. Match a
+	// distinctive phrase from the merge-aware prompt so future prompt
+	// rewordings don't silently break the demo.
+	if len(msgs) > 0 && strings.Contains(msgs[0].Content, "memory consolidator") {
 		return agent.LLMResult{Content: consolidatorReply}, nil
 	}
 
@@ -153,7 +153,7 @@ const consolidatorReply = `{"notes":[
 func waitForNote(ctx context.Context, store memory.Store, scope string) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		notes, _ := store.List(ctx, scope)
+		notes, _ := store.List(ctx, scope, memory.ListOpts{})
 		if len(notes) > 0 {
 			return
 		}
@@ -164,7 +164,7 @@ func waitForNote(ctx context.Context, store memory.Store, scope string) {
 // dumpNotes prints the current notes for scope so the demo output makes
 // the cross-session knowledge transfer visible.
 func dumpNotes(ctx context.Context, store memory.Store, scope string) {
-	notes, _ := store.List(ctx, scope)
+	notes, _ := store.List(ctx, scope, memory.ListOpts{})
 	if len(notes) == 0 {
 		fmt.Println("  (no notes — consolidator did not run)")
 		return
