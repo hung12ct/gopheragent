@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -340,6 +341,125 @@ func TestLoadMemoryNotes_AppliesMaxNotes(t *testing.T) {
 	}
 }
 
+func TestLoadMemoryForRun_FailClosedOnEmptyScope(t *testing.T) {
+	store := memory.NewInMemStore()
+	ctx := context.Background()
+	// Seed a note under the "anonymous" scope to prove fail-closed
+	// doesn't accidentally fall back to it.
+	_ = store.Put(ctx, "", memory.Note{Key: "k", Content: "should not appear"})
+	_ = store.Put(ctx, "anonymous", memory.Note{Key: "k", Content: "should not appear"})
+
+	al := &AgentLoop{
+		Memory: store,
+		MemoryScopeFn: func(_ context.Context, _ string) string {
+			return "" // simulate unauthenticated request
+		},
+	}
+	scope, block, count := al.loadMemoryForRun(ctx, "s1")
+	if scope != "" || block != "" || count != 0 {
+		t.Fatalf("fail-closed broken: scope=%q block=%q count=%d", scope, block, count)
+	}
+}
+
+func TestRunIteration_FailClosedSkipsMemoryAndEvent(t *testing.T) {
+	store := memory.NewInMemStore()
+	ctx := context.Background()
+	_ = store.Put(ctx, "user:alice", memory.Note{Key: "k", Content: "alice secret"})
+
+	capture := &systemPromptCapturingProvider{}
+	sm := history.NewInMemSessionManager("base")
+	reg := tools.NewRegistry()
+	var loadedEvents []MemoryLoadedEvent
+	loop := New(sm, reg, capture,
+		WithMemory(store, MemoryConfig{}),
+		WithMemoryScope(func(_ context.Context, _ string) string { return "" }),
+		WithOnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+			if p, ok := ev.Payload.(MemoryLoadedEvent); ok {
+				loadedEvents = append(loadedEvents, p)
+			}
+		}),
+	)
+	if _, err := loop.RunIteration(ctx, "s1", "hi"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	if strings.Contains(capture.firstSystem, "alice secret") {
+		t.Fatalf("fail-closed must not leak notes from any scope: %q", capture.firstSystem)
+	}
+	if len(loadedEvents) != 0 {
+		t.Fatalf("expected no MemoryLoadedEvent on fail-closed Run, got %d: %+v", len(loadedEvents), loadedEvents)
+	}
+}
+
+func TestRunIteration_EmitsMemoryLoadedEvent(t *testing.T) {
+	store := memory.NewInMemStore()
+	ctx := context.Background()
+	_ = store.Put(ctx, "user:alice", memory.Note{Key: "k1", Content: "fact one"})
+	_ = store.Put(ctx, "user:alice", memory.Note{Key: "k2", Content: "fact two"})
+
+	capture := &systemPromptCapturingProvider{}
+	sm := history.NewInMemSessionManager("base")
+	reg := tools.NewRegistry()
+	var got []MemoryLoadedEvent
+	loop := New(sm, reg, capture,
+		WithMemory(store, MemoryConfig{}),
+		WithMemoryScope(func(_ context.Context, _ string) string { return "user:alice" }),
+		WithOnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+			if p, ok := ev.Payload.(MemoryLoadedEvent); ok {
+				got = append(got, p)
+			}
+		}),
+	)
+	if _, err := loop.RunIteration(ctx, "s1", "hi"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 MemoryLoadedEvent, got %d", len(got))
+	}
+	if got[0].Scope != "user:alice" || got[0].NoteCount != 2 {
+		t.Fatalf("event payload wrong: %+v", got[0])
+	}
+	if got[0].EstimatedTokens <= 0 {
+		t.Fatalf("expected positive token estimate, got %d", got[0].EstimatedTokens)
+	}
+}
+
+func TestRunIteration_EmitsMemoryLoadedOnStoreError(t *testing.T) {
+	// Even when the store errors, the audit event must fire so
+	// adopters can detect the attempt with NoteCount=0.
+	capture := &systemPromptCapturingProvider{}
+	sm := history.NewInMemSessionManager("base")
+	reg := tools.NewRegistry()
+	var got []MemoryLoadedEvent
+	loop := New(sm, reg, capture,
+		WithMemory(&erroringStore{}, MemoryConfig{}),
+		WithMemoryScope(func(_ context.Context, _ string) string { return "user:alice" }),
+		WithOnEvent(func(_ context.Context, _ string, ev StreamEvent) {
+			if p, ok := ev.Payload.(MemoryLoadedEvent); ok {
+				got = append(got, p)
+			}
+		}),
+	)
+	if _, err := loop.RunIteration(context.Background(), "s1", "hi"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	if len(got) != 1 || got[0].Scope != "user:alice" || got[0].NoteCount != 0 {
+		t.Fatalf("expected one event with NoteCount=0 on store error, got %+v", got)
+	}
+}
+
+func TestFireConsolidator_SkipsOnEmptyScope(t *testing.T) {
+	store := memory.NewInMemStore()
+	prov := &consolidatorPanicProvider{} // panics if called
+	al := &AgentLoop{
+		Sessions:           history.NewInMemSessionManager("sys"),
+		Memory:             store,
+		MemoryScopeFn:      func(_ context.Context, _ string) string { return "" },
+		MemoryConsolidator: &Consolidator{Store: store, LLM: prov},
+	}
+	// Should not panic, should not call provider, should not fire any event.
+	al.fireConsolidator(context.Background(), "s1")
+}
+
 func TestFireConsolidator_NoopWhenNil(t *testing.T) {
 	al := &AgentLoop{Sessions: history.NewInMemSessionManager("sys")}
 	// Should not panic and should return immediately.
@@ -383,6 +503,24 @@ type consolidatorJSONProvider struct {
 func (p *consolidatorJSONProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, _ chan<- StreamEvent) (LLMResult, error) {
 	return LLMResult{Content: p.json}, nil
 }
+
+// erroringStore returns an error on every List/Put/ReplaceAll/Delete
+// — used to assert the audit event still fires even when the store
+// path fails.
+type erroringStore struct{}
+
+func (erroringStore) Put(_ context.Context, _ string, _ memory.Note) error {
+	return errStoreSynthetic
+}
+func (erroringStore) List(_ context.Context, _ string, _ memory.ListOpts) ([]memory.Note, error) {
+	return nil, errStoreSynthetic
+}
+func (erroringStore) Delete(_ context.Context, _, _ string) error { return errStoreSynthetic }
+func (erroringStore) ReplaceAll(_ context.Context, _ string, _ []memory.Note) error {
+	return errStoreSynthetic
+}
+
+var errStoreSynthetic = errors.New("memory: synthetic store failure")
 
 // consolidatorPanicProvider panics if called — used to assert short
 // transcripts never reach the provider.

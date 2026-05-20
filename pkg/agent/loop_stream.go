@@ -761,8 +761,21 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	// LLM call without re-hitting the Store. Persisted history is left
 	// untouched — session managers that rewrite the system prompt on read
 	// (e.g. InMem) would otherwise erase the injection between turns.
-	if notes := al.loadMemoryNotes(ctx, sessionKey); notes != "" {
-		ctx = withMemoryNotes(ctx, notes)
+	//
+	// Emits MemoryLoadedEvent with the resolved scope so adopters get an
+	// audit signal even when zero notes load (store error, fresh scope).
+	// Scope=="" means fail-closed (resolver returned "" — typically an
+	// unauthenticated request); skip the event entirely in that case so
+	// audit logs only record real attempts.
+	if scope, notes, count := al.loadMemoryForRun(ctx, sessionKey); scope != "" {
+		if notes != "" {
+			ctx = withMemoryNotes(ctx, notes)
+		}
+		al.emit(ctx, sessionKey, streamChan, Event(MemoryLoadedEvent{
+			Scope:           scope,
+			NoteCount:       count,
+			EstimatedTokens: len(notes) / memoryCharsPerToken,
+		}))
 	}
 
 	existing, err := al.Sessions.History(ctx, sessionKey)
@@ -785,31 +798,62 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 }
 
 // fireConsolidator launches the post-session consolidator on a detached
-// goroutine. No-op when no consolidator is configured. The goroutine uses
-// context.WithoutCancel so it survives request-scoped cancellation, and
-// re-reads the transcript from SessionManager (the source of truth after
-// iterateMessages persisted its terminal state) rather than capturing
-// the loop's working slice.
+// goroutine. No-op when no consolidator is configured, and no-op when
+// the resolved scope is "" (fail-closed — typically an unauthenticated
+// request). The goroutine uses context.WithoutCancel so it survives
+// request-scoped cancellation, and re-reads the transcript from
+// SessionManager (the source of truth after iterateMessages persisted
+// its terminal state) rather than capturing the loop's working slice.
+//
+// On completion (success or failure), emits MemoryConsolidatedEvent to
+// the EventHandlers chain. The stream channel is already closed by the
+// time this runs, so the event reaches programmatic consumers only —
+// SSE relays that want to surface consolidation events must hook the
+// EventHandler API.
 func (al *AgentLoop) fireConsolidator(ctx context.Context, sessionKey string) {
 	if al.MemoryConsolidator == nil {
 		return
 	}
-	scopeFn := al.MemoryScopeFn
-	if scopeFn == nil {
-		scopeFn = defaultMemoryScope
+	scope := al.resolveMemoryScope(ctx, sessionKey)
+	if scope == "" {
+		return
 	}
-	scope := scopeFn(ctx, sessionKey)
 	detached := context.WithoutCancel(ctx)
-	go func() {
-		transcript, herr := al.Sessions.History(detached, sessionKey)
-		if herr != nil {
-			log.Printf("[gopheragent] consolidator: history read failed for %q: %v", sessionKey, herr)
-			return
-		}
-		if _, err := al.MemoryConsolidator.Consolidate(detached, scope, transcript); err != nil {
-			log.Printf("[gopheragent] consolidator: scope %q: %v", scope, err)
-		}
-	}()
+	go al.runConsolidator(detached, sessionKey, scope)
+}
+
+// runConsolidator is the detached goroutine body. Extracted so the
+// closure stays small (no 5+ captures per project decomposition rules)
+// and the audit emission has one obvious site to reason about.
+func (al *AgentLoop) runConsolidator(ctx context.Context, sessionKey, scope string) {
+	transcript, herr := al.Sessions.History(ctx, sessionKey)
+	if herr != nil {
+		log.Printf("[gopheragent] consolidator: history read failed for %q: %v", sessionKey, herr)
+		al.emitPostStream(ctx, sessionKey, Event(MemoryConsolidatedEvent{
+			Scope: scope,
+			Error: herr.Error(),
+		}))
+		return
+	}
+	res, err := al.MemoryConsolidator.Consolidate(ctx, scope, transcript)
+	if err != nil {
+		log.Printf("[gopheragent] consolidator: scope %q: %v", scope, err)
+	}
+	ev := MemoryConsolidatedEvent{Scope: scope, Before: res.Before, After: res.After}
+	if err != nil {
+		ev.Error = err.Error()
+	}
+	al.emitPostStream(ctx, sessionKey, Event(ev))
+}
+
+// emitPostStream fires only the EventHandlers chain — used for events
+// produced by detached goroutines after the per-Run stream channel has
+// closed. Bypassing the streamChan write side is what makes this safe:
+// emit() would panic on a closed channel.
+func (al *AgentLoop) emitPostStream(ctx context.Context, sessionKey string, ev StreamEvent) {
+	for _, h := range al.EventHandlers {
+		safeCallHandler(h, ctx, sessionKey, ev)
+	}
 }
 
 // iterateMessages is the shared iteration body used by every loop entry point

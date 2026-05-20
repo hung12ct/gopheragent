@@ -59,6 +59,19 @@ const (
 	EventTypeRegenerated StreamEventType = "regenerated"
 	// EventTypeContinued marks the start of an AgentLoop.Continue resume.
 	EventTypeContinued StreamEventType = "continued"
+	// EventTypeMemoryLoaded is emitted at the start of every Run that
+	// has memory enabled, carrying the resolved scope and the count /
+	// estimated token cost of the notes injected. Use it for audit
+	// logs ("agent loaded N notes for scope user:alice") and to
+	// detect cross-tenant anomalies after the fact. Emitted exactly
+	// once per Run; skipped when memory is disabled or the scope
+	// resolver returned "" (fail-closed path).
+	EventTypeMemoryLoaded StreamEventType = "memory_loaded"
+	// EventTypeMemoryConsolidated is emitted from the detached
+	// consolidator goroutine after Consolidate returns, regardless of
+	// outcome. Carries Before/After counts and any error so adopters
+	// can wire a compliance log without polling the store.
+	EventTypeMemoryConsolidated StreamEventType = "memory_consolidated"
 )
 
 // LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
@@ -303,6 +316,47 @@ type HITLDeniedEvent struct {
 func (HITLDeniedEvent) isEventPayload()            {}
 func (HITLDeniedEvent) eventType() StreamEventType { return EventTypeHITLDenied }
 
+// MemoryLoadedEvent is the typed payload of EventTypeMemoryLoaded.
+// Emitted at the start of every Run with memory enabled — adopters
+// use it to log audit lines, drive UI badges, or detect anomalies
+// (e.g. "agent loaded 0 notes for an authenticated user" → likely a
+// scope-resolution bug).
+//
+// Scope is the resolved memory scope (the output of MemoryScopeFunc).
+// Empty Scope means the resolver returned "" and memory was skipped
+// fail-closed; the event still fires so audit consumers can record
+// the attempt. NoteCount is the number of notes the loader actually
+// injected (post-Limit, post-TokenBudget trim). EstimatedTokens is
+// the 4-chars/token estimate of the formatted memory block.
+type MemoryLoadedEvent struct {
+	Scope           string `json:"scope"`
+	NoteCount       int    `json:"note_count"`
+	EstimatedTokens int    `json:"estimated_tokens,omitempty"`
+}
+
+func (MemoryLoadedEvent) isEventPayload()            {}
+func (MemoryLoadedEvent) eventType() StreamEventType { return EventTypeMemoryLoaded }
+
+// MemoryConsolidatedEvent is the typed payload of
+// EventTypeMemoryConsolidated. Emitted by the detached consolidator
+// goroutine after Consolidate returns — success or failure — so
+// adopters can audit memory writes without polling the store.
+//
+// Before/After are the scope's note counts pre and post merge.
+// Error is the consolidator's failure string when non-empty; empty
+// means the consolidation succeeded (or was a no-op due to a short
+// transcript). Scope is empty when fail-closed (resolver returned
+// ""), in which case no consolidation ran.
+type MemoryConsolidatedEvent struct {
+	Scope  string `json:"scope"`
+	Before int    `json:"before"`
+	After  int    `json:"after"`
+	Error  string `json:"error,omitempty"`
+}
+
+func (MemoryConsolidatedEvent) isEventPayload()            {}
+func (MemoryConsolidatedEvent) eventType() StreamEventType { return EventTypeMemoryConsolidated }
+
 // HITLTimedOutEvent is the typed payload of EventTypeHITLTimedOut. Mirrors
 // HITLDeniedEvent and additionally carries the configured Timeout so a UI
 // can show "approval expired after 2m" without reaching back into agent
@@ -429,6 +483,14 @@ func decodePayload(t StreamEventType, raw []byte) EventPayload {
 		var p ContinuedEvent
 		_ = json.Unmarshal(raw, &p)
 		return p
+	case EventTypeMemoryLoaded:
+		var p MemoryLoadedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
+	case EventTypeMemoryConsolidated:
+		var p MemoryConsolidatedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	default:
 		return UnknownEvent{OriginalType: t, RawJSON: string(raw)}
 	}
@@ -460,6 +522,8 @@ type EventVisitor interface {
 	VisitHITLTimedOut(HITLTimedOutEvent)
 	VisitRegenerated(RegeneratedEvent)
 	VisitContinued(ContinuedEvent)
+	VisitMemoryLoaded(MemoryLoadedEvent)
+	VisitMemoryConsolidated(MemoryConsolidatedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -503,6 +567,10 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitRegenerated(p)
 	case ContinuedEvent:
 		v.VisitContinued(p)
+	case MemoryLoadedEvent:
+		v.VisitMemoryLoaded(p)
+	case MemoryConsolidatedEvent:
+		v.VisitMemoryConsolidated(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	default:
