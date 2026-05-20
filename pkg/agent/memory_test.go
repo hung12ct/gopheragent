@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -101,7 +102,7 @@ func TestRunIteration_InjectsMemoryNotesOnFreshSession(t *testing.T) {
 	capture := &systemPromptCapturingProvider{}
 	sm := history.NewInMemSessionManager("base system")
 	reg := tools.NewRegistry()
-	loop := New(sm, reg, capture, WithMemory(store))
+	loop := New(sm, reg, capture, WithMemory(store, MemoryConfig{}))
 
 	if _, err := loop.RunIteration(ctx, "s1", "hello"); err != nil {
 		t.Fatalf("RunIteration: %v", err)
@@ -122,7 +123,7 @@ func TestRunIteration_InjectsLatestNotesOnEveryTurn(t *testing.T) {
 	capture := &systemPromptCapturingProvider{}
 	sm := history.NewInMemSessionManager("base system")
 	reg := tools.NewRegistry()
-	loop := New(sm, reg, capture, WithMemory(store))
+	loop := New(sm, reg, capture, WithMemory(store, MemoryConfig{}))
 
 	// Turn 1: notes from initial store state inject.
 	if _, err := loop.RunIteration(ctx, "s1", "first"); err != nil {
@@ -155,12 +156,12 @@ func TestConsolidate_SkipsShortTranscripts(t *testing.T) {
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "hi"},
 	}
-	n, err := c.Consolidate(context.Background(), "u", transcript)
+	res, err := c.Consolidate(context.Background(), "u", transcript)
 	if err != nil {
 		t.Fatalf("unexpected error on short transcript: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 notes from short transcript, got %d", n)
+	if res.After != 0 {
+		t.Fatalf("expected 0 notes after short transcript, got %d", res.After)
 	}
 }
 
@@ -175,16 +176,167 @@ func TestConsolidate_WritesNotesFromLLM(t *testing.T) {
 		{Role: "user", Content: "more"},
 		{Role: "assistant", Content: "sure"},
 	}
-	n, err := c.Consolidate(context.Background(), "u", transcript)
+	res, err := c.Consolidate(context.Background(), "u", transcript)
 	if err != nil {
 		t.Fatalf("Consolidate: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("expected 2 notes written, got %d", n)
+	if res.After != 2 {
+		t.Fatalf("expected 2 notes after consolidation, got %d", res.After)
 	}
-	notes, _ := store.List(context.Background(), "u")
+	notes, _ := store.List(context.Background(), "u", memory.ListOpts{})
 	if len(notes) != 2 {
 		t.Fatalf("expected 2 notes in store, got %d", len(notes))
+	}
+}
+
+func TestConsolidate_MergesExistingWithNew(t *testing.T) {
+	store := memory.NewInMemStore()
+	ctx := context.Background()
+	// Seed two existing notes; one will be kept-as-is, one updated by the merge.
+	_ = store.Put(ctx, "u", memory.Note{Key: "keep", Content: "user is in UTC+7"})
+	_ = store.Put(ctx, "u", memory.Note{Key: "outdated", Content: "user prefers Python"})
+
+	// LLM "merges": drops 'outdated', keeps 'keep' with same key, adds 'new'.
+	prov := &consolidatorJSONProvider{json: `{"notes":[
+		{"key":"keep","content":"user is in UTC+7"},
+		{"key":"new","content":"user now prefers Go"}
+	]}`}
+	c := &Consolidator{Store: store, LLM: prov}
+
+	transcript := []history.Message{
+		{Role: "user", Content: "from now on use Go not Python"},
+		{Role: "assistant", Content: "noted"},
+		{Role: "user", Content: "thanks"},
+	}
+	res, err := c.Consolidate(ctx, "u", transcript)
+	if err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if res.Before != 2 || res.After != 2 {
+		t.Fatalf("expected Before=2 After=2, got %+v", res)
+	}
+	notes, _ := store.List(ctx, "u", memory.ListOpts{})
+	if len(notes) != 2 {
+		t.Fatalf("expected 2 notes after merge, got %d", len(notes))
+	}
+	got := map[string]string{}
+	for _, n := range notes {
+		got[n.Key] = n.Content
+	}
+	if _, exists := got["outdated"]; exists {
+		t.Fatal("expected 'outdated' to be dropped by merge")
+	}
+	if got["new"] != "user now prefers Go" {
+		t.Fatalf("expected 'new' present, got %v", got)
+	}
+}
+
+func TestConsolidate_CapsAtMaxNotes(t *testing.T) {
+	store := memory.NewInMemStore()
+	// LLM returns 5; consolidator MaxNotes=3 → only 3 land.
+	prov := &consolidatorJSONProvider{json: `{"notes":[
+		{"key":"a","content":"1"},
+		{"key":"b","content":"2"},
+		{"key":"c","content":"3"},
+		{"key":"d","content":"4"},
+		{"key":"e","content":"5"}
+	]}`}
+	c := &Consolidator{Store: store, LLM: prov, MaxNotes: 3}
+
+	transcript := []history.Message{
+		{Role: "user", Content: "x"}, {Role: "assistant", Content: "y"}, {Role: "user", Content: "z"},
+	}
+	res, err := c.Consolidate(context.Background(), "u", transcript)
+	if err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if res.After != 3 {
+		t.Fatalf("expected After=3 after cap, got %d", res.After)
+	}
+}
+
+func TestConsolidate_DedupesDuplicateKeysFromLLM(t *testing.T) {
+	store := memory.NewInMemStore()
+	prov := &consolidatorJSONProvider{json: `{"notes":[
+		{"key":"dup","content":"first"},
+		{"key":"dup","content":"second-version"},
+		{"key":"other","content":"x"}
+	]}`}
+	c := &Consolidator{Store: store, LLM: prov}
+	transcript := []history.Message{
+		{Role: "user", Content: "x"}, {Role: "assistant", Content: "y"}, {Role: "user", Content: "z"},
+	}
+	res, err := c.Consolidate(context.Background(), "u", transcript)
+	if err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if res.After != 2 {
+		t.Fatalf("expected duplicate key collapsed to 1: After=%d", res.After)
+	}
+	notes, _ := store.List(context.Background(), "u", memory.ListOpts{})
+	for _, n := range notes {
+		if n.Key == "dup" && n.Content != "first" {
+			t.Fatalf("expected first occurrence to win, got %q", n.Content)
+		}
+	}
+}
+
+func TestTrimToTokenBudget_HonorsBudget(t *testing.T) {
+	notes := []memory.Note{
+		{Content: strings.Repeat("a", 80)}, // ~20 tokens
+		{Content: strings.Repeat("b", 80)},
+		{Content: strings.Repeat("c", 80)},
+		{Content: strings.Repeat("d", 80)},
+	}
+	// Header is ~36 tokens; each bullet (3 + 80 chars) is ~21 tokens.
+	// Budget 70 tokens leaves ~34 tokens for bullets → fits one (~21t),
+	// drops the rest.
+	out := trimToTokenBudget(notes, 70)
+	if len(out) != 1 {
+		t.Fatalf("expected trim to 1 note at budget=70, got %d", len(out))
+	}
+	// Zero budget returns empty.
+	if got := trimToTokenBudget(notes, 0); len(got) != len(notes) {
+		t.Fatalf("zero budget should be a no-op (current behaviour), got %d", len(got))
+	}
+	// Header doesn't fit → nothing returned.
+	if got := trimToTokenBudget(notes, 5); len(got) != 0 {
+		t.Fatalf("undersized budget should return nothing, got %d", len(got))
+	}
+}
+
+func TestLoadMemoryNotes_AppliesTokenBudget(t *testing.T) {
+	store := memory.NewInMemStore()
+	ctx := context.Background()
+	// 20 notes, each ~120 chars → ~30 tokens each.
+	for i := range 20 {
+		_ = store.Put(ctx, "u", memory.Note{
+			Key:     "k-" + strconv.Itoa(i),
+			Content: strings.Repeat("x", 120),
+		})
+	}
+	al := &AgentLoop{Memory: store, MemoryCfg: MemoryConfig{TokenBudget: 200}}
+	got := al.loadMemoryNotes(ctx, "u")
+	// Block should be capped: ~120 tokens budget after the header, fits ~4 notes.
+	bullets := strings.Count(got, "\n- ")
+	if bullets > 6 {
+		t.Fatalf("budget should trim aggressively, got %d bullets", bullets)
+	}
+	if bullets == 0 {
+		t.Fatalf("expected some bullets to fit in 200-token budget, got 0; output=%q", got)
+	}
+}
+
+func TestLoadMemoryNotes_AppliesMaxNotes(t *testing.T) {
+	store := memory.NewInMemStore()
+	ctx := context.Background()
+	for i := range 20 {
+		_ = store.Put(ctx, "u", memory.Note{Key: "k-" + strconv.Itoa(i), Content: "x"})
+	}
+	al := &AgentLoop{Memory: store, MemoryCfg: MemoryConfig{MaxNotes: 5, TokenBudget: 10000}}
+	got := al.loadMemoryNotes(ctx, "u")
+	if bullets := strings.Count(got, "\n- "); bullets != 5 {
+		t.Fatalf("expected MaxNotes=5 bullets, got %d in %q", bullets, got)
 	}
 }
 
