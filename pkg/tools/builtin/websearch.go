@@ -13,23 +13,6 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
-// WebSearchTool uses the Tavily API to perform web searches and return answers.
-type WebSearchTool struct {
-	apiKey string
-}
-
-// NewWebSearchTool creates a new web search tool. If apiKey is empty, it attempts
-// to load it from the TAVILY_API_KEY environment variable.
-func NewWebSearchTool(apiKey string) (*WebSearchTool, error) {
-	if apiKey == "" {
-		apiKey = os.Getenv("TAVILY_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("TAVILY_API_KEY environment variable is missing")
-	}
-	return &WebSearchTool{apiKey: apiKey}, nil
-}
-
 const webSearchName = "web_search"
 const webSearchDescription = "Perform a web search to find current information, news, or general knowledge using Tavily API."
 
@@ -39,27 +22,39 @@ type webSearchArgs struct {
 	Days  int    `json:"days,omitempty"           description:"Only return results from the last N days. Use 1 for 'today', 7 for 'this week'. Only applies when topic is 'news'. Default: 3."`
 }
 
-func (t *WebSearchTool) Descriptor() tools.ToolDescriptor {
-	return tools.ToolDescriptor{
-		Name:        webSearchName,
-		Description: webSearchDescription,
-		Parameters:  tools.SchemaFor[webSearchArgs](),
-		Display:     tools.DefaultDisplay(webSearchName, webSearchDescription),
+// RegisterWebSearch registers a Tavily-backed web search tool. apiKey
+// is required; pass "" to fall back to the TAVILY_API_KEY environment
+// variable. Returns an error when no key is resolvable so adopters
+// catch misconfiguration at startup instead of on the first call.
+//
+// The http.Client is built once per registration and shared across
+// every call — typical Go HTTP-client lifecycle.
+func RegisterWebSearch(reg tools.Registerer, apiKey string) error {
+	if apiKey == "" {
+		apiKey = os.Getenv("TAVILY_API_KEY")
 	}
+	if apiKey == "" {
+		return fmt.Errorf("tools: web_search: TAVILY_API_KEY is missing")
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	tools.RegisterFunc(reg, webSearchName, webSearchDescription,
+		func(ctx context.Context, args webSearchArgs) (tools.Result, error) {
+			return executeWebSearch(ctx, client, apiKey, args)
+		})
+	return nil
 }
 
-func (t *WebSearchTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
-	var args webSearchArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return tools.Result{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-
+// executeWebSearch is the typed-arg body extracted so the
+// RegisterWebSearch closure carries only the bare-minimum captures
+// (client, apiKey) and the HTTP + formatting logic stays
+// independently testable.
+func executeWebSearch(ctx context.Context, client *http.Client, apiKey string, args webSearchArgs) (tools.Result, error) {
 	if args.Topic == "" {
 		args.Topic = "general"
 	}
 
 	reqBody := map[string]any{
-		"api_key":        t.apiKey,
+		"api_key":        apiKey,
 		"query":          args.Query,
 		"search_depth":   "basic",
 		"include_answer": true,
@@ -83,7 +78,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, argsJSON string) (tools.Res
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("search API error: %w", err)

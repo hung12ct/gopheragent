@@ -36,7 +36,13 @@ type FuncToolOpts struct {
 // Compared with the struct-and-methods form (~40 LOC), the typed-fn
 // form is one declaration + the function body. The trade-off is that
 // adopters who need to customize Descriptor flags pass FuncToolOpts.
-func RegisterFunc[T any](reg *Registry, name, description string, fn func(ctx context.Context, args T) (Result, error), opts ...FuncToolOpts) {
+//
+// The reg parameter accepts anything implementing Registerer — that's
+// the in-tree *Registry as well as adopter wrappers like
+// builder.GlobalCatalog. The interface keeps the call site readable
+// when the same tools register into both the agent registry and the
+// catalog: pass either pointer directly.
+func RegisterFunc[T any](reg Registerer, name, description string, fn func(ctx context.Context, args T) (Result, error), opts ...FuncToolOpts) {
 	var o FuncToolOpts
 	if len(opts) > 0 {
 		o = opts[0]

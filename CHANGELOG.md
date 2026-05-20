@@ -2,6 +2,46 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.31.0] — 2026-05-20
+
+Builtin tools migrated to `tools.RegisterFunc`. Five stateless / lightly-stateful tools shed their struct + `Descriptor()` + `Execute()` boilerplate in favour of the typed-fn registration pattern v0.30.0 shipped. Breaking change for adopters constructing these tools directly; YAML-driven agents are unaffected because lookup happens by tool name.
+
+### Added
+
+- **`tools.Registerer` interface** — `Register(Tool)`. Implemented by `*tools.Registry` and `*builder.GlobalCatalog` so adopter-side wrappers can be passed to `RegisterFunc` and to all the new `Register*` builtins below without bridging. (`pkg/tools/tool.go`)
+
+### Changed (breaking)
+
+- **`tools.RegisterFunc`** — first parameter widened from `*tools.Registry` to `tools.Registerer`. Existing callers passing `*tools.Registry` continue to work (the concrete type satisfies the interface); the change unblocks adopters who maintain their own registration containers (e.g. `builder.GlobalCatalog`).
+- **`builtin.ExitPlanModeTool` removed** → use `builtin.RegisterExitPlanMode(reg)` instead. Sentinel tool intercepted by the AgentLoop while plan mode is active; the Execute body is only reached out-of-band and returns a benign acknowledgement.
+- **`builtin.ShowMediaTool` + `NewShowMediaTool` removed** → use `builtin.RegisterShowMedia(reg)`. `Inline=true` flag propagated via `FuncToolOpts`.
+- **`builtin.ReadURLTool` + `NewReadURLTool` removed** → use `builtin.RegisterReadURL(reg)`. SSRF-safe `http.Client` is constructed once per registration and closure-captured.
+- **`builtin.FileReadTool` + `NewFileReadTool` removed** → use `builtin.RegisterFileRead(reg, FileReadConfig{Root, MaxBytes})`. `Cacheable=true` propagated via `FuncToolOpts`; `MaxBytes=0` resolves to the 1 MiB default.
+- **`builtin.WebSearchTool` + `NewWebSearchTool` removed** → use `builtin.RegisterWebSearch(reg, apiKey) error`. Falls back to `TAVILY_API_KEY` env when apiKey is empty; returns an error when no key is resolvable so misconfiguration is caught at startup, not on the first call.
+
+### Migration
+
+Adopters were typically calling:
+
+```go
+catalog.Register(builtin.NewReadURLTool())
+catalog.Register(builtin.NewShowMediaTool())
+ws, err := builtin.NewWebSearchTool("")
+if err == nil { catalog.Register(ws) }
+```
+
+Replace with:
+
+```go
+builtin.RegisterReadURL(catalog)
+builtin.RegisterShowMedia(catalog)
+if err := builtin.RegisterWebSearch(catalog, ""); err != nil {
+    log.Printf("web_search disabled: %v", err)
+}
+```
+
+No YAML changes required — agent definitions reference tools by name (`web_search`, `read_url`, etc.) and the names are unchanged.
+
 ## [v0.30.0] — 2026-05-20
 
 Ergonomics + ops pass. Five additive primitives that lower the bar for adopters writing tools, tests, and production deployments. None of them break the v0.29.0 API.
@@ -401,6 +441,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.31.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.0
 [v0.30.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.30.0
 [v0.29.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.29.0
 [v0.28.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.28.0

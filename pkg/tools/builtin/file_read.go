@@ -12,39 +12,16 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
-// FileReadTool reads a file from the local filesystem. Every read is
-// constrained to a root directory configured at construction time —
-// requests whose cleaned absolute path does not live under root are
-// rejected before the OS is even touched.
-//
-// The tool is intentionally read-only. If you want a companion writer,
-// gate it behind RequiresConfirmation() == true rather than extending
-// this type.
-type FileReadTool struct {
+// FileReadConfig tunes the read-only file_read tool registered via
+// RegisterFileRead. Root is required; zero MaxBytes resolves to the
+// 1 MiB default.
+type FileReadConfig struct {
 	// Root is the absolute directory paths must be contained within.
 	// Relative paths in requests are resolved against Root.
 	Root string
-
-	// MaxBytes caps how many bytes are read. 0 uses the default (1 MiB).
+	// MaxBytes caps how many bytes a single Execute reads. 0 applies
+	// the default of 1 MiB.
 	MaxBytes int64
-}
-
-// NewFileReadTool constructs a FileReadTool. root must be an absolute
-// directory — attempts to escape it via "..", symlinks, or absolute paths
-// are rejected at Execute time.
-func NewFileReadTool(root string) *FileReadTool {
-	return &FileReadTool{Root: root, MaxBytes: 1 << 20}
-}
-
-// WithMaxBytes overrides the default 1 MiB read cap. n <= 0 resets to
-// default.
-func (t *FileReadTool) WithMaxBytes(n int64) *FileReadTool {
-	if n <= 0 {
-		t.MaxBytes = 1 << 20
-	} else {
-		t.MaxBytes = n
-	}
-	return t
 }
 
 const fileReadName = "file_read"
@@ -56,33 +33,41 @@ type fileReadArgs struct {
 	Length int64  `json:"length,omitempty" description:"Optional number of bytes to read. Capped by MaxBytes. Defaults to MaxBytes."`
 }
 
-// Descriptor returns metadata for file_read. Cacheable=true opts identical
-// (path, offset, length) tuples into the agent-loop tool-result cache for the
-// process lifetime; files can change on disk between turns, but the cache is
-// in-memory and short-lived so staleness is bounded.
-func (t *FileReadTool) Descriptor() tools.ToolDescriptor {
-	return tools.ToolDescriptor{
-		Name:        fileReadName,
-		Description: fileReadDescription,
-		Parameters:  tools.SchemaFor[fileReadArgs](),
-		Cacheable:   true,
-		Display:     tools.DefaultDisplay(fileReadName, fileReadDescription),
+// RegisterFileRead registers a read-only file tool sandboxed to
+// cfg.Root. Every read is constrained to that directory — requests
+// whose cleaned absolute path does not live under Root are rejected
+// before the OS is even touched.
+//
+// Cacheable=true opts identical (path, offset, length) tuples into
+// the agent-loop tool-result cache for the process lifetime; files
+// can change on disk between turns, but the cache is in-memory and
+// short-lived so staleness is bounded.
+//
+// To pair this with a companion writer, gate that tool behind
+// RequiresConfirmation=true rather than extending this registration.
+func RegisterFileRead(reg tools.Registerer, cfg FileReadConfig) {
+	if cfg.MaxBytes <= 0 {
+		cfg.MaxBytes = 1 << 20
 	}
+	tools.RegisterFunc(reg, fileReadName, fileReadDescription,
+		func(ctx context.Context, args fileReadArgs) (tools.Result, error) {
+			return executeFileRead(ctx, cfg, args)
+		},
+		tools.FuncToolOpts{Cacheable: true})
 }
 
-func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
-	var args fileReadArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return tools.Result{}, fmt.Errorf("tools: invalid arguments: %w", err)
-	}
+// executeFileRead is the typed-arg body extracted so the
+// RegisterFileRead closure captures only cfg and the sandbox /
+// streaming logic stays independently testable.
+func executeFileRead(_ context.Context, cfg FileReadConfig, args fileReadArgs) (tools.Result, error) {
 	if strings.TrimSpace(args.Path) == "" {
 		return tools.Result{}, fmt.Errorf("tools: path is required")
 	}
-	if t.Root == "" {
+	if cfg.Root == "" {
 		return tools.Result{}, fmt.Errorf("tools: file_read has no Root configured")
 	}
 
-	absRoot, err := filepath.Abs(t.Root)
+	absRoot, err := filepath.Abs(cfg.Root)
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("tools: invalid root: %w", err)
 	}
@@ -120,15 +105,12 @@ func (t *FileReadTool) Execute(ctx context.Context, argsJSON string) (tools.Resu
 		}
 	}
 
-	cap := t.MaxBytes
-	if cap <= 0 {
-		cap = 1 << 20
-	}
-	if args.Length > 0 && args.Length < cap {
-		cap = args.Length
+	limit := cfg.MaxBytes
+	if args.Length > 0 && args.Length < limit {
+		limit = args.Length
 	}
 
-	buf, err := io.ReadAll(io.LimitReader(f, cap))
+	buf, err := io.ReadAll(io.LimitReader(f, limit))
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("tools: read: %w", err)
 	}

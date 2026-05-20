@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,24 +21,6 @@ var (
 	reTag    = regexp.MustCompile(`(?is)<.*?>`)
 )
 
-// ReadURLTool fetches the HTML content of a given URL and strips tags
-// to provide raw text for the LLM to summarize or analyze.
-type ReadURLTool struct {
-	client *http.Client
-}
-
-// NewReadURLTool creates a new built-in tool that can scrape simple static webpages.
-// SSRF protection is always enabled: private, loopback, and link-local addresses
-// (including 169.254.169.254 cloud metadata endpoints) are blocked.
-func NewReadURLTool() *ReadURLTool {
-	return &ReadURLTool{
-		client: &http.Client{
-			Timeout:   10 * time.Second,
-			Transport: newSSRFSafeTransport(nil),
-		},
-	}
-}
-
 const readURLName = "read_url"
 const readURLDescription = "Fetch raw text content from a public webpage URL. Use this when the user asks to summarize a specific link or read an article."
 
@@ -47,21 +28,30 @@ type readURLArgs struct {
 	URL string `json:"url" description:"The exact valid HTTP/HTTPS URL of the webpage to scrape."`
 }
 
-func (t *ReadURLTool) Descriptor() tools.ToolDescriptor {
-	return tools.ToolDescriptor{
-		Name:        readURLName,
-		Description: readURLDescription,
-		Parameters:  tools.SchemaFor[readURLArgs](),
-		Display:     tools.DefaultDisplay(readURLName, readURLDescription),
+// RegisterReadURL registers a webpage-scraping tool that fetches HTML
+// and strips it to raw text for the LLM to summarize. SSRF protection
+// is always enabled: private, loopback, and link-local addresses
+// (including 169.254.169.254 cloud metadata endpoints) are blocked at
+// the transport layer.
+//
+// The http.Client is constructed once at registration time and shared
+// across every call — typical Go HTTP-client lifecycle.
+func RegisterReadURL(reg tools.Registerer) {
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: newSSRFSafeTransport(nil),
 	}
+	tools.RegisterFunc(reg, readURLName, readURLDescription,
+		func(ctx context.Context, args readURLArgs) (tools.Result, error) {
+			return executeReadURL(ctx, client, args)
+		})
 }
 
-func (t *ReadURLTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
-	var args readURLArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return tools.Result{}, fmt.Errorf("tools: read_url: invalid arguments: %w", err)
-	}
-
+// executeReadURL is the typed-arg body extracted from the
+// RegisterReadURL closure so the HTTP + parsing logic stays
+// independently testable and the closure has a single capture
+// (client).
+func executeReadURL(ctx context.Context, client *http.Client, args readURLArgs) (tools.Result, error) {
 	url := strings.TrimSpace(args.URL)
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		url = "https://" + url
@@ -76,7 +66,7 @@ func (t *ReadURLTool) Execute(ctx context.Context, argsJSON string) (tools.Resul
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	resp, err := t.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("tools: read_url: fetch: %w", err)
 	}

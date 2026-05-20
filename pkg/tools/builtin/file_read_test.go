@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
 func writeTempFile(t *testing.T, dir, name, content string) string {
@@ -19,10 +21,25 @@ func writeTempFile(t *testing.T, dir, name, content string) string {
 	return p
 }
 
+// fileReadTool registers file_read with cfg and returns the registered
+// tool for direct Execute() calls. Tests use this helper instead of
+// hand-constructing a struct, matching the production pattern adopters
+// follow (register-via-helper, look-up-by-name).
+func fileReadTool(t *testing.T, cfg FileReadConfig) tools.Tool {
+	t.Helper()
+	reg := tools.NewRegistry()
+	RegisterFileRead(reg, cfg)
+	tl, ok := reg.Get(fileReadName)
+	if !ok {
+		t.Fatalf("file_read not registered")
+	}
+	return tl
+}
+
 func TestFileReadTool_ReadsFileWithinRoot(t *testing.T) {
 	dir := t.TempDir()
 	writeTempFile(t, dir, "hello.txt", "hello world")
-	tool := NewFileReadTool(dir)
+	tool := fileReadTool(t, FileReadConfig{Root: dir})
 
 	out, err := tool.Execute(context.Background(), `{"path":"hello.txt"}`)
 	if err != nil {
@@ -57,7 +74,7 @@ func TestFileReadTool_RejectsPathTraversal(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(secretPath) })
 
-	tool := NewFileReadTool(dir)
+	tool := fileReadTool(t, FileReadConfig{Root: dir})
 	_, err := tool.Execute(context.Background(), `{"path":"../secret.txt"}`)
 	if err == nil {
 		t.Fatal("expected error for path traversal, got nil")
@@ -69,7 +86,7 @@ func TestFileReadTool_RejectsPathTraversal(t *testing.T) {
 
 func TestFileReadTool_RejectsAbsolutePathOutsideRoot(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewFileReadTool(dir)
+	tool := fileReadTool(t, FileReadConfig{Root: dir})
 	req := fmt.Sprintf(`{"path":%q}`, "/etc/passwd")
 	_, err := tool.Execute(context.Background(), req)
 	if err == nil {
@@ -80,7 +97,7 @@ func TestFileReadTool_RejectsAbsolutePathOutsideRoot(t *testing.T) {
 func TestFileReadTool_OffsetAndLength(t *testing.T) {
 	dir := t.TempDir()
 	writeTempFile(t, dir, "a.txt", "0123456789")
-	tool := NewFileReadTool(dir)
+	tool := fileReadTool(t, FileReadConfig{Root: dir})
 
 	out, err := tool.Execute(context.Background(), `{"path":"a.txt","offset":3,"length":4}`)
 	if err != nil {
@@ -105,7 +122,7 @@ func TestFileReadTool_ErrorsOnDirectory(t *testing.T) {
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	tool := NewFileReadTool(dir)
+	tool := fileReadTool(t, FileReadConfig{Root: dir})
 	_, err := tool.Execute(context.Background(), `{"path":"sub"}`)
 	if err == nil {
 		t.Fatal("expected error for directory target")
@@ -114,10 +131,20 @@ func TestFileReadTool_ErrorsOnDirectory(t *testing.T) {
 
 func TestFileReadTool_ErrorsOnMissingPath(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewFileReadTool(dir)
+	tool := fileReadTool(t, FileReadConfig{Root: dir})
 	_, err := tool.Execute(context.Background(), `{"path":""}`)
 	if err == nil {
 		t.Fatal("expected error for empty path")
+	}
+}
+
+func TestFileReadTool_CacheableFlagSet(t *testing.T) {
+	// Cacheable=true must propagate via FuncToolOpts so the agent
+	// loop's tool-result cache picks up identical (path, offset,
+	// length) tuples.
+	tool := fileReadTool(t, FileReadConfig{Root: t.TempDir()})
+	if !tool.Descriptor().Cacheable {
+		t.Fatal("expected Cacheable=true on file_read descriptor")
 	}
 }
 
