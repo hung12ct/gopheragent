@@ -166,6 +166,9 @@ Full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent).
 - YAML-driven agents (file or `//go:embed`) + knowledge base injection
 - Permission DSL (`Allow` / `Deny` glob patterns)
 - Typed event payloads, bounded async workers
+- Cross-session memory (`pkg/memory`): post-session `Consolidator` distills
+  transcripts into notes that the loader prepends to future sessions —
+  agents learn between conversations without retraining
 
 ## Supported Providers
 

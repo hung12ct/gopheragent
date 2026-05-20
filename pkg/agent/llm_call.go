@@ -162,7 +162,11 @@ func (al *AgentLoop) selectToolsForCall(ctx context.Context, sessionKey string, 
 // caller's msgs is never mutated even when the chain takes the alias
 // fast path.
 func (al *AgentLoop) buildMsgsForLLM(ctx context.Context, sessionKey string, iteration int, msgs []history.Message) []history.Message {
-	msgsForLLM := al.withDynamicContext(ctx, sessionKey, al.withPlanModeHint(sessionKey, al.withToolChainingHint(withSoftLandingHint(iteration, al.MaxIters, msgs))))
+	msgsForLLM := withSoftLandingHint(iteration, al.MaxIters, msgs)
+	msgsForLLM = al.withMemoryNotesInSystem(ctx, msgsForLLM)
+	msgsForLLM = al.withToolChainingHint(msgsForLLM)
+	msgsForLLM = al.withPlanModeHint(sessionKey, msgsForLLM)
+	msgsForLLM = al.withDynamicContext(ctx, sessionKey, msgsForLLM)
 	if al.AutoCacheSystem && len(msgsForLLM) > 0 && msgsForLLM[0].Role == "system" && !msgsForLLM[0].CacheHint {
 		// Copy before stamping: msgsForLLM can alias the input slice
 		// when no upstream hint needed a fresh allocation. Mutating the

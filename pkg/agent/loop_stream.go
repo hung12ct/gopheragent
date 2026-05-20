@@ -13,6 +13,7 @@ import (
 
 	"github.com/hung12ct/gopheragent/pkg/cache"
 	"github.com/hung12ct/gopheragent/pkg/history"
+	"github.com/hung12ct/gopheragent/pkg/memory"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
@@ -378,6 +379,30 @@ type AgentLoop struct {
 	// (&AgentLoop{...}) gets zero-value false and must opt in explicitly.
 	AutoCacheSystem bool
 
+	// Memory, when non-nil, enables cross-session note injection. On
+	// every fresh session (no prior user/assistant turns), the loop
+	// queries Memory.List for the resolved scope and prepends formatted
+	// notes to the system message. The block is stable per (scope,
+	// note set) so prompt-cache prefixes stay warm. See memory.Store
+	// for the persistence contract and pkg/memory/FormatNotes for the
+	// rendering shape. nil disables the loader at zero hot-path cost.
+	Memory memory.Store
+
+	// MemoryScopeFn resolves the scope key used for memory reads and
+	// for any Consolidator auto-fires. nil (default) returns sessionKey
+	// unchanged, isolating memory per-conversation; override to share
+	// memory across sessions for the same user/tenant (typical pattern
+	// is to read a user_id from ctx and return "user:" + id).
+	MemoryScopeFn MemoryScopeFunc
+
+	// MemoryConsolidator, when non-nil, fires after every Run that
+	// terminates in DoneEvent. Runs in a detached goroutine that
+	// inherits ctx values but is immune to ctx cancellation — the
+	// caller's request lifetime never aborts an in-flight consolidation.
+	// Set this together with Memory; setting it without a store is a
+	// configuration error caught at Consolidate time.
+	MemoryConsolidator *Consolidator
+
 	// confirmHITLWarnOnce gates the one-time misconfig warning emitted by
 	// runHITLGate when ConfirmHITL is nil. Loop-scoped so each instance
 	// warns independently; never reset across calls.
@@ -726,6 +751,15 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 		}
 	}
 
+	// Load memory notes once per Run and stash on ctx; buildMsgsForLLM
+	// reads the cached value on every iteration so notes show up on every
+	// LLM call without re-hitting the Store. Persisted history is left
+	// untouched — session managers that rewrite the system prompt on read
+	// (e.g. InMem) would otherwise erase the injection between turns.
+	if notes := al.loadMemoryNotes(ctx, sessionKey); notes != "" {
+		ctx = withMemoryNotes(ctx, notes)
+	}
+
 	existing, err := al.Sessions.History(ctx, sessionKey)
 	if err != nil {
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: load history: %w", err)))
@@ -742,6 +776,35 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	}
 
 	al.iterateMessages(ctx, sessionKey, streamChan, msgs)
+	al.fireConsolidator(ctx, sessionKey)
+}
+
+// fireConsolidator launches the post-session consolidator on a detached
+// goroutine. No-op when no consolidator is configured. The goroutine uses
+// context.WithoutCancel so it survives request-scoped cancellation, and
+// re-reads the transcript from SessionManager (the source of truth after
+// iterateMessages persisted its terminal state) rather than capturing
+// the loop's working slice.
+func (al *AgentLoop) fireConsolidator(ctx context.Context, sessionKey string) {
+	if al.MemoryConsolidator == nil {
+		return
+	}
+	scopeFn := al.MemoryScopeFn
+	if scopeFn == nil {
+		scopeFn = defaultMemoryScope
+	}
+	scope := scopeFn(ctx, sessionKey)
+	detached := context.WithoutCancel(ctx)
+	go func() {
+		transcript, herr := al.Sessions.History(detached, sessionKey)
+		if herr != nil {
+			log.Printf("[gopheragent] consolidator: history read failed for %q: %v", sessionKey, herr)
+			return
+		}
+		if _, err := al.MemoryConsolidator.Consolidate(detached, scope, transcript); err != nil {
+			log.Printf("[gopheragent] consolidator: scope %q: %v", scope, err)
+		}
+	}()
 }
 
 // iterateMessages is the shared iteration body used by every loop entry point

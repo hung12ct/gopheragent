@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/hung12ct/gopheragent/pkg/cache"
+	"github.com/hung12ct/gopheragent/pkg/memory"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
@@ -240,4 +241,32 @@ func WithMaxToolCallsPerSession(n int) Option {
 // breakpoints by hand.
 func WithoutAutoCacheSystem() Option {
 	return func(al *AgentLoop) { al.AutoCacheSystem = false }
+}
+
+// WithMemory enables cross-session memory by attaching a Store. On every
+// fresh session start the loop reads notes for the resolved scope and
+// prepends them to the system message; without this option the memory
+// loader is a no-op at zero hot-path cost. Pair with WithMemoryScope to
+// share memory across sessions for the same user/tenant, and with
+// WithMemoryConsolidator to auto-distill closed sessions into notes.
+func WithMemory(store memory.Store) Option {
+	return func(al *AgentLoop) { al.Memory = store }
+}
+
+// WithMemoryScope overrides the default scope resolver (which returns
+// sessionKey unchanged). Use to share memory across sessions for the
+// same user: typically read a user_id off ctx and return a stable scope
+// key derived from it. nil keeps the default.
+func WithMemoryScope(fn MemoryScopeFunc) Option {
+	return func(al *AgentLoop) { al.MemoryScopeFn = fn }
+}
+
+// WithMemoryConsolidator wires a Consolidator that fires after every
+// Run terminating in DoneEvent. Runs detached from the request ctx so
+// HTTP disconnects do not abort the LLM call. Pass nil to disable
+// (default). Setting a consolidator without WithMemory is permitted —
+// the consolidator writes to its own Store reference and the loader
+// reads from al.Memory; in practice the same store backs both.
+func WithMemoryConsolidator(c *Consolidator) Option {
+	return func(al *AgentLoop) { al.MemoryConsolidator = c }
 }
