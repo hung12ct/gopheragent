@@ -344,15 +344,14 @@ func getStream(sessionKey string) chan<- agent.StreamEvent {
 func initApp() {
 	catalog := builder.NewGlobalCatalog()
 
-	// Web tools
-	webSearch, err := builtin.NewWebSearchTool("")
-	if err != nil {
+	// Web tools — Register* helpers use tools.RegisterFunc internally
+	// so the catalog gets a typed-args funcTool without the per-tool
+	// struct boilerplate.
+	if err := builtin.RegisterWebSearch(catalog, ""); err != nil {
 		log.Printf("Warning: web_search disabled: %v", err)
-	} else {
-		catalog.Register(webSearch)
 	}
-	catalog.Register(builtin.NewReadURLTool())
-	catalog.Register(builtin.NewShowMediaTool())
+	builtin.RegisterReadURL(catalog)
+	builtin.RegisterShowMedia(catalog)
 
 	// Memory tools — one shared store, per-session namespacing done internally
 	catalog.Register(builtin.NewMemorySetTool(memoryStore))

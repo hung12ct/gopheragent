@@ -90,6 +90,15 @@ type Tool interface {
 	Execute(ctx context.Context, argsJSON string) (Result, error)
 }
 
+// Registerer is the small surface RegisterFunc needs from a tool
+// container. *Registry implements it; adopter-side wrappers like
+// builder.GlobalCatalog implement it too because they expose the same
+// Register(Tool) shape. Using an interface here lets RegisterFunc
+// target either without the caller bridging.
+type Registerer interface {
+	Register(t Tool)
+}
+
 // progressKey is the unexported context key for the progress reporting function.
 type progressKey struct{}
 

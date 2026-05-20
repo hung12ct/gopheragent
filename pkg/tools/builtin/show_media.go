@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -20,12 +19,6 @@ var mediaExtensions = map[string]struct{}{
 	".mp4": {}, ".webm": {}, ".mov": {}, ".ogg": {}, ".ogv": {},
 }
 
-// ShowMediaTool instructs the frontend to render an image or video inline in the chat.
-// It returns a markdown/HTML snippet that the frontend renders natively.
-type ShowMediaTool struct{}
-
-func NewShowMediaTool() *ShowMediaTool { return &ShowMediaTool{} }
-
 const showMediaName = "show_media"
 const showMediaDescription = "Display an image or video inline in the chat. Use this when the user asks to show, display, or view an image/video from a URL. Returns a renderable media embed for the frontend."
 
@@ -35,22 +28,21 @@ type showMediaArgs struct {
 	Caption   string `json:"caption,omitempty"  description:"Optional caption or alt-text to display with the media."`
 }
 
-func (t *ShowMediaTool) Descriptor() tools.ToolDescriptor {
-	return tools.ToolDescriptor{
-		Name:        showMediaName,
-		Description: showMediaDescription,
-		Parameters:  tools.SchemaFor[showMediaArgs](),
-		Inline:      true,
-		Display:     tools.DefaultDisplay(showMediaName, showMediaDescription),
-	}
+// RegisterShowMedia registers the show_media tool. Inline=true marks
+// the tool's output for direct frontend rendering in addition to
+// being fed back to the LLM as a tool result.
+func RegisterShowMedia(reg tools.Registerer) {
+	tools.RegisterFunc(reg, showMediaName, showMediaDescription,
+		func(_ context.Context, args showMediaArgs) (tools.Result, error) {
+			return executeShowMedia(args)
+		},
+		tools.FuncToolOpts{Inline: true})
 }
 
-func (t *ShowMediaTool) Execute(_ context.Context, argsJSON string) (tools.Result, error) {
-	var args showMediaArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return tools.Result{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-
+// executeShowMedia is the typed-arg execution body, extracted so the
+// RegisterShowMedia closure stays a one-liner and the validation +
+// rendering logic remains independently testable.
+func executeShowMedia(args showMediaArgs) (tools.Result, error) {
 	url := strings.TrimSpace(args.URL)
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return tools.Result{}, fmt.Errorf("url must start with http:// or https://")
