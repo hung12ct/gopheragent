@@ -16,7 +16,6 @@ type iterationState struct {
 	sessionKey string
 	iteration  int
 	streamChan chan<- StreamEvent
-	msgs       *[]history.Message
 	specMap    map[string]*speculativeExec
 	specMu     *sync.Mutex
 	tracker    *loopDetector

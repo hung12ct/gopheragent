@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -93,21 +92,4 @@ func (al *AgentLoop) reflectOnce(
 		return "", fmt.Errorf("agent: reflect round %d: %w", round, err)
 	}
 	return strings.TrimSpace(buf.String()), nil
-}
-
-// reflectedEventContent serializes the ReflectedEvent payload into the
-// string channel used by StreamEvent. JSON keeps text and round coupled so
-// downstream consumers deserialize with a single Unmarshal.
-func reflectedEventContent(text string, round int) string {
-	payload := struct {
-		Text  string `json:"text"`
-		Round int    `json:"round"`
-	}{Text: text, Round: round}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		// Marshal of a string+int can't realistically fail; fall back to
-		// raw text so the consumer still sees the answer.
-		return text
-	}
-	return string(b)
 }

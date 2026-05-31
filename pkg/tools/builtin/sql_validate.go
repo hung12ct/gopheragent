@@ -132,7 +132,7 @@ func StripSQLComments(s string) string {
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
 			// Block comment → skip to */.
 			j := i + 2
-			for j+1 < len(s) && !(s[j] == '*' && s[j+1] == '/') {
+			for j+1 < len(s) && (s[j] != '*' || s[j+1] != '/') {
 				j++
 			}
 			if j+1 < len(s) {
@@ -158,12 +158,12 @@ func SplitStatements(s string) []string {
 	i := 0
 	for i < len(s) {
 		c := s[i]
-		switch {
-		case c == '\'' || c == '"' || c == '`':
+		switch c {
+		case '\'', '"', '`':
 			end := scanQuoted(s, i)
 			cur.WriteString(s[i:end])
 			i = end
-		case c == ';':
+		case ';':
 			out = append(out, cur.String())
 			cur.Reset()
 			i++

@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
@@ -91,7 +90,7 @@ func TestRouterProvider_MultipleRoutes_FirstWins(t *testing.T) {
 
 func TestIfTokensUnder(t *testing.T) {
 	short := msgs("hi")                                // ~1 token
-	long := msgs(fmt.Sprintf("%s", make([]byte, 400))) // ~100 tokens
+	long := msgs(string(make([]byte, 400))) // ~100 tokens
 
 	if !IfTokensUnder(50)(short) {
 		t.Fatal("short message should be under 50 tokens")
