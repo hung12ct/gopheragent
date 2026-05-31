@@ -740,6 +740,38 @@ func (p *slowJSONProvider) GenerateStream(ctx context.Context, _ []history.Messa
 	return LLMResult{Content: p.json}, nil
 }
 
+// TestConsolidatorSchema_StrictRequiredCompleteness asserts that every
+// object node in consolidatorSchema lists all of its declared properties
+// in "required". OpenAI strict structured-outputs mode rejects schemas
+// where a declared property is absent from required, which silently broke
+// memory consolidation on the OpenAI provider (Strict: true).
+func TestConsolidatorSchema_StrictRequiredCompleteness(t *testing.T) {
+	var walk func(path string, node map[string]any)
+	walk = func(path string, node map[string]any) {
+		props, ok := node["properties"].(map[string]any)
+		if ok {
+			req := map[string]struct{}{}
+			if raw, ok := node["required"].([]string); ok {
+				for _, k := range raw {
+					req[k] = struct{}{}
+				}
+			}
+			for name, sub := range props {
+				if _, ok := req[name]; !ok {
+					t.Errorf("schema %s: property %q declared but missing from required", path, name)
+				}
+				if subMap, ok := sub.(map[string]any); ok {
+					walk(path+"."+name, subMap)
+				}
+			}
+		}
+		if items, ok := node["items"].(map[string]any); ok {
+			walk(path+"[]", items)
+		}
+	}
+	walk("root", consolidatorSchema())
+}
+
 // consolidatorPanicProvider panics if called — used to assert short
 // transcripts never reach the provider.
 type consolidatorPanicProvider struct{}

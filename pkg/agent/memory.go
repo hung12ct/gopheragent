@@ -547,7 +547,7 @@ func consolidatorSchema() map[string]any {
 							"items": map[string]any{"type": "string"},
 						},
 					},
-					"required":             []string{"key", "content"},
+					"required":             []string{"key", "content", "tags"},
 					"additionalProperties": false,
 				},
 			},
