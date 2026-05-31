@@ -75,6 +75,7 @@ type CallSQLAgentTool struct {
 	examples                    []SQLExample
 	businessRules               []string
 	maxRows                     int
+	llmPreviewRows              int
 	queryTimeout                time.Duration
 	selfConsistency             int
 	sessionManager              agent.SessionManager
@@ -149,6 +150,24 @@ func (t *CallSQLAgentTool) WithBusinessRules(rules ...string) *CallSQLAgentTool 
 // from returning millions of rows.
 func (t *CallSQLAgentTool) WithMaxRows(n int) *CallSQLAgentTool {
 	t.maxRows = n
+	return t
+}
+
+// WithLLMPreviewRows caps the number of result rows formatted into the text
+// the sub-agent LLM reads, independent of WithMaxRows. The query still runs
+// and returns up to WithMaxRows rows: the full set is emitted on the OnSQL /
+// SQLQueryEvent hook (so a host grid stays rich) and attached on
+// tools.Result.Structured, while only the first n rows are serialized into
+// the model's context — with the true RowCount preserved and Truncated set so
+// the model knows it saw a sample and should aggregate or ask the host to
+// export rather than assume it read everything.
+//
+// Use it to keep a large grid (e.g. WithMaxRows(1000)) without paying LLM
+// tokens for 1000 wide rows on every "run it and tell me about it" turn.
+// n <= 0 disables the cap (default): the model sees the full WithMaxRows set,
+// preserving pre-feature behaviour.
+func (t *CallSQLAgentTool) WithLLMPreviewRows(n int) *CallSQLAgentTool {
+	t.llmPreviewRows = n
 	return t
 }
 
@@ -393,6 +412,7 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 		onSQL:                t.onSQL,
 		sessionKey:           subSessionKey,
 		maxRows:              t.maxRows,
+		llmPreviewRows:       t.llmPreviewRows,
 		queryTimeout:         t.queryTimeout,
 		allowMutations:       t.allowMutations,
 		allowDDL:             t.allowDDL,
@@ -611,6 +631,7 @@ type executeSQLTool struct {
 	sessionKey           string
 	onSQL                func(context.Context, SQLQueryEvent)
 	maxRows              int
+	llmPreviewRows       int
 	queryTimeout         time.Duration
 	allowMutations       bool
 	allowDDL             bool
@@ -714,12 +735,27 @@ func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (tool
 				Truncated:   res.Truncated,
 			})
 		}
-		b, err := json.Marshal(res)
+		b, err := json.Marshal(previewForLLM(res, t.llmPreviewRows))
 		if err != nil {
 			return tools.Result{}, fmt.Errorf("tools: marshal result: %w", err)
 		}
 		return tools.Result{Text: string(b), Structured: res}, nil
 	}
+}
+
+// previewForLLM returns the SQLResult to serialize into the model's context.
+// When n > 0 and the result holds more than n rows it returns a shallow copy
+// keeping only the first n rows, with the true RowCount preserved and
+// Truncated set so the model knows it saw a sample. The original res is left
+// intact for the OnSQL hook and tools.Result.Structured. n <= 0 is a no-op.
+func previewForLLM(res SQLResult, n int) SQLResult {
+	if n <= 0 || len(res.Rows) <= n {
+		return res
+	}
+	preview := res
+	preview.Rows = res.Rows[:n]
+	preview.Truncated = true
+	return preview
 }
 
 // executeRead runs the read-only path: optional LIMIT injection, then
