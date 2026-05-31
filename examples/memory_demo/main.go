@@ -174,4 +174,3 @@ func dumpNotes(ctx context.Context, store memory.Store, scope string) {
 		fmt.Printf("    - [%s] %s\n", n.Key, n.Content)
 	}
 }
-

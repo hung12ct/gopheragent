@@ -35,7 +35,7 @@ func TestInMemSessionManager_TTL_Eviction(t *testing.T) {
 	defer cancel()
 
 	sm := NewInMemSessionManager("sys").
-		WithTTL(50 * time.Millisecond).
+		WithTTL(50*time.Millisecond).
 		StartCleanup(ctx, 20*time.Millisecond)
 
 	seedSession(sm, "s1", "hi")
@@ -61,7 +61,7 @@ func TestInMemSessionManager_TTL_TouchOnRead_PreventsExpiry(t *testing.T) {
 	defer cancel()
 
 	sm := NewInMemSessionManager("sys").
-		WithTTL(80 * time.Millisecond).
+		WithTTL(80*time.Millisecond).
 		StartCleanup(ctx, 30*time.Millisecond)
 
 	seedSession(sm, "s1", "hi")
@@ -197,7 +197,7 @@ func TestInMemSessionManager_ConcurrentEvictionAndAccess(t *testing.T) {
 	defer cancel()
 
 	sm := NewInMemSessionManager("sys").
-		WithTTL(30 * time.Millisecond).
+		WithTTL(30*time.Millisecond).
 		StartCleanup(ctx, 10*time.Millisecond)
 
 	done := make(chan struct{})

@@ -2,19 +2,22 @@
 // and short videos from natural-language descriptions.
 //
 // Required env vars:
-//   OPENAI_API_KEY  — image generation (DALL-E 3)
-//   GEMINI_API_KEY  — video generation (Veo) + optional LLM
-//   LLM_PROVIDER    — "openai" (default), "anthropic", or "gemini"
+//
+//	OPENAI_API_KEY  — image generation (DALL-E 3)
+//	GEMINI_API_KEY  — video generation (Veo) + optional LLM
+//	LLM_PROVIDER    — "openai" (default), "anthropic", or "gemini"
 //
 // Optional env vars:
-//   VEO_MODEL       — video model ID. Defaults to "veo-2.0-generate-001"
-//                     (silent video). Set to a Veo 3 model ID to get native
-//                     audio; availability and pricing differ per tier.
-//   MEDIA_DIR       — where generated images/videos are saved (default "generated").
+//
+//	VEO_MODEL       — video model ID. Defaults to "veo-2.0-generate-001"
+//	                  (silent video). Set to a Veo 3 model ID to get native
+//	                  audio; availability and pricing differ per tier.
+//	MEDIA_DIR       — where generated images/videos are saved (default "generated").
 //
 // Run:
-//   cd examples/creative_studio && go run .
-//   open http://localhost:8890
+//
+//	cd examples/creative_studio && go run .
+//	open http://localhost:8890
 package main
 
 import (

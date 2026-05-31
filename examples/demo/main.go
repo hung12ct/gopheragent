@@ -128,7 +128,7 @@ func buildSessionManager(systemPrompt string) agent.SessionManager {
 // pendingApprovals holds HITL confirmations that are waiting on the user.
 // Maps approvalID → channel that receives true (approved) or false (denied).
 var (
-	pendingMu       sync.Mutex
+	pendingMu        sync.Mutex
 	pendingApprovals = make(map[string]chan bool)
 )
 
@@ -320,7 +320,7 @@ func uniqueID() uint64 {
 // activeStreams maps sessionKey → the current SSE write channel (or nil).
 var (
 	streamsMu     sync.RWMutex
-	activeStreams  = make(map[string]chan<- agent.StreamEvent)
+	activeStreams = make(map[string]chan<- agent.StreamEvent)
 )
 
 func registerStream(sessionKey string, ch chan<- agent.StreamEvent) {

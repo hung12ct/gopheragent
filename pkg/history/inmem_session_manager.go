@@ -382,4 +382,3 @@ func (m *InMemSessionManager) PurgeDeletedBefore(_ context.Context, before time.
 	}
 	return purged, nil
 }
-

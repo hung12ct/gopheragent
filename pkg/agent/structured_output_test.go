@@ -56,8 +56,8 @@ func TestStructuredOutput_IsolatedFromOriginal(t *testing.T) {
 
 func TestStructuredOutput_EmptyOrNilSchemaClears(t *testing.T) {
 	cases := []StructuredOutput{
-		{},                      // zero value
-		{Name: "x"},             // no schema
+		{},                         // zero value
+		{Name: "x"},                // no schema
 		{Schema: map[string]any{}}, // empty schema
 	}
 	for i, so := range cases {

@@ -15,14 +15,14 @@ import (
 // FileSessionManager provides file-backed session persistence.
 // Sessions survive server restarts. Each session is stored as a JSON file under storagePath.
 type FileSessionManager struct {
-	sessions     map[string]*Session
-	behaviors    map[string]string
-	lastSumLen   map[string]int
-	updatedAt    map[string]time.Time
-	deletedAt    map[string]time.Time
-	titles       map[string]string
-	storage      string
-	mu           sync.RWMutex
+	sessions        map[string]*Session
+	behaviors       map[string]string
+	lastSumLen      map[string]int
+	updatedAt       map[string]time.Time
+	deletedAt       map[string]time.Time
+	titles          map[string]string
+	storage         string
+	mu              sync.RWMutex
 	SystemPrompt    string
 	SummaryProvider SummaryProvider // if nil, background summarization is disabled
 	// PromptVersion: see InMemSessionManager.PromptVersion. Same semantics.
@@ -61,13 +61,13 @@ func NewFileSessionManager(storagePath string, systemPrompt ...string) (*FileSes
 		sp = systemPrompt[0]
 	}
 	return &FileSessionManager{
-		sessions:   make(map[string]*Session),
-		behaviors:  make(map[string]string),
-		lastSumLen: make(map[string]int),
-		updatedAt:  make(map[string]time.Time),
-		deletedAt:  make(map[string]time.Time),
-		titles:     make(map[string]string),
-		storage:    storagePath,
+		sessions:     make(map[string]*Session),
+		behaviors:    make(map[string]string),
+		lastSumLen:   make(map[string]int),
+		updatedAt:    make(map[string]time.Time),
+		deletedAt:    make(map[string]time.Time),
+		titles:       make(map[string]string),
+		storage:      storagePath,
 		SystemPrompt: sp,
 	}, nil
 }

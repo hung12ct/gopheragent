@@ -47,8 +47,8 @@ func TestOpenAI_BytesBecomeDataURI(t *testing.T) {
 
 func TestOpenAI_SkipsEmpty(t *testing.T) {
 	parts := openAIPartsFromMediaParts("", []history.MediaPart{
-		{Type: history.PartText, Text: ""},                 // empty text — drop
-		{Type: history.PartImage, MIME: "image/png"},       // no URL, no Data — drop
+		{Type: history.PartText, Text: ""},                  // empty text — drop
+		{Type: history.PartImage, MIME: "image/png"},        // no URL, no Data — drop
 		history.NewImagePartURL("image/png", "https://x/a"), // keep
 	})
 	if len(parts) != 1 {

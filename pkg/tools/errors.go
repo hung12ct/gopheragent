@@ -7,12 +7,12 @@ import "errors"
 // category:
 //
 //   - ErrUser       — the caller supplied bad input; show the message to
-//                     the user, do not retry.
+//     the user, do not retry.
 //   - ErrTransient  — transient downstream failure (rate limit, 5xx,
-//                     network timeout); retrying later may succeed.
+//     network timeout); retrying later may succeed.
 //   - ErrPermanent  — non-recoverable downstream failure (bad config,
-//                     permanent 4xx from an external API); retries will
-//                     keep failing.
+//     permanent 4xx from an external API); retries will
+//     keep failing.
 //
 // Wrap pattern:
 //

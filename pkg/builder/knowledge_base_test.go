@@ -244,9 +244,9 @@ func TestFormatKnowledgeBase_MatchesLoadOutputForEquivalentInput(t *testing.T) {
 
 func TestFormatKnowledgeBase_DropsEmptyEntries(t *testing.T) {
 	out := FormatKnowledgeBase([]KBDocument{
-		{Path: "", Content: "orphan"},       // no path — drop
-		{Path: "blank.md", Content: ""},     // no content — drop
-		{Path: "real.md", Content: "kept"},  // keep
+		{Path: "", Content: "orphan"},      // no path — drop
+		{Path: "blank.md", Content: ""},    // no content — drop
+		{Path: "real.md", Content: "kept"}, // keep
 	})
 	if !strings.Contains(out, "kept") {
 		t.Fatal("valid entry dropped")

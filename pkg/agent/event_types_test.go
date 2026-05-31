@@ -147,30 +147,32 @@ type recordingVisitor struct {
 	visited string
 }
 
-func (r *recordingVisitor) VisitContent(ContentEvent)                  { r.visited = "content" }
-func (r *recordingVisitor) VisitThought(ThoughtEvent)                  { r.visited = "thought" }
-func (r *recordingVisitor) VisitToolCall(ToolCallEvent)                { r.visited = "tool_call" }
-func (r *recordingVisitor) VisitToolProgress(ToolProgressEvent)        { r.visited = "tool_progress" }
-func (r *recordingVisitor) VisitActionRequired(ActionRequiredEvent)    { r.visited = "action_required" }
-func (r *recordingVisitor) VisitUsage(UsageEvent)                      { r.visited = "usage" }
-func (r *recordingVisitor) VisitError(ErrorEvent)                      { r.visited = "error" }
-func (r *recordingVisitor) VisitDone(DoneEvent)                        { r.visited = "done" }
-func (r *recordingVisitor) VisitReflected(ReflectedEvent)              { r.visited = "reflected" }
-func (r *recordingVisitor) VisitToolCallReady(ToolCallReadyEvent)      { r.visited = "tool_call_ready" }
-func (r *recordingVisitor) VisitTaskList(TaskListEvent)                { r.visited = "task_list" }
-func (r *recordingVisitor) VisitMaxItersReached(MaxItersReachedEvent)  { r.visited = "max_iters_reached" }
-func (r *recordingVisitor) VisitSessionCreated(SessionCreatedEvent)    { r.visited = "session_created" }
-func (r *recordingVisitor) VisitLimitExhausted(LimitExhaustedEvent)    { r.visited = "limit_exhausted" }
-func (r *recordingVisitor) VisitHITLDenied(HITLDeniedEvent)            { r.visited = "hitl_denied" }
-func (r *recordingVisitor) VisitHITLTimedOut(HITLTimedOutEvent)        { r.visited = "hitl_timed_out" }
-func (r *recordingVisitor) VisitRegenerated(RegeneratedEvent)          { r.visited = "regenerated" }
-func (r *recordingVisitor) VisitContinued(ContinuedEvent)              { r.visited = "continued" }
-func (r *recordingVisitor) VisitMemoryLoaded(MemoryLoadedEvent)        { r.visited = "memory_loaded" }
+func (r *recordingVisitor) VisitContent(ContentEvent)               { r.visited = "content" }
+func (r *recordingVisitor) VisitThought(ThoughtEvent)               { r.visited = "thought" }
+func (r *recordingVisitor) VisitToolCall(ToolCallEvent)             { r.visited = "tool_call" }
+func (r *recordingVisitor) VisitToolProgress(ToolProgressEvent)     { r.visited = "tool_progress" }
+func (r *recordingVisitor) VisitActionRequired(ActionRequiredEvent) { r.visited = "action_required" }
+func (r *recordingVisitor) VisitUsage(UsageEvent)                   { r.visited = "usage" }
+func (r *recordingVisitor) VisitError(ErrorEvent)                   { r.visited = "error" }
+func (r *recordingVisitor) VisitDone(DoneEvent)                     { r.visited = "done" }
+func (r *recordingVisitor) VisitReflected(ReflectedEvent)           { r.visited = "reflected" }
+func (r *recordingVisitor) VisitToolCallReady(ToolCallReadyEvent)   { r.visited = "tool_call_ready" }
+func (r *recordingVisitor) VisitTaskList(TaskListEvent)             { r.visited = "task_list" }
+func (r *recordingVisitor) VisitMaxItersReached(MaxItersReachedEvent) {
+	r.visited = "max_iters_reached"
+}
+func (r *recordingVisitor) VisitSessionCreated(SessionCreatedEvent) { r.visited = "session_created" }
+func (r *recordingVisitor) VisitLimitExhausted(LimitExhaustedEvent) { r.visited = "limit_exhausted" }
+func (r *recordingVisitor) VisitHITLDenied(HITLDeniedEvent)         { r.visited = "hitl_denied" }
+func (r *recordingVisitor) VisitHITLTimedOut(HITLTimedOutEvent)     { r.visited = "hitl_timed_out" }
+func (r *recordingVisitor) VisitRegenerated(RegeneratedEvent)       { r.visited = "regenerated" }
+func (r *recordingVisitor) VisitContinued(ContinuedEvent)           { r.visited = "continued" }
+func (r *recordingVisitor) VisitMemoryLoaded(MemoryLoadedEvent)     { r.visited = "memory_loaded" }
 func (r *recordingVisitor) VisitMemoryConsolidated(MemoryConsolidatedEvent) {
 	r.visited = "memory_consolidated"
 }
-func (r *recordingVisitor) VisitRunCost(RunCostEvent)  { r.visited = "run_cost" }
-func (r *recordingVisitor) VisitUnknown(UnknownEvent)  { r.visited = "unknown" }
+func (r *recordingVisitor) VisitRunCost(RunCostEvent) { r.visited = "run_cost" }
+func (r *recordingVisitor) VisitUnknown(UnknownEvent) { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 	cases := []struct {

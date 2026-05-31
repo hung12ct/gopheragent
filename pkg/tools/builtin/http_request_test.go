@@ -166,7 +166,9 @@ func TestHTTPRequestTool_AllowedHostBypassesSSRF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success for allowlisted host, got: %v", err)
 	}
-	var env struct{ Status int `json:"status"` }
+	var env struct {
+		Status int `json:"status"`
+	}
 	_ = json.Unmarshal([]byte(out.Text), &env)
 	if env.Status != 200 {
 		t.Fatalf("status: %d", env.Status)

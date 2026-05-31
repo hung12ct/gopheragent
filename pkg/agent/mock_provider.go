@@ -48,7 +48,7 @@ func (m *MockProvider) GenerateStream(ctx context.Context, memory []history.Mess
 			toolName = "delete_database_records"
 			argsJSON = `{"table": "users", "condition": "all"}`
 		}
-		
+
 		// If running inside SQL Sub-Agent, it should call execute_sql instead of call_sql_agent
 		if _, hasExecuteSQL := registry.Get("execute_sql"); hasExecuteSQL {
 			toolName = "execute_sql"

@@ -8,9 +8,9 @@ import (
 
 func TestClassifyError_MatchesEachSentinel(t *testing.T) {
 	cases := []struct {
-		name  string
-		err   error
-		want  error
+		name string
+		err  error
+		want error
 	}{
 		{"user", fmt.Errorf("bad input: %w", ErrUser), ErrUser},
 		{"transient", fmt.Errorf("429: %w", ErrTransient), ErrTransient},
