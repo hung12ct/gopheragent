@@ -14,7 +14,6 @@ import (
 type gateTool struct {
 	name      string
 	cacheable bool
-	hasFlag   bool
 	calls     atomic.Int32
 }
 
@@ -37,7 +36,7 @@ type cacheableGateTool struct{ gateTool }
 
 func (c *cacheableGateTool) Descriptor() tools.ToolDescriptor {
 	d := c.gateTool.Descriptor()
-	d.Cacheable = c.gateTool.cacheable
+	d.Cacheable = c.cacheable
 	return d
 }
 

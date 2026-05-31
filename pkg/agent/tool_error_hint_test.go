@@ -92,9 +92,8 @@ func TestFormatToolError_ContextCarriesArgsAndIteration(t *testing.T) {
 // --- integration: error flows into tool result message ---
 
 type failingTool struct {
-	mu       sync.Mutex
-	nCalls   int
-	failOnce bool
+	mu     sync.Mutex
+	nCalls int
 }
 
 func (t *failingTool) Descriptor() tools.ToolDescriptor {

@@ -15,7 +15,6 @@ type sqlCandidate struct {
 	index      int
 	finalResp  string
 	lastResult *SQLResult
-	err        error
 }
 
 // pickByMajority clusters candidates by the hash of their last successful

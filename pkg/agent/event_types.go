@@ -146,8 +146,8 @@ type ContentEvent struct {
 	Text string `json:"text"`
 }
 
-func (ContentEvent) isEventPayload()              {}
-func (ContentEvent) eventType() StreamEventType   { return EventTypeContent }
+func (ContentEvent) isEventPayload()            {}
+func (ContentEvent) eventType() StreamEventType { return EventTypeContent }
 
 // ThoughtEvent is internal reasoning / system narration. Suppressed from the
 // final answer by RunIteration; surfaced by RunIterationStream when
@@ -156,8 +156,8 @@ type ThoughtEvent struct {
 	Message string `json:"message"`
 }
 
-func (ThoughtEvent) isEventPayload()              {}
-func (ThoughtEvent) eventType() StreamEventType   { return EventTypeThought }
+func (ThoughtEvent) isEventPayload()            {}
+func (ThoughtEvent) eventType() StreamEventType { return EventTypeThought }
 
 // ToolCallEvent announces that the agent is about to execute a tool. ID is
 // the agent-generated correlation ID — it matches the toolCallID parameter on
@@ -172,8 +172,8 @@ type ToolCallEvent struct {
 	Reused   bool   `json:"reused,omitempty"`
 }
 
-func (ToolCallEvent) isEventPayload()              {}
-func (ToolCallEvent) eventType() StreamEventType   { return EventTypeToolCall }
+func (ToolCallEvent) isEventPayload()            {}
+func (ToolCallEvent) eventType() StreamEventType { return EventTypeToolCall }
 
 // ToolProgressEvent is a mid-execution status update emitted by a tool via
 // tools.ReportProgress. Progress is lossy by design — consumers may drop
@@ -204,8 +204,8 @@ type UsageEvent struct {
 	Usage TokenUsage `json:"usage"`
 }
 
-func (UsageEvent) isEventPayload()              {}
-func (UsageEvent) eventType() StreamEventType   { return EventTypeUsage }
+func (UsageEvent) isEventPayload()            {}
+func (UsageEvent) eventType() StreamEventType { return EventTypeUsage }
 
 // ErrorEvent signals a terminal failure for the current iteration. Err holds
 // the structured error (usable with errors.Is / errors.As); Message is its
@@ -215,14 +215,14 @@ type ErrorEvent struct {
 	Message string `json:"message"`
 }
 
-func (ErrorEvent) isEventPayload()              {}
-func (ErrorEvent) eventType() StreamEventType   { return EventTypeError }
+func (ErrorEvent) isEventPayload()            {}
+func (ErrorEvent) eventType() StreamEventType { return EventTypeError }
 
 // DoneEvent marks the end of the stream — no more events will arrive.
 type DoneEvent struct{}
 
-func (DoneEvent) isEventPayload()              {}
-func (DoneEvent) eventType() StreamEventType   { return EventTypeDone }
+func (DoneEvent) isEventPayload()            {}
+func (DoneEvent) eventType() StreamEventType { return EventTypeDone }
 
 // ReflectedEvent delivers a post-critique canonical answer. Round indicates
 // which self-critique pass produced it (1-indexed); consumers typically keep
@@ -265,8 +265,8 @@ type TaskListEvent struct {
 	Tasks []TaskListItem `json:"tasks"`
 }
 
-func (TaskListEvent) isEventPayload()              {}
-func (TaskListEvent) eventType() StreamEventType   { return EventTypeTaskList }
+func (TaskListEvent) isEventPayload()            {}
+func (TaskListEvent) eventType() StreamEventType { return EventTypeTaskList }
 
 // MaxItersReachedEvent signals that the loop exhausted its iteration cap
 // without a final answer. Limit echoes AgentLoop.MaxIters at the time of

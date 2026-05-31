@@ -47,7 +47,6 @@ type Tool struct {
 	allArgs  []string
 }
 
-
 // NewTool returns a new fake tool with the given Name. Description defaults
 // to "fake tool", schema defaults to an empty object. Chain the With*
 // methods to configure further.

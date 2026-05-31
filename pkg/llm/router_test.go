@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
@@ -90,8 +89,8 @@ func TestRouterProvider_MultipleRoutes_FirstWins(t *testing.T) {
 }
 
 func TestIfTokensUnder(t *testing.T) {
-	short := msgs("hi")                               // ~1 token
-	long := msgs(fmt.Sprintf("%s", make([]byte, 400))) // ~100 tokens
+	short := msgs("hi")                                // ~1 token
+	long := msgs(string(make([]byte, 400))) // ~100 tokens
 
 	if !IfTokensUnder(50)(short) {
 		t.Fatal("short message should be under 50 tokens")
@@ -126,9 +125,9 @@ func TestIfLastMessageContains(t *testing.T) {
 
 	// Only the last user message is checked
 	old := []history.Message{
-		{Role: "user", Content: "tldr please"},    // old message
+		{Role: "user", Content: "tldr please"}, // old message
 		{Role: "assistant", Content: "summary"},
-		{Role: "user", Content: "now go deeper"},  // last user → no match
+		{Role: "user", Content: "now go deeper"}, // last user → no match
 	}
 	if cond(old) {
 		t.Fatal("should only check last user message")

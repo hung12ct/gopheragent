@@ -69,25 +69,25 @@ type SQLResult struct {
 // WithMaxRows, WithQueryTimeout) are chainable and safe to call in any
 // order; they mutate the receiver and return it.
 type CallSQLAgentTool struct {
-	db                   *sql.DB
-	schemaRaw            string
-	schema               *Schema
-	examples             []SQLExample
-	businessRules        []string
-	maxRows              int
-	queryTimeout         time.Duration
-	selfConsistency      int
-	sessionManager       agent.SessionManager
-	provider             agent.LLMProvider
-	onSQL                func(context.Context, SQLQueryEvent)
-	name                 string
-	display              *tools.ToolDisplay
-	requiresConfirmation         bool
-	allowMutations               bool
-	allowDDL                     bool
-	allowSelectStar              bool
-	execSQLRequiresConfirmation  bool
-	providerHint                 string
+	db                          *sql.DB
+	schemaRaw                   string
+	schema                      *Schema
+	examples                    []SQLExample
+	businessRules               []string
+	maxRows                     int
+	queryTimeout                time.Duration
+	selfConsistency             int
+	sessionManager              agent.SessionManager
+	provider                    agent.LLMProvider
+	onSQL                       func(context.Context, SQLQueryEvent)
+	name                        string
+	display                     *tools.ToolDisplay
+	requiresConfirmation        bool
+	allowMutations              bool
+	allowDDL                    bool
+	allowSelectStar             bool
+	execSQLRequiresConfirmation bool
+	providerHint                string
 }
 
 // NewCallSQLAgentTool initializes a tool capable of querying databases. The

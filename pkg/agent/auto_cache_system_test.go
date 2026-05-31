@@ -19,10 +19,7 @@ type cacheHintCapturingProvider struct {
 
 func (p *cacheHintCapturingProvider) GenerateStream(_ context.Context, msgs []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
 	p.mu.Lock()
-	stamp := false
-	if len(msgs) > 0 && msgs[0].Role == "system" && msgs[0].CacheHint {
-		stamp = true
-	}
+	stamp := len(msgs) > 0 && msgs[0].Role == "system" && msgs[0].CacheHint
 	p.seenStamps = append(p.seenStamps, stamp)
 	p.mu.Unlock()
 	ch <- Event(ContentEvent{Text: "ok"})

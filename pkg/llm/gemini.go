@@ -134,7 +134,7 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 	}
 
 	iter := p.client.Models.GenerateContentStream(ctx, p.model, contents, config)
-	
+
 	streamChan <- agent.Event(agent.ThoughtEvent{Message: "Analyzing with Gemini..."})
 
 	var finalContent string

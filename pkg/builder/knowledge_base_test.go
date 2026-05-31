@@ -58,7 +58,7 @@ func TestLoadKnowledgeBase_DeterministicOrdering(t *testing.T) {
 	idxA := strings.Index(first, "a.md")
 	idxB := strings.Index(first, "b.md")
 	idxC := strings.Index(first, "c.md")
-	if !(idxA < idxB && idxB < idxC) {
+	if idxA >= idxB || idxB >= idxC {
 		t.Fatalf("expected alphabetical ordering a,b,c — got offsets a=%d b=%d c=%d", idxA, idxB, idxC)
 	}
 }
@@ -244,9 +244,9 @@ func TestFormatKnowledgeBase_MatchesLoadOutputForEquivalentInput(t *testing.T) {
 
 func TestFormatKnowledgeBase_DropsEmptyEntries(t *testing.T) {
 	out := FormatKnowledgeBase([]KBDocument{
-		{Path: "", Content: "orphan"},       // no path — drop
-		{Path: "blank.md", Content: ""},     // no content — drop
-		{Path: "real.md", Content: "kept"},  // keep
+		{Path: "", Content: "orphan"},      // no path — drop
+		{Path: "blank.md", Content: ""},    // no content — drop
+		{Path: "real.md", Content: "kept"}, // keep
 	})
 	if !strings.Contains(out, "kept") {
 		t.Fatal("valid entry dropped")
@@ -274,7 +274,7 @@ func TestFormatKnowledgeBase_SortsByPath(t *testing.T) {
 	idxA := strings.Index(out, "alpha.md")
 	idxM := strings.Index(out, "mid.md")
 	idxZ := strings.Index(out, "zeta.md")
-	if !(idxA < idxM && idxM < idxZ) {
+	if idxA >= idxM || idxM >= idxZ {
 		t.Fatalf("expected alphabetical ordering; offsets a=%d m=%d z=%d", idxA, idxM, idxZ)
 	}
 }

@@ -94,7 +94,7 @@ func TestHandler_DeterministicOrdering(t *testing.T) {
 	a := strings.Index(body, `gopheragent_session_prompt_tokens_total{session_key="a"}`)
 	b := strings.Index(body, `gopheragent_session_prompt_tokens_total{session_key="b"}`)
 	c := strings.Index(body, `gopheragent_session_prompt_tokens_total{session_key="c"}`)
-	if !(a < b && b < c) {
+	if a >= b || b >= c {
 		t.Fatalf("session keys must be sorted; got indices a=%d b=%d c=%d", a, b, c)
 	}
 }

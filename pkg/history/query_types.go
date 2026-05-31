@@ -11,9 +11,9 @@ import (
 // SessionQueryOpts.IncludeDeleted) and Title (empty until a caller
 // records one via the SessionTitler capability).
 type SessionMeta struct {
-	Key          string     `json:"key"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	MessageCount int        `json:"message_count"`
+	Key          string    `json:"key"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	MessageCount int       `json:"message_count"`
 	// Title is the human-readable label attached to the session via
 	// SessionTitler.SetTitle (typically produced by builtin.GenerateTitle
 	// on the first turn). Empty when the backend has none. Backends without

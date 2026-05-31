@@ -73,7 +73,7 @@ func TestSoftLanding_NotPersistedToHistory(t *testing.T) {
 }
 
 type toolEverProvider struct {
-	name string
+	name  string
 	calls int
 }
 

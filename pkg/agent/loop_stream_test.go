@@ -483,8 +483,8 @@ func TestRunIteration_EventHandlerMultiple(t *testing.T) {
 func TestRunIteration_RetryOnLLMError(t *testing.T) {
 	attempts := 0
 	provider := &countingErrorProvider{
-		failN: 2, // fail first 2 attempts, succeed on 3rd
-		onCall: func() { attempts++ },
+		failN:         2, // fail first 2 attempts, succeed on 3rd
+		onCall:        func() { attempts++ },
 		successResult: LLMResult{Content: "recovered"},
 	}
 	loop, _ := setup(provider)

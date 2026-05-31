@@ -224,7 +224,7 @@ func TestCallSQLAgentTool_WithProviderHintInjectsAddendum(t *testing.T) {
 	contractIdx := strings.Index(prompt, "Safety contract")
 	hintIdx := strings.Index(prompt, "Provider-specific guidance")
 	schemaIdx := strings.Index(prompt, "Schema (use ONLY")
-	if !(contractIdx < hintIdx && hintIdx < schemaIdx) {
+	if contractIdx >= hintIdx || hintIdx >= schemaIdx {
 		t.Fatalf("provider hint out of order: contract=%d hint=%d schema=%d", contractIdx, hintIdx, schemaIdx)
 	}
 }
