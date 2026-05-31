@@ -275,7 +275,7 @@ func (t *ListAsyncTasksTool) Execute(ctx context.Context, inputJSON string) (too
 
 	var sb strings.Builder
 	for _, task := range tasks {
-		sb.WriteString(fmt.Sprintf("- %s (Agent: %s, Status: %s)\n", task.TaskID, task.AgentName, task.Status))
+		fmt.Fprintf(&sb, "- %s (Agent: %s, Status: %s)\n", task.TaskID, task.AgentName, task.Status)
 	}
 	return tools.Text(sb.String()), nil
 }
