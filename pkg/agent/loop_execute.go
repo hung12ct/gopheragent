@@ -168,7 +168,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	if cacheOK {
 		if cached, hit := al.Cache.Get(cacheKey); hit {
 			al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Cache hit for %s, skipping execution.", tCall.Name)}))
-			ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID}, true)
+			ws.recordToolMsg(tCall.ID, history.Message{Role: "tool", Content: cached, ToolCallID: tCall.ID, CorrelationID: callID}, true)
 			return
 		}
 	}
@@ -264,6 +264,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		Role:           "tool",
 		Content:        content,
 		ToolCallID:     tCall.ID,
+		CorrelationID:  callID,
 		IsError:        isToolErr,
 		IsInlineResult: isInlineResult,
 	}, !isToolErr)
