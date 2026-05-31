@@ -42,6 +42,17 @@ type Message struct {
 	// across tool names; adopters no longer need a hand-curated allowlist.
 	IsInlineResult bool `json:"is_inline_result,omitempty"`
 
+	// CorrelationID is the opaque per-dispatch ID the agent loop generated
+	// for this tool call (newToolCallID) and streamed live on the matching
+	// ToolCallEvent.ID / ToolProgressEvent.ToolCallID. ToolCallID above holds
+	// the provider's tool-call ID, which is load-bearing for tool_use /
+	// tool_result adjacency but is NOT what live events expose (and which some
+	// providers reuse across parallel same-name calls). CorrelationID gives
+	// adopters a single stable handle to re-match a live-rendered artifact card
+	// to its tool row after a session reload. Empty for pre-correlation
+	// sessions and for non-tool messages.
+	CorrelationID string `json:"correlation_id,omitempty"`
+
 	// CacheHint requests that LLM adapters mark this message as a prompt-cache
 	// breakpoint when the underlying provider supports it. The Anthropic
 	// adapter translates CacheHint=true into `cache_control:{type:"ephemeral"}`
