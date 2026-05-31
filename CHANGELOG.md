@@ -2,6 +2,12 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.31.1] — 2026-05-31
+
+### Fixed
+
+- **Memory consolidation no longer silently no-ops under strict structured outputs.** The `consolidated_notes` schema declared `key`, `content`, and `tags` on each note but listed only `key`/`content` in `required`. Providers that enforce strict structured-output validation (every declared property must appear in `required`) rejected the request, so the post-turn Consolidator never persisted notes on those providers — chat was unaffected, but the long-term memory layer was a no-op. `tags` is now in the `required` array; it is an array type, so the model always emits it (possibly empty), which is harmless for lenient providers and satisfies strict ones. (`pkg/agent/memory.go`)
+
 ## [v0.31.0] — 2026-05-20
 
 Builtin tools migrated to `tools.RegisterFunc`. Five stateless / lightly-stateful tools shed their struct + `Descriptor()` + `Execute()` boilerplate in favour of the typed-fn registration pattern v0.30.0 shipped. Breaking change for adopters constructing these tools directly; YAML-driven agents are unaffected because lookup happens by tool name.
@@ -441,6 +447,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.31.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.1
 [v0.31.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.0
 [v0.30.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.30.0
 [v0.29.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.29.0
