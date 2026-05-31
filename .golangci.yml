@@ -1,0 +1,37 @@
+version: "2"
+
+# Report every finding — the defaults (max-same-issues: 3,
+# max-issues-per-linter: 50) silently hide repeats, which masks the true
+# count.
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
+# Default linter set (standard: errcheck, govet, ineffassign, staticcheck,
+# unused). Only the errcheck exclusions below are customized.
+linters:
+  settings:
+    errcheck:
+      # Conventional "safe to ignore" calls: the returned error is not
+      # actionable at the call site.
+      exclude-functions:
+        - (io.Closer).Close # interface-typed Close (e.g. resp.Body)
+        - (*os.File).Close # defer file/tmpFile Close
+        - (*database/sql.Rows).Close # defer rows.Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln # writes to http.ResponseWriter / buffers
+        - os.Remove # temp-file cleanup on an error path
+  exclusions:
+    rules:
+      # Test setup routinely ignores errors from helpers (SaveHistory,
+      # RunIteration, Execute, …); checking them adds noise without value.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # SDK stream readers (anthropic ssestream / go-openai) expose Close via
+      # an embedded generic type errcheck cannot address by name; the deferred
+      # Close error is not actionable once the stream has been drained.
+      - linters:
+          - errcheck
+        source: 'defer stream\.Close\(\)'
