@@ -2,6 +2,12 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.31.2] — 2026-05-31
+
+### Added
+
+- **`history.Message.CorrelationID`** (`json:"correlation_id,omitempty"`) — the opaque per-dispatch ID the agent loop streams live on `ToolCallEvent.ID` / `ToolProgressEvent.ToolCallID` is now also persisted on the tool-result row. `ToolCallID` continues to hold the provider's tool-call ID (load-bearing for tool_use/tool_result adjacency and reused across parallel same-name calls by some providers), while `CorrelationID` gives consumers a single stable, unique handle to re-match a live-rendered artifact card to its tool row after a session reload. Previously the live and persisted IDs were disjoint with no bridge, so cards keyed off the live event could not be reattached on reload. Zero-valued for pre-existing sessions and non-tool messages. (`pkg/history/types.go`, `pkg/agent/loop_execute.go`)
+
 ## [v0.31.1] — 2026-05-31
 
 ### Fixed
@@ -447,6 +453,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.31.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.2
 [v0.31.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.1
 [v0.31.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.0
 [v0.30.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.30.0
