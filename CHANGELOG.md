@@ -2,6 +2,17 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.31.3] — 2026-05-31
+
+### Added
+
+- **`SQLQueryEvent.RowCount` and `SQLQueryEvent.ExecutionMs`.** The `OnSQL` hook fired without a row count or execution time even though the underlying `SQLResult` already carried both. The event now surfaces them — `RowCount` mirrors `SQLResult.RowCount` (rows returned for reads, rows affected for DML/DDL) — so adopters can render result banners and timing without re-deriving them. Zero-valued on early validation failure. (`pkg/tools/builtin/sql_agent.go`)
+- **`call_sql_agent` attaches the executed `SQLResult` on `tools.Result.Structured`.** The sub-agent already captured the last successful result; it is now returned on the tool result's `Structured` field (single-run and self-consistency paths) so host integrations can consume the actual rows via `OnToolResult`, at parity with the `SQLQueryEvent` hook. A nil result is left off `Structured` rather than boxed as a typed-nil, so `Structured != nil` checks stay honest. The model-visible `Text` is unchanged — raw rows are not pushed through the LLM. (`pkg/tools/builtin/sql_agent.go`)
+
+### Fixed
+
+- **`call_sql_agent` tool description no longer overstates what it returns.** It previously claimed to "return structured data," which led calling agents to attempt to extract verbatim rows from what is actually a natural-language answer — looping until the iteration cap and, in the worst case, fabricating rows. The description now states plainly that the tool returns a concise written answer summarizing the results, not raw table rows, and is not intended for dumping or exporting full result sets. (`pkg/tools/builtin/sql_agent.go`)
+
 ## [v0.31.2] — 2026-05-31
 
 ### Added
@@ -453,6 +464,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.31.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.3
 [v0.31.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.2
 [v0.31.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.1
 [v0.31.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.0
