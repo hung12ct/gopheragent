@@ -779,4 +779,3 @@ type consolidatorPanicProvider struct{}
 func (p *consolidatorPanicProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, _ chan<- StreamEvent) (LLMResult, error) {
 	panic("provider should not be called for short transcripts")
 }
-
