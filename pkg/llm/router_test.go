@@ -89,7 +89,7 @@ func TestRouterProvider_MultipleRoutes_FirstWins(t *testing.T) {
 }
 
 func TestIfTokensUnder(t *testing.T) {
-	short := msgs("hi")                                // ~1 token
+	short := msgs("hi")                     // ~1 token
 	long := msgs(string(make([]byte, 400))) // ~100 tokens
 
 	if !IfTokensUnder(50)(short) {
