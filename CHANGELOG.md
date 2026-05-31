@@ -2,6 +2,12 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.31.4] — 2026-05-31
+
+### Added
+
+- **`CallSQLAgentTool.WithLLMPreviewRows(n)`** — caps the number of result rows formatted into the text the sub-agent LLM reads, independent of `WithMaxRows`. The query still returns up to `WithMaxRows` rows and the full set is emitted on the `OnSQL`/`SQLQueryEvent` hook and attached on `tools.Result.Structured`; only the first `n` rows are serialized into the model's context, with the true `RowCount` preserved and `Truncated` set so the model knows it saw a sample. Lets a host keep a large result grid without paying LLM tokens for every wide row on each query turn. Opt-in: `n <= 0` (default) is a no-op and preserves prior behavior. (`pkg/tools/builtin/sql_agent.go`)
+
 ## [v0.31.3] — 2026-05-31
 
 ### Added
@@ -464,6 +470,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.31.4]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.4
 [v0.31.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.3
 [v0.31.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.2
 [v0.31.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.1
