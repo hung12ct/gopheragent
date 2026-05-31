@@ -79,6 +79,35 @@ func TestExecuteSQLTool_RejectsMutationsWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestExecuteSQLTool_EmitSurfacesRowCountAndExecutionMs(t *testing.T) {
+	var got SQLQueryEvent
+	exec := &executeSQLTool{
+		sessionKey: "sess_1",
+		onSQL:      func(_ context.Context, ev SQLQueryEvent) { got = ev },
+	}
+	emit := exec.makeEmitFunc(context.Background())
+
+	res := SQLResult{
+		SQL:         "UPDATE customers SET active = false WHERE id = 1",
+		RowCount:    3,
+		ExecutionMs: 42,
+	}
+	out, err := emit(res)
+	if err != nil {
+		t.Fatalf("emit returned error: %v", err)
+	}
+	if got.RowCount != 3 {
+		t.Fatalf("SQLQueryEvent.RowCount: got %d, want 3", got.RowCount)
+	}
+	if got.ExecutionMs != 42 {
+		t.Fatalf("SQLQueryEvent.ExecutionMs: got %d, want 42", got.ExecutionMs)
+	}
+	// The model-facing payload must keep carrying the same numbers.
+	if !strings.Contains(out.Text, `"row_count":3`) || !strings.Contains(out.Text, `"execution_ms":42`) {
+		t.Fatalf("marshalled result should retain row_count/execution_ms, got %s", out.Text)
+	}
+}
+
 func TestExecuteSQLTool_DescriptionReflectsMutationFlag(t *testing.T) {
 	off := (&executeSQLTool{allowMutations: false}).Descriptor().Description
 	on := (&executeSQLTool{allowMutations: true}).Descriptor().Description

@@ -18,18 +18,23 @@ import (
 // Error is non-empty when the query failed (DB error, DML rejection, or
 // validation failure before execution).
 //
-// Columns / Rows / Truncated are populated on successful execution so adopters
-// can flow result sets out of the sub-agent (e.g. into a side-by-side data
-// grid) without re-running the query against their own DB handle. On failure
-// these fields are zero-valued; partial rows from a mid-iteration error are
-// still surfaced, mirroring the SQLResult returned to the model.
+// Columns / Rows / RowCount / ExecutionMs / Truncated are populated on
+// successful execution so adopters can flow result sets out of the sub-agent
+// (e.g. into a side-by-side data grid, or a "INSERT executed · N rows" banner)
+// without re-running the query against their own DB handle. RowCount carries
+// rows returned for reads and rows affected for DML/DDL, mirroring
+// SQLResult.RowCount. On early validation failure these fields are zero-valued;
+// partial rows from a mid-iteration error are still surfaced, mirroring the
+// SQLResult returned to the model.
 type SQLQueryEvent struct {
-	SessionKey string
-	Query      string
-	Error      string           // empty on success
-	Columns    []string         // populated on success; nil on early validation failure
-	Rows       []map[string]any // populated on success; nil on early validation failure
-	Truncated  bool             // true when the MaxRows safety cap clipped output
+	SessionKey  string
+	Query       string
+	Error       string           // empty on success
+	Columns     []string         // populated on success; nil on early validation failure
+	Rows        []map[string]any // populated on success; nil on early validation failure
+	RowCount    int              // rows returned (read) or affected (DML/DDL); mirrors SQLResult.RowCount
+	ExecutionMs int64            // wall-clock execution time; zero on early validation failure
+	Truncated   bool             // true when the MaxRows safety cap clipped output
 }
 
 // SQLResult is the structured envelope returned from execute_sql back to the
@@ -685,12 +690,14 @@ func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (tool
 	return func(res SQLResult) (tools.Result, error) {
 		if t.onSQL != nil {
 			t.onSQL(ctx, SQLQueryEvent{
-				SessionKey: t.sessionKey,
-				Query:      res.SQL,
-				Error:      res.Error,
-				Columns:    res.Columns,
-				Rows:       res.Rows,
-				Truncated:  res.Truncated,
+				SessionKey:  t.sessionKey,
+				Query:       res.SQL,
+				Error:       res.Error,
+				Columns:     res.Columns,
+				Rows:        res.Rows,
+				RowCount:    res.RowCount,
+				ExecutionMs: res.ExecutionMs,
+				Truncated:   res.Truncated,
 			})
 		}
 		b, err := json.Marshal(res)
