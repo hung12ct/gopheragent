@@ -38,7 +38,7 @@ func (al *AgentLoop) runPlanModeGate(ctx context.Context, sessionKey string, str
 	al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{Message: "Plan proposed — awaiting human approval."}))
 	approved := false
 	if al.ConfirmPlan != nil {
-		approved = al.ConfirmPlan(ctx, pa.Plan)
+		approved = al.ConfirmPlan(ctx, PlanProposal{Plan: pa.Plan, RawArgs: json.RawMessage(tc.ArgsJSON)})
 	} else {
 		al.emit(ctx, sessionKey, streamChan, Event(ActionRequiredEvent{Tool: ExitPlanModeToolName, Args: pa.Plan}))
 	}

@@ -97,8 +97,8 @@ func TestPlanMode_ApprovedPlanExitsModeAndContinues(t *testing.T) {
 	loop.SetPlanMode("s1", true)
 
 	var capturedPlan string
-	loop.ConfirmPlan = func(_ context.Context, plan string) bool {
-		capturedPlan = plan
+	loop.ConfirmPlan = func(_ context.Context, plan PlanProposal) bool {
+		capturedPlan = plan.Plan
 		return true
 	}
 
@@ -138,7 +138,7 @@ func TestPlanMode_DeniedPlanStaysInModeAndBlocksTools(t *testing.T) {
 	reg := tools.NewRegistry()
 	loop := NewAgentLoop(sm, reg, provider)
 	loop.SetPlanMode("s1", true)
-	loop.ConfirmPlan = func(_ context.Context, _ string) bool { return false }
+	loop.ConfirmPlan = func(_ context.Context, _ PlanProposal) bool { return false }
 
 	if _, err := loop.RunIteration(context.Background(), "s1", "hi"); err != nil {
 		t.Fatalf("RunIteration: %v", err)
@@ -179,7 +179,7 @@ func TestPlanMode_BlocksOtherToolsAndAllowsExitPlanMode(t *testing.T) {
 	reg.Register(runTool)
 	loop := NewAgentLoop(sm, reg, provider)
 	loop.SetPlanMode("s1", true)
-	loop.ConfirmPlan = func(_ context.Context, _ string) bool { return true }
+	loop.ConfirmPlan = func(_ context.Context, _ PlanProposal) bool { return true }
 
 	if _, err := loop.RunIteration(context.Background(), "s1", "start"); err != nil {
 		t.Fatalf("RunIteration: %v", err)
@@ -275,7 +275,7 @@ func TestPlanMode_MultiSessionLoopIsolatesApproval(t *testing.T) {
 	loop := NewAgentLoop(sm, reg, provider)
 	loop.SetPlanMode("alice", true)
 	loop.SetPlanMode("bob", true)
-	loop.ConfirmPlan = func(_ context.Context, _ string) bool { return true }
+	loop.ConfirmPlan = func(_ context.Context, _ PlanProposal) bool { return true }
 
 	// Alice runs to completion first — approves plan, then runs do_work.
 	if _, err := loop.RunIteration(context.Background(), "alice", "go"); err != nil {
