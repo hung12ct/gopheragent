@@ -2,6 +2,16 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.32.0] — 2026-06-06
+
+### Added
+
+- **`CallSQLAgentTool.WithCellRedactor(fn CellRedactor)`** — an opt-in per-cell transform applied to SQL result values *before they are serialized into the text the sub-agent LLM reads*, so a host can mask sensitive columns (email, phone, …) before results leave the machine for a third-party provider. The redactor runs on a deep copy of the (already row-capped) model-facing preview only: the `OnSQL`/`SQLQueryEvent` hook, the `tools.Result.Structured` payload, and the host's grid all keep full-fidelity values — the user still sees real data locally while the model sees masked values. `nil` (default) is a zero-allocation no-op, and only the rows already selected for the LLM preview are copied, so cost scales with `WithLLMPreviewRows`, not the full result set. (`pkg/tools/builtin/sql_agent.go`)
+
+### Changed (breaking)
+
+- **`ConfirmPlanFunc` now takes `PlanProposal` instead of a plain `string`** — `func(ctx, plan string) bool` → `func(ctx, plan PlanProposal) bool`, where `PlanProposal{Plan string; RawArgs json.RawMessage}` carries both the markdown plan text (the common case, unchanged) and the untouched `exit_plan_mode` tool-call JSON. A host that registers its own `exit_plan_mode` tool with a structured argument schema (the loop intercepts by name regardless of schema) can now `json.Unmarshal` typed plan steps directly from `RawArgs` instead of parsing them back out of markdown; the framework stays schema-agnostic. Migration: change the callback signature and read `plan.Plan` where you previously used the `plan` string. (`pkg/agent/plan_mode.go`, `pkg/agent/plan_mode_gate.go`)
+
 ## [v0.31.5] — 2026-06-06
 
 ### Fixed
@@ -477,6 +487,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.32.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.0
 [v0.31.5]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.5
 [v0.31.4]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.4
 [v0.31.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.3
