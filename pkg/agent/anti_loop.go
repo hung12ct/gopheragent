@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -18,6 +19,24 @@ const loopWarnThreshold = 3
 // inspected for loop detection. 30 is empirically enough to catch every
 // pattern the detector cares about while keeping the struct cache-friendly.
 const maxRecentCalls = 30
+
+// loopWarnMarker is the prefix of the anti-loop warning that runToolCall
+// appends to a tool result before persisting it (loop_execute.go). The live
+// AddCall path hashes the raw result (the warning is appended afterwards), but
+// loopDetectorFromHistory re-reads the persisted content, which carries the
+// warning. Because the warning embeds the consecutive count ("3 times" vs
+// "4 times"), each persisted result would otherwise hash differently, so the
+// kill threshold could never be reached across turns. Stripping at this marker
+// restores byte-identity with the live path. Keep in sync with the Detect
+// warning format below and the append in loop_execute.go.
+const loopWarnMarker = "\n\n[SYSTEM WARNING:"
+
+// stripLoopWarning removes the anti-loop warning suffix appended to a persisted
+// tool result so its hash matches the live raw result the model first saw.
+func stripLoopWarning(content string) string {
+	before, _, _ := strings.Cut(content, loopWarnMarker)
+	return before
+}
 
 // callEntry records a single tool invocation for loop detection. Hashes are
 // FNV-64 sums of args/result — equality is the only operation performed on
@@ -70,7 +89,7 @@ func loopDetectorFromHistory(msgs []history.Message) *loopDetector {
 	results := make(map[string]string, len(msgs)/2+1)
 	for i := range msgs {
 		if msgs[i].Role == "tool" && msgs[i].ToolCallID != "" {
-			results[msgs[i].ToolCallID] = msgs[i].Content
+			results[msgs[i].ToolCallID] = stripLoopWarning(msgs[i].Content)
 		}
 	}
 	// Collect entries in chronological order. We cap at maxRecentCalls
