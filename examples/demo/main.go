@@ -139,7 +139,8 @@ var (
 // renders the checklist immediately — without this, plan mode would leave
 // the panel empty because every tool except exit_plan_mode is gated.
 func buildConfirmPlan() agent.ConfirmPlanFunc {
-	return func(ctx context.Context, plan string) bool {
+	return func(ctx context.Context, proposal agent.PlanProposal) bool {
+		plan := proposal.Plan
 		approvalID := fmt.Sprintf("%d", uniqueID())
 		ch := make(chan bool, 1)
 

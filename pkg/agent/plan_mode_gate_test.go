@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -52,7 +53,7 @@ func TestRunPlanModeGate_BlocksNonExitToolInPlanMode(t *testing.T) {
 func TestRunPlanModeGate_ApprovedExitsPlanModeAndPublishesResult(t *testing.T) {
 	al := &AgentLoop{Tools: tools.NewRegistry()}
 	al.SetPlanMode("s1", true)
-	al.ConfirmPlan = func(_ context.Context, _ string) bool { return true }
+	al.ConfirmPlan = func(_ context.Context, _ PlanProposal) bool { return true }
 	ws := newWaveState(1)
 	tc := PendingToolCall{ID: "tp", Name: ExitPlanModeToolName, ArgsJSON: `{"plan":"step a"}`}
 
@@ -71,10 +72,50 @@ func TestRunPlanModeGate_ApprovedExitsPlanModeAndPublishesResult(t *testing.T) {
 	}
 }
 
+func TestRunPlanModeGate_PassesRawArgsToConfirmPlan(t *testing.T) {
+	// A host that registers a structured exit_plan_mode tool gets the
+	// untouched tool-call JSON on PlanProposal.RawArgs, so it can unmarshal
+	// typed steps without parsing markdown. Plan stays empty when the schema
+	// has no top-level string `plan` field.
+	al := &AgentLoop{Tools: tools.NewRegistry()}
+	al.SetPlanMode("s1", true)
+	var got PlanProposal
+	al.ConfirmPlan = func(_ context.Context, p PlanProposal) bool {
+		got = p
+		return true
+	}
+	ws := newWaveState(1)
+	const structured = `{"goal":"reel","steps":[{"op":"cut","at":1.5}]}`
+	tc := PendingToolCall{ID: "tp", Name: ExitPlanModeToolName, ArgsJSON: structured}
+
+	if !al.runPlanModeGate(context.Background(), "s1", silentChan(t), ws, tc) {
+		t.Fatal("expected handled=true on approval")
+	}
+	if string(got.RawArgs) != structured {
+		t.Fatalf("RawArgs not passed through verbatim: got %q want %q", got.RawArgs, structured)
+	}
+	if got.Plan != "" {
+		t.Fatalf("Plan should be empty for a structured schema with no `plan` field; got %q", got.Plan)
+	}
+	var parsed struct {
+		Goal  string `json:"goal"`
+		Steps []struct {
+			Op string  `json:"op"`
+			At float64 `json:"at"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(got.RawArgs, &parsed); err != nil {
+		t.Fatalf("unmarshal RawArgs: %v", err)
+	}
+	if parsed.Goal != "reel" || len(parsed.Steps) != 1 || parsed.Steps[0].Op != "cut" {
+		t.Fatalf("structured plan did not round-trip from RawArgs: %+v", parsed)
+	}
+}
+
 func TestRunPlanModeGate_DeniedKeepsPlanModeAndFlagsError(t *testing.T) {
 	al := &AgentLoop{Tools: tools.NewRegistry()}
 	al.SetPlanMode("s1", true)
-	al.ConfirmPlan = func(_ context.Context, _ string) bool { return false }
+	al.ConfirmPlan = func(_ context.Context, _ PlanProposal) bool { return false }
 	ws := newWaveState(1)
 	tc := PendingToolCall{ID: "tp", Name: ExitPlanModeToolName, ArgsJSON: `{"plan":"x"}`}
 

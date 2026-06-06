@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -29,10 +30,22 @@ const planModeHint = planModeSentinel + " Do not call any tool except exit_plan_
 	"When the plan is complete, call exit_plan_mode with the plan as the `plan` argument. " +
 	"The user must approve the plan before any tool runs; if they deny, you will receive their feedback and must revise."
 
-// ConfirmPlanFunc receives the assistant's proposed plan text and returns
-// true to approve (loop exits plan mode and resumes normal execution) or
-// false to deny (the model is told to revise via the tool result).
-type ConfirmPlanFunc func(ctx context.Context, plan string) bool
+// PlanProposal is the payload handed to ConfirmPlanFunc when the model calls
+// exit_plan_mode. Plan carries the markdown text from the built-in tool's
+// `plan` argument — the common case. RawArgs is the untouched JSON of the
+// tool call, so a host that registers its own exit_plan_mode tool with a
+// structured argument schema can json.Unmarshal typed steps directly instead
+// of parsing them back out of markdown. Plan is empty when the structured
+// schema has no top-level string `plan` field; RawArgs is always populated.
+type PlanProposal struct {
+	Plan    string
+	RawArgs json.RawMessage
+}
+
+// ConfirmPlanFunc receives the assistant's proposed plan and returns true to
+// approve (loop exits plan mode and resumes normal execution) or false to
+// deny (the model is told to revise via the tool result).
+type ConfirmPlanFunc func(ctx context.Context, plan PlanProposal) bool
 
 // planModeTool is the tool definition injected into the LLM's tool list
 // when PlanMode is active. It is never executed — the loop intercepts calls
