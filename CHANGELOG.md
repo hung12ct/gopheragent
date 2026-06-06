@@ -2,6 +2,13 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.31.5] — 2026-06-06
+
+### Fixed
+
+- **The anti-loop detector now hard-stops repeated identical tool calls across turn boundaries.** It injects a `[SYSTEM WARNING: …]` into a tool result once a tool is called identically several times in a row, and escalates to a hard stop after five. But the warning was appended to the result *before it was persisted*, and it embeds the running count ("3 times" vs "4 times"). When the detector was re-seeded from session history at the start of each turn, those count-bearing warnings made every persisted result hash differently — the identical-call streak reset and the kill threshold became unreachable across turns, so a model that kept repeating the same call could exhaust its whole iteration budget while only ever being warned. The warning suffix is now stripped before re-seed hashing, restoring byte-identity with the live path so the hard stop fires as intended; the strip marker and the warning text derive from a shared prefix constant so they cannot drift apart. (`pkg/agent/anti_loop.go`)
+- **A cancellation that lands while the LLM stream is in flight is classified as cancellation, not an LLM failure.** When the turn context was cancelled mid-generation (e.g. a user-initiated stop or an approval timeout), the provider returned a context error that `runIteration` wrapped unconditionally as an LLM failure — so `errors.Is(err, agent.ErrContextCancelled)`, the documented way to detect cancellation on a terminal event, missed it and a deliberate stop surfaced as a model error. The error path now reclassifies a cancelled-context error (or one whose chain contains `context.Canceled`) under the `ErrContextCancelled` sentinel, matching the existing pre-call cancellation path; genuine provider failures are unchanged. (`pkg/agent/loop_iteration.go`)
+
 ## [v0.31.4] — 2026-05-31
 
 ### Added
@@ -470,6 +477,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.31.5]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.5
 [v0.31.4]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.4
 [v0.31.3]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.3
 [v0.31.2]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.2
