@@ -89,6 +89,7 @@ type CallSQLAgentTool struct {
 	allowSelectStar             bool
 	execSQLRequiresConfirmation bool
 	providerHint                string
+	cellRedactor                CellRedactor
 }
 
 // NewCallSQLAgentTool initializes a tool capable of querying databases. The
@@ -168,6 +169,30 @@ func (t *CallSQLAgentTool) WithMaxRows(n int) *CallSQLAgentTool {
 // preserving pre-feature behaviour.
 func (t *CallSQLAgentTool) WithLLMPreviewRows(n int) *CallSQLAgentTool {
 	t.llmPreviewRows = n
+	return t
+}
+
+// CellRedactor transforms a single result-cell value before it is serialized
+// into the text the sub-agent LLM reads — a privacy guard for sending SQL
+// results to a third-party provider (e.g. mask an email to "j***@***.com"). It
+// receives the column name and the raw cell value and returns the value to
+// expose to the model. It runs ONLY on the model-facing preview: the
+// host-facing rows (OnSQL / SQLQueryEvent and tools.Result.Structured) and the
+// local grid keep full-fidelity values. Return the value unchanged to leave a
+// cell as-is. Returning a mutable value (slice/map) aliases it into the
+// model-facing copy — return a fresh value if the host mutates it later.
+type CellRedactor func(column string, value any) any
+
+// WithCellRedactor installs a per-cell transform applied to result values
+// before they are serialized into the model's context — a privacy guard for
+// sending SQL results to a third-party LLM. The redactor runs on a deep copy of
+// the (already row-capped) preview only: the OnSQL / SQLQueryEvent hook, the
+// tools.Result.Structured payload, and the host's grid all keep the real
+// values, so the user still sees unmasked data locally while the model sees
+// masked values. Pairs naturally with WithLLMPreviewRows, which bounds how many
+// rows are copied and masked. nil (default) disables redaction with no copying.
+func (t *CallSQLAgentTool) WithCellRedactor(fn CellRedactor) *CallSQLAgentTool {
+	t.cellRedactor = fn
 	return t
 }
 
@@ -413,6 +438,7 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 		sessionKey:           subSessionKey,
 		maxRows:              t.maxRows,
 		llmPreviewRows:       t.llmPreviewRows,
+		cellRedactor:         t.cellRedactor,
 		queryTimeout:         t.queryTimeout,
 		allowMutations:       t.allowMutations,
 		allowDDL:             t.allowDDL,
@@ -632,6 +658,7 @@ type executeSQLTool struct {
 	onSQL                func(context.Context, SQLQueryEvent)
 	maxRows              int
 	llmPreviewRows       int
+	cellRedactor         CellRedactor
 	queryTimeout         time.Duration
 	allowMutations       bool
 	allowDDL             bool
@@ -735,7 +762,10 @@ func (t *executeSQLTool) makeEmitFunc(ctx context.Context) func(SQLResult) (tool
 				Truncated:   res.Truncated,
 			})
 		}
-		b, err := json.Marshal(previewForLLM(res, t.llmPreviewRows))
+		// Mask the model-facing copy only; res (OnSQL, Structured, the host
+		// grid) keeps full-fidelity values. redactRows deep-copies, so the
+		// shared row maps under res are never mutated.
+		b, err := json.Marshal(redactRows(previewForLLM(res, t.llmPreviewRows), t.cellRedactor))
 		if err != nil {
 			return tools.Result{}, fmt.Errorf("tools: marshal result: %w", err)
 		}
@@ -756,6 +786,30 @@ func previewForLLM(res SQLResult, n int) SQLResult {
 	preview.Rows = res.Rows[:n]
 	preview.Truncated = true
 	return preview
+}
+
+// redactRows returns a copy of res whose every cell value is passed through fn,
+// for masking sensitive values before they reach the LLM. It deep-copies the
+// row maps, so res — shared with the OnSQL hook, tools.Result.Structured, and
+// the host grid — keeps its full-fidelity values (the maps in res.Rows are
+// never mutated). fn == nil or no rows is a no-op returning res unchanged, so
+// the default path allocates nothing. Only the rows already selected for the
+// preview are copied, so the cost scales with the LLM preview size.
+func redactRows(res SQLResult, fn CellRedactor) SQLResult {
+	if fn == nil || len(res.Rows) == 0 {
+		return res
+	}
+	rows := make([]map[string]any, len(res.Rows))
+	for i, row := range res.Rows {
+		masked := make(map[string]any, len(row))
+		for col, val := range row {
+			masked[col] = fn(col, val)
+		}
+		rows[i] = masked
+	}
+	out := res
+	out.Rows = rows
+	return out
 }
 
 // executeRead runs the read-only path: optional LIMIT injection, then
