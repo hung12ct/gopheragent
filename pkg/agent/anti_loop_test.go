@@ -224,6 +224,29 @@ func TestStripLoopWarning(t *testing.T) {
 	}
 }
 
+func TestStripLoopWarning_MatchesRealDetectOutput(t *testing.T) {
+	// Drift guard: the strip marker must remove a warning Detect actually
+	// emits, not just a hardcoded literal. If the warning format is reworded
+	// so it no longer begins with loopWarnPrefix, this fails — catching the
+	// silent regression a literal-only test would miss.
+	ld := newLoopDetector()
+	for range loopWarnThreshold {
+		ld.AddCall("tool1", `{"a":1}`, "same_result")
+	}
+	warn, err := ld.Detect()
+	if err != nil {
+		t.Fatalf("expected warn, got kill: %v", err)
+	}
+	if warn == "" {
+		t.Fatal("expected a warning to guard against")
+	}
+	const raw = "raw result"
+	persisted := raw + "\n\n" + warn // mirrors the append in loop_execute.go
+	if got := stripLoopWarning(persisted); got != raw {
+		t.Fatalf("real Detect warning not stripped — marker drifted from warning format; got %q", got)
+	}
+}
+
 func BenchmarkLoopDetector_DetectNoLoop(b *testing.B) {
 	ld := newLoopDetector()
 	for i := 0; i < 10; i++ {

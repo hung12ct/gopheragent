@@ -20,16 +20,20 @@ const loopWarnThreshold = 3
 // pattern the detector cares about while keeping the struct cache-friendly.
 const maxRecentCalls = 30
 
-// loopWarnMarker is the prefix of the anti-loop warning that runToolCall
-// appends to a tool result before persisting it (loop_execute.go). The live
-// AddCall path hashes the raw result (the warning is appended afterwards), but
-// loopDetectorFromHistory re-reads the persisted content, which carries the
+// loopWarnPrefix opens every anti-loop warning Detect emits. Both the warning
+// format strings below and loopWarnMarker derive from it so the two can never
+// drift apart — editing the wording can't silently break the strip.
+const loopWarnPrefix = "[SYSTEM WARNING:"
+
+// loopWarnMarker is the boundary at which runToolCall's appended warning begins
+// in a persisted tool result (loop_execute.go appends "\n\n" + warning). The
+// live AddCall path hashes the raw result (the warning is appended afterwards),
+// but loopDetectorFromHistory re-reads the persisted content, which carries the
 // warning. Because the warning embeds the consecutive count ("3 times" vs
 // "4 times"), each persisted result would otherwise hash differently, so the
 // kill threshold could never be reached across turns. Stripping at this marker
-// restores byte-identity with the live path. Keep in sync with the Detect
-// warning format below and the append in loop_execute.go.
-const loopWarnMarker = "\n\n[SYSTEM WARNING:"
+// restores byte-identity with the live path.
+const loopWarnMarker = "\n\n" + loopWarnPrefix
 
 // stripLoopWarning removes the anti-loop warning suffix appended to a persisted
 // tool result so its hash matches the live raw result the model first saw.
@@ -180,13 +184,13 @@ func (ld *loopDetector) Detect() (warning string, killErr error) {
 	if identicalCount >= loopKillThreshold {
 		return "", fmt.Errorf("agent stuck in identical loop calling %s with same args", lastCall.ToolName)
 	} else if identicalCount >= loopWarnThreshold {
-		return fmt.Sprintf("[SYSTEM WARNING: You have called %s with the exact same arguments %d times consecutively. STOP doing this and try a different approach.]", lastCall.ToolName, identicalCount), nil
+		return fmt.Sprintf(loopWarnPrefix+" You have called %s with the exact same arguments %d times consecutively. STOP doing this and try a different approach.]", lastCall.ToolName, identicalCount), nil
 	}
 
 	if sameResultCount >= loopKillThreshold {
 		return "", fmt.Errorf("agent stuck in identical-result loop calling %s", lastCall.ToolName)
 	} else if sameResultCount >= loopWarnThreshold {
-		return fmt.Sprintf("[SYSTEM WARNING: You have called %s with different arguments, but the outcome is identically unhelpful %d times in a row. Re-evaluate your overall strategy.]", lastCall.ToolName, sameResultCount), nil
+		return fmt.Sprintf(loopWarnPrefix+" You have called %s with different arguments, but the outcome is identically unhelpful %d times in a row. Re-evaluate your overall strategy.]", lastCall.ToolName, sameResultCount), nil
 	}
 
 	return "", nil
