@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -54,6 +55,17 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 	finalContent, result, err := al.callLLMWithRetry(ctx, st, msgsForLLM)
 	if err != nil {
 		al.saveSession(ctx, sessionKey, *msgs)
+		// A cancel that lands while the provider stream is in flight surfaces
+		// as a provider error. Classify it as cancellation (not an LLM
+		// failure) so adopters' errors.Is(err, ErrContextCancelled) checks
+		// fire — mirroring the pre-call cancel path above.
+		if cause := ctx.Err(); cause != nil || errors.Is(err, context.Canceled) {
+			if cause == nil {
+				cause = err
+			}
+			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrContextCancelled, cause)))
+			return 0, true
+		}
 		al.emit(ctx, sessionKey, streamChan, errEvent(&LLMFailureError{Cause: err}))
 		return 0, true
 	}

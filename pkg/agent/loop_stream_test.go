@@ -195,6 +195,35 @@ func TestRunIterationStream_ForwardsErrorOnCancelledCtx(t *testing.T) {
 	}
 }
 
+func TestRunIteration_MidStreamCancelClassifiedAsContextCancelled(t *testing.T) {
+	// A cancel landing while the provider stream is in flight surfaces as a
+	// provider error wrapping context.Canceled. It must be classified as
+	// ErrContextCancelled (not LLMFailureError) so adopters' documented
+	// errors.Is(err, ErrContextCancelled) terminal check fires. The ctx itself
+	// is not cancelled here, exercising the errors.Is(err, context.Canceled)
+	// race branch specifically.
+	provider := &errorProvider{err: fmt.Errorf("provider stream error: %w", context.Canceled)}
+	loop, _ := setup(provider)
+
+	var sawErr bool
+	for ev := range loop.RunText(context.Background(), "s1", "hello") {
+		p, ok := ev.Payload.(ErrorEvent)
+		if !ok {
+			continue
+		}
+		sawErr = true
+		if !errors.Is(p.Err, ErrContextCancelled) {
+			t.Fatalf("expected ErrContextCancelled, got %v", p.Err)
+		}
+		if errors.Is(p.Err, ErrLLMFailure) {
+			t.Fatalf("must not classify cancellation as LLM failure: %v", p.Err)
+		}
+	}
+	if !sawErr {
+		t.Fatal("expected an error event")
+	}
+}
+
 func TestRunIteration_ParallelToolCalls(t *testing.T) {
 	provider := &scriptProvider{turns: []LLMResult{
 		{ToolCalls: []PendingToolCall{
