@@ -178,6 +178,52 @@ func TestLoopDetectorFromHistory_DifferentTrailingToolNoFalsePositive(t *testing
 	}
 }
 
+func TestLoopDetectorFromHistory_WarningSuffixDoesNotPoisonHash(t *testing.T) {
+	// Regression (Phin memory_list loop): the anti-loop warning is appended to
+	// the tool result before it is persisted (loop_execute.go). On the next turn
+	// loopDetectorFromHistory re-reads that persisted content; because the warning
+	// embeds the live consecutive count ("3 times" vs "4 times"), each result
+	// would hash differently and loopKillThreshold could never be reached across
+	// turns — the model loops forever, only ever re-warned. Stripping the warning
+	// before hashing restores byte-identity with the live raw call so the kill
+	// fires.
+	const rawResult = `{"keys":[],"count":0}`
+	var msgs []history.Message
+	for i := 0; i < loopKillThreshold; i++ {
+		id := fmt.Sprintf("m%d", i)
+		content := rawResult
+		// Mirror loop_execute.go: the warning is appended once the count crosses
+		// the warn threshold, carrying the live count in its text.
+		if n := i + 1; n >= loopWarnThreshold {
+			content += fmt.Sprintf("\n\n[SYSTEM WARNING: You have called memory_list with the exact same arguments %d times consecutively. STOP doing this and try a different approach.]", n)
+		}
+		msgs = append(msgs,
+			history.Message{Role: "assistant", ToolCalls: []history.ToolCall{
+				{ID: id, Name: "memory_list", Arguments: `{"count":3}`},
+			}},
+			history.Message{Role: "tool", ToolCallID: id, Content: content},
+		)
+	}
+	ld := loopDetectorFromHistory(msgs)
+	if got := ld.Len(); got != loopKillThreshold {
+		t.Fatalf("expected %d seeded entries, got %d", loopKillThreshold, got)
+	}
+	if _, err := ld.Detect(); err == nil {
+		t.Fatal("expected kill after loopKillThreshold identical calls; warning suffix poisoned the result hash")
+	}
+}
+
+func TestStripLoopWarning(t *testing.T) {
+	const raw = `{"keys":[],"count":0}`
+	if got := stripLoopWarning(raw); got != raw {
+		t.Fatalf("raw result must pass through unchanged; got %q", got)
+	}
+	warned := raw + "\n\n[SYSTEM WARNING: You have called memory_list with the exact same arguments 4 times consecutively. STOP doing this and try a different approach.]"
+	if got := stripLoopWarning(warned); got != raw {
+		t.Fatalf("warning suffix must be stripped; got %q", got)
+	}
+}
+
 func BenchmarkLoopDetector_DetectNoLoop(b *testing.B) {
 	ld := newLoopDetector()
 	for i := 0; i < 10; i++ {
