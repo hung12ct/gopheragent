@@ -165,7 +165,7 @@ func (ld *loopDetector) Detect() (warning string, killErr error) {
 	}
 
 	lastCall := ld.at(0)
-	identicalCount := 0
+	sameArgsCount := 0
 	sameResultCount := 0
 
 	for k := range n {
@@ -173,18 +173,30 @@ func (ld *loopDetector) Detect() (warning string, killErr error) {
 		if prev.ToolName != lastCall.ToolName {
 			break
 		}
-		if prev.ArgsHash == lastCall.ArgsHash && prev.ResultHash == lastCall.ResultHash {
-			identicalCount++
+		// Same tool + same args, regardless of result. The result is
+		// deliberately not part of this predicate: sub-agent tools
+		// (CallSQLAgentTool) run their own nested LLM loop and return a
+		// natural-language summary whose wording drifts run-to-run, so
+		// re-dispatching identical args yields a different ResultHash every
+		// time. Keying this counter on the result too (as it once did) left
+		// that case matching neither branch, so the kill threshold was
+		// unreachable — Phin saw call_sql_agent fire 7x with identical args
+		// without the detector ever warning.
+		if prev.ArgsHash == lastCall.ArgsHash {
+			sameArgsCount++
+			continue
 		}
-		if prev.ArgsHash != lastCall.ArgsHash && prev.ResultHash == lastCall.ResultHash {
+		// Different args but an identically-unhelpful result: flailing with
+		// varied inputs against the same brick wall.
+		if prev.ResultHash == lastCall.ResultHash {
 			sameResultCount++
 		}
 	}
 
-	if identicalCount >= loopKillThreshold {
+	if sameArgsCount >= loopKillThreshold {
 		return "", fmt.Errorf("agent stuck in identical loop calling %s with same args", lastCall.ToolName)
-	} else if identicalCount >= loopWarnThreshold {
-		return fmt.Sprintf(loopWarnPrefix+" You have called %s with the exact same arguments %d times consecutively. STOP doing this and try a different approach.]", lastCall.ToolName, identicalCount), nil
+	} else if sameArgsCount >= loopWarnThreshold {
+		return fmt.Sprintf(loopWarnPrefix+" You have called %s with the exact same arguments %d times consecutively. STOP doing this and try a different approach.]", lastCall.ToolName, sameArgsCount), nil
 	}
 
 	if sameResultCount >= loopKillThreshold {

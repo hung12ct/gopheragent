@@ -2,6 +2,12 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.32.1] — 2026-06-29
+
+### Fixed
+
+- **The anti-loop detector now catches a tool called repeatedly with identical arguments even when each call returns a different result.** The detector escalates from a warning to a hard stop when a tool is invoked the same way several times in a row, but its same-arguments counter also required the result to be byte-identical between calls. That assumption holds for deterministic tools but not for sub-agent tools that wrap their own LLM (such as `call_sql_agent`): re-running them with the same arguments returns a slightly reworded natural-language summary each time, so the differing result hash meant the repeated calls matched neither the identical-call branch nor the identical-result branch — the streak counter never advanced and the tool could be called the same way indefinitely without ever tripping the warn or kill threshold. The same-arguments counter no longer considers the result hash, so a same-tool/same-arguments run now warns and then hard-stops as intended. The separate different-arguments/identical-result branch (flailing with varied inputs against the same outcome) is unchanged, and the existing different-tool guard still prevents false positives across distinct tools. (`pkg/agent/anti_loop.go`)
+
 ## [v0.32.0] — 2026-06-06
 
 ### Added
@@ -487,6 +493,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.32.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.1
 [v0.32.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.0
 [v0.31.5]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.5
 [v0.31.4]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.4

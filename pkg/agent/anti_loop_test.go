@@ -65,6 +65,36 @@ func TestLoopDetector_WarnOnSameResultDifferentArgs(t *testing.T) {
 	}
 }
 
+func TestLoopDetector_SameArgsVaryingResult(t *testing.T) {
+	// Regression (Phin call_sql_agent loop): a sub-agent tool wraps its own LLM,
+	// so re-dispatching identical args returns a slightly different summary — a
+	// different ResultHash — each run. Phin saw call_sql_agent fire 7x with the
+	// exact same args without the detector ever warning or killing, because the
+	// old same-args counter also required a matching result. The same-args
+	// streak must trip warn at loopWarnThreshold and kill at loopKillThreshold
+	// regardless of result.
+	const args = `{"query":"SELECT * FROM tagby.sns_info LIMIT 10"}`
+
+	ld := newLoopDetector()
+	for i := 0; i < loopWarnThreshold; i++ {
+		ld.AddCall("call_sql_agent", args, fmt.Sprintf("Here are 10 rows (phrasing %d).", i))
+	}
+	warn, err := ld.Detect()
+	if err != nil {
+		t.Fatalf("should warn, not kill at warn threshold: %v", err)
+	}
+	if warn == "" {
+		t.Fatal("expected warning for same-args/varying-result loop")
+	}
+
+	for i := loopWarnThreshold; i < loopKillThreshold; i++ {
+		ld.AddCall("call_sql_agent", args, fmt.Sprintf("Here are 10 rows (phrasing %d).", i))
+	}
+	if _, err := ld.Detect(); err == nil {
+		t.Fatal("expected kill after loopKillThreshold same-args calls with varying results")
+	}
+}
+
 func TestLoopDetector_BreakOnDifferentTool(t *testing.T) {
 	ld := newLoopDetector()
 	ld.AddCall("tool_a", `{"a":1}`, "r1")
