@@ -300,6 +300,131 @@ func TestWithKnowledgeBaseDocs_NilDocsReturnsBaseUnchanged(t *testing.T) {
 	}
 }
 
+// --- OKF frontmatter ---
+
+func TestLoadKnowledgeBase_StripsFrontmatterAndSurfacesMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "revenue.md", "---\ntype: Concept\ntitle: Revenue\ntags:\n  - finance\n  - metrics\n---\nRevenue is recognised on delivery.")
+
+	out, err := LoadKnowledgeBase(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, "type: Concept") || strings.Contains(out, "---") {
+		t.Fatalf("raw frontmatter leaked into prompt body: %q", out)
+	}
+	if !strings.Contains(out, `type="Concept"`) || !strings.Contains(out, `title="Revenue"`) {
+		t.Fatalf("metadata not surfaced as attributes: %q", out)
+	}
+	if !strings.Contains(out, `tags="finance,metrics"`) {
+		t.Fatalf("tags attribute missing: %q", out)
+	}
+	if !strings.Contains(out, "Revenue is recognised on delivery.") {
+		t.Fatalf("body content lost: %q", out)
+	}
+}
+
+func TestLoadKnowledgeBase_PlainMarkdownWithHorizontalRuleUnchanged(t *testing.T) {
+	// A "---" used as a horizontal rule (no closing fence parsing as a YAML
+	// map at the top) must not be mistaken for frontmatter.
+	dir := t.TempDir()
+	writeFile(t, dir, "notes.md", "Intro paragraph.\n\n---\n\nMore text.")
+
+	out, err := LoadKnowledgeBase(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "Intro paragraph.") || !strings.Contains(out, "More text.") {
+		t.Fatalf("content altered for non-frontmatter file: %q", out)
+	}
+	if strings.Contains(out, `type=`) {
+		t.Fatalf("unexpected metadata attribute on plain file: %q", out)
+	}
+}
+
+func TestLoadKnowledgeBaseFiltered_ByType(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "play.md", "---\ntype: Playbook\n---\nDo this.")
+	writeFile(t, dir, "concept.md", "---\ntype: Concept\n---\nKnow this.")
+	writeFile(t, dir, "plain.md", "Untyped doc.")
+
+	out, err := LoadKnowledgeBaseFiltered(dir, KBFilter{Types: []string{"Playbook"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "Do this.") {
+		t.Fatalf("matching type excluded: %q", out)
+	}
+	if strings.Contains(out, "Know this.") || strings.Contains(out, "Untyped doc.") {
+		t.Fatalf("non-matching docs leaked: %q", out)
+	}
+}
+
+func TestLoadKnowledgeBaseFiltered_ByTagMatchesAny(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.md", "---\ntype: Concept\ntags: [billing, legal]\n---\nA")
+	writeFile(t, dir, "b.md", "---\ntype: Concept\ntags: [marketing]\n---\nB")
+
+	out, err := LoadKnowledgeBaseFiltered(dir, KBFilter{Tags: []string{"billing"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, ">\nA\n") {
+		t.Fatalf("doc with matching tag excluded: %q", out)
+	}
+	if strings.Contains(out, ">\nB\n") {
+		t.Fatalf("doc without matching tag leaked: %q", out)
+	}
+}
+
+func TestLoadKnowledgeBaseFiltered_EmptyFilterMatchesAll(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "typed.md", "---\ntype: Concept\n---\ntyped body")
+	writeFile(t, dir, "plain.md", "plain body")
+
+	out, err := LoadKnowledgeBaseFiltered(dir, KBFilter{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "typed body") || !strings.Contains(out, "plain body") {
+		t.Fatalf("empty filter must load every doc: %q", out)
+	}
+}
+
+func TestLoadKnowledgeBaseFiltered_MalformedFrontmatterTreatedAsBody(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "bad.md", "---\nthis: is: not: valid: yaml: mapping\n  - dangling\n---\nbody")
+
+	out, err := LoadKnowledgeBase(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Malformed YAML → whole file kept verbatim, no metadata extracted.
+	if !strings.Contains(out, "body") {
+		t.Fatalf("body lost on malformed frontmatter: %q", out)
+	}
+	if strings.Contains(out, `type=`) {
+		t.Fatalf("metadata extracted from malformed frontmatter: %q", out)
+	}
+}
+
+func TestWithKnowledgeBaseFiltered_AppliesFilter(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "keep.md", "---\ntype: Playbook\n---\nkeep me")
+	writeFile(t, dir, "drop.md", "---\ntype: Concept\n---\ndrop me")
+
+	got, err := WithKnowledgeBaseFiltered("You are helpful.", dir, KBFilter{Types: []string{"Playbook"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got, "You are helpful.") {
+		t.Fatal("base prompt must come first")
+	}
+	if !strings.Contains(got, "keep me") || strings.Contains(got, "drop me") {
+		t.Fatalf("filter not applied through WithKnowledgeBaseFiltered: %q", got)
+	}
+}
+
 func TestBuildFromYAML_NoKnowledgeBaseLeavesPromptUntouched(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "agent.yaml", `
