@@ -1,4 +1,4 @@
-package llm
+package gemini
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"google.golang.org/genai"
 )
 
-// NewVertexGeminiProvider returns a GeminiProvider wired to Vertex AI instead
+// NewVertex returns a Provider wired to Vertex AI instead
 // of the public Gemini API. Vertex uses Application Default Credentials (ADC)
 // plus a GCP project/location rather than an API key — run `gcloud auth
 // application-default login` or mount a service-account key via
@@ -19,14 +19,14 @@ import (
 // GOOGLE_CLOUD_LOCATION respectively. Empty model defaults to
 // "gemini-2.5-flash".
 //
-// The returned *GeminiProvider reuses the same GenerateStream implementation
+// The returned *Provider reuses the same GenerateStream implementation
 // as the public-API backend — only the transport differs.
-func NewVertexGeminiProvider(projectID, location, model string) (*GeminiProvider, error) {
+func NewVertex(projectID, location, model string, opts ...Option) (*Provider, error) {
 	if projectID == "" {
 		projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
 	}
 	if projectID == "" {
-		return nil, errors.New("llm: GOOGLE_CLOUD_PROJECT is not set and projectID argument is empty")
+		return nil, errors.New("gemini: GOOGLE_CLOUD_PROJECT is not set and projectID argument is empty")
 	}
 	if location == "" {
 		location = os.Getenv("GOOGLE_CLOUD_LOCATION")
@@ -44,11 +44,15 @@ func NewVertexGeminiProvider(projectID, location, model string) (*GeminiProvider
 		Location: location,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("llm: failed to create vertex gemini client: %w", err)
+		return nil, fmt.Errorf("gemini: failed to create vertex gemini client: %w", err)
 	}
 
-	return &GeminiProvider{
+	p := &Provider{
 		client: client,
 		model:  model,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }

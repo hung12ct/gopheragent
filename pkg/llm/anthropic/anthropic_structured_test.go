@@ -1,4 +1,4 @@
-package llm
+package anthropic
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ func TestSynthesizeAnthropicStructuredTool_BasicShape(t *testing.T) {
 			"required": []string{"name"},
 		},
 	}
-	tool, name := synthesizeAnthropicStructuredTool(so)
+	tool, name := synthesizeStructuredTool(so)
 	if name != "person" {
 		t.Fatalf("name: want person, got %q", name)
 	}
@@ -48,7 +48,7 @@ func TestSynthesizeAnthropicStructuredTool_FallbackName(t *testing.T) {
 	so := &agent.StructuredOutput{
 		Schema: map[string]any{"type": "object"},
 	}
-	_, name := synthesizeAnthropicStructuredTool(so)
+	_, name := synthesizeStructuredTool(so)
 	if name == "" {
 		t.Fatal("expected non-empty fallback name, got empty")
 	}
@@ -63,7 +63,7 @@ func TestSynthesizeAnthropicStructuredTool_RequiredFromAnyList(t *testing.T) {
 			"required": []any{"a", "b", 42, "c"}, // 42 should be filtered out
 		},
 	}
-	tool, _ := synthesizeAnthropicStructuredTool(so)
+	tool, _ := synthesizeStructuredTool(so)
 	got := tool.OfTool.InputSchema.Required
 	sort.Strings(got)
 	want := []string{"a", "b", "c"}
@@ -84,7 +84,7 @@ func TestSynthesizeAnthropicStructuredTool_ExtrasPreserved(t *testing.T) {
 			},
 		},
 	}
-	tool, _ := synthesizeAnthropicStructuredTool(so)
+	tool, _ := synthesizeStructuredTool(so)
 	if _, ok := tool.OfTool.InputSchema.ExtraFields["additionalProperties"]; !ok {
 		t.Fatalf("additionalProperties not preserved in ExtraFields: %+v", tool.OfTool.InputSchema.ExtraFields)
 	}
@@ -111,7 +111,7 @@ func TestSynthesizeAnthropicStructuredTool_DefaultDescription(t *testing.T) {
 	so := &agent.StructuredOutput{
 		Schema: map[string]any{"type": "object"},
 	}
-	tool, _ := synthesizeAnthropicStructuredTool(so)
+	tool, _ := synthesizeStructuredTool(so)
 	if tool.OfTool.Description.Value == "" {
 		t.Fatal("expected non-empty fallback description")
 	}

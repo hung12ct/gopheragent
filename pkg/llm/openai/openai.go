@@ -1,5 +1,8 @@
-// Package llm provides LLM provider implementations for OpenAI, Anthropic, and OpenAI-compatible APIs.
-package llm
+// Package openai implements agent.LLMProvider for the OpenAI Chat
+// Completions API and any OpenAI-compatible endpoint (Ollama, Groq,
+// Together AI, vLLM, ...), plus the OpenAI-backed embedder, vision
+// analyzer, and history summary provider.
+package openai
 
 import (
 	"context"
@@ -8,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -26,15 +30,42 @@ func (m jsonSchemaMarshaler) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]any(m))
 }
 
-// OpenAIProvider implements agent.LLMProvider using the OpenAI Chat Completions API.
-type OpenAIProvider struct {
-	client *openai.Client
-	model  string
+// Provider implements agent.LLMProvider using the OpenAI Chat Completions API.
+type Provider struct {
+	client      *openai.Client
+	model       string
+	temperature *float64
+	topP        *float64
+	seed        *int64
 }
 
-// NewOpenAIProvider creates a wrapper over OpenAI's API.
+// Option configures a Provider at construction.
+type Option func(*Provider)
+
+// WithTemperature pins the sampling temperature (0.0–2.0 for OpenAI).
+// Use 0 for maximally reproducible classification/extraction turns; unset
+// keeps the provider default. An explicit 0 is honored (the SDK's omitempty
+// would otherwise drop it and silently revert to the provider default).
+func WithTemperature(t float64) Option {
+	return func(p *Provider) { p.temperature = &t }
+}
+
+// WithTopP pins nucleus sampling. OpenAI recommends adjusting either
+// temperature or top_p, not both. Unset keeps the provider default.
+func WithTopP(v float64) Option {
+	return func(p *Provider) { p.topP = &v }
+}
+
+// WithSeed requests best-effort deterministic sampling. Determinism is not
+// guaranteed across model versions or backend changes — pair with a pinned
+// temperature for the strongest reproducibility OpenAI offers.
+func WithSeed(n int64) Option {
+	return func(p *Provider) { p.seed = &n }
+}
+
+// New creates a wrapper over OpenAI's API.
 // Auto-discovers OPENAI_API_KEY from environment if apiKey is empty.
-func NewOpenAIProvider(apiKey string, model string) (*OpenAIProvider, error) {
+func New(apiKey string, model string, opts ...Option) (*Provider, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
@@ -44,14 +75,18 @@ func NewOpenAIProvider(apiKey string, model string) (*OpenAIProvider, error) {
 	if model == "" {
 		model = openai.GPT4o
 	}
-	return &OpenAIProvider{
+	p := &Provider{
 		client: openai.NewClient(apiKey),
 		model:  model,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 // GenerateStream maps GopherAgent history to OpenAI API format and triggers streaming generation.
-func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
+func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
 	reqMessages := make([]openai.ChatCompletionMessage, 0, len(memory))
 
 	for _, m := range memory {
@@ -64,7 +99,7 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 		// message — see ErrContentFieldsMisused in the SDK).
 		if len(m.Parts) > 0 && m.Role == "user" {
 			msg.Content = ""
-			msg.MultiContent = openAIPartsFromMediaParts(m.Content, m.Parts)
+			msg.MultiContent = partsFromMediaParts(m.Content, m.Parts)
 		}
 		// tool result: needs ToolCallID
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -131,6 +166,7 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 			IncludeUsage: true,
 		},
 	}
+	p.applySampling(&req)
 	if effort := reasoningEffortFor(p.model, agent.ThinkingBudgetFromContext(ctx)); effort != "" {
 		req.ReasoningEffort = effort
 	}
@@ -237,6 +273,31 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, memory []history.Me
 	}, nil
 }
 
+// applySampling stamps the configured temperature/top_p/seed onto req.
+func (p *Provider) applySampling(req *openai.ChatCompletionRequest) {
+	if p.temperature != nil {
+		req.Temperature = nonZeroFloat32(*p.temperature)
+	}
+	if p.topP != nil {
+		req.TopP = nonZeroFloat32(*p.topP)
+	}
+	if p.seed != nil {
+		seed := int(*p.seed)
+		req.Seed = &seed
+	}
+}
+
+// nonZeroFloat32 maps an explicit 0 to the smallest positive float32. The
+// SDK tags Temperature/TopP with omitempty, so a literal 0 vanishes from
+// the JSON and the API silently applies its default (1.0) — the epsilon is
+// sampling-equivalent to 0 and survives serialization.
+func nonZeroFloat32(v float64) float32 {
+	if v == 0 {
+		return math.SmallestNonzeroFloat32
+	}
+	return float32(v)
+}
+
 // reasoningEffortFor maps a generic ThinkingBudget token count to the
 // reasoning_effort string the OpenAI chat API understands.
 //
@@ -271,13 +332,13 @@ func reasoningEffortFor(model string, budget int) string {
 	}
 }
 
-// openAIPartsFromMediaParts converts GopherAgent's provider-neutral MediaPart
+// partsFromMediaParts converts GopherAgent's provider-neutral MediaPart
 // slice into OpenAI's MultiContent representation. A leading text fragment
 // derived from Content (when non-empty) keeps captions attached to images.
 //
 // For image parts, raw Data is folded into a data: URI — OpenAI accepts both
 // https URLs and data: URIs interchangeably for image_url.
-func openAIPartsFromMediaParts(caption string, parts []history.MediaPart) []openai.ChatMessagePart {
+func partsFromMediaParts(caption string, parts []history.MediaPart) []openai.ChatMessagePart {
 	out := make([]openai.ChatMessagePart, 0, len(parts)+1)
 	if caption != "" {
 		out = append(out, openai.ChatMessagePart{

@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"errors"
@@ -7,15 +7,15 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-// NewOpenAICompatProvider creates a provider for any OpenAI-compatible API endpoint.
+// NewCompat creates a provider for any OpenAI-compatible API endpoint.
 // This covers: Google Gemini (via OpenAI compat), Ollama, Groq, Together AI, vLLM, etc.
 //
 // Examples:
 //
-//	Gemini:  NewOpenAICompatProvider("GEMINI_API_KEY", "gemini-2.0-flash", "https://generativelanguage.googleapis.com/v1beta/openai")
-//	Ollama:  NewOpenAICompatProvider("ollama", "llama3", "http://localhost:11434/v1")
-//	Groq:    NewOpenAICompatProvider("GROQ_KEY", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1")
-func NewOpenAICompatProvider(apiKey string, model string, baseURL string) (*OpenAIProvider, error) {
+//	Gemini:  NewCompat("GEMINI_API_KEY", "gemini-2.0-flash", "https://generativelanguage.googleapis.com/v1beta/openai")
+//	Ollama:  NewCompat("ollama", "llama3", "http://localhost:11434/v1")
+//	Groq:    NewCompat("GROQ_KEY", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1")
+func NewCompat(apiKey string, model string, baseURL string, opts ...Option) (*Provider, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
@@ -32,8 +32,12 @@ func NewOpenAICompatProvider(apiKey string, model string, baseURL string) (*Open
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = baseURL
 
-	return &OpenAIProvider{
+	p := &Provider{
 		client: openai.NewClientWithConfig(config),
 		model:  model,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }

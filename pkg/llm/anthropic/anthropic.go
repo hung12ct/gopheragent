@@ -1,4 +1,7 @@
-package llm
+// Package anthropic implements agent.LLMProvider for Anthropic's Claude
+// models via the Messages API, including prompt caching, extended
+// thinking, and structured output (synthesized-tool JSON mode).
+package anthropic
 
 import (
 	"context"
@@ -15,33 +18,52 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
-// DefaultAnthropicMaxTokens is the per-call Anthropic MaxTokens used when
+// DefaultMaxTokens is the per-call Anthropic MaxTokens used when
 // no override is provided. 8192 catches typical chat + tool-use turns
 // without truncating most code-gen workloads. Bump via WithMaxTokens for
 // long structured outputs (HTML5 playables, full schema dumps,
 // inline charts) — Sonnet 4.6 supports up to 64K.
-const DefaultAnthropicMaxTokens int64 = 8192
+const DefaultMaxTokens int64 = 8192
 
-// AnthropicProvider implements agent.LLMProvider using the Anthropic Messages API (Claude).
-type AnthropicProvider struct {
-	client    *anthropic.Client
-	model     anthropic.Model
-	MaxTokens int64
+// Provider implements agent.LLMProvider using the Anthropic Messages API (Claude).
+type Provider struct {
+	client      *anthropic.Client
+	model       anthropic.Model
+	MaxTokens   int64
+	temperature *float64
+	topP        *float64
 }
 
-// AnthropicOption configures an AnthropicProvider at construction.
-type AnthropicOption func(*AnthropicProvider)
+// Option configures a Provider at construction.
+type Option func(*Provider)
 
 // WithMaxTokens overrides the per-call Anthropic MaxTokens. Use for
 // code-generation, long structured output, or any workload where the
 // default truncates mid-stream.
-func WithMaxTokens(n int64) AnthropicOption {
-	return func(p *AnthropicProvider) { p.MaxTokens = n }
+func WithMaxTokens(n int64) Option {
+	return func(p *Provider) { p.MaxTokens = n }
 }
 
-// NewAnthropicProvider creates a Claude-backed provider.
+// WithTemperature pins the sampling temperature (0.0–1.0 for Anthropic).
+// Use 0 for maximally reproducible classification/extraction turns; unset
+// keeps the provider default. Ignored while extended thinking is enabled —
+// the API rejects sampling overrides alongside thinking. Anthropic exposes
+// no seed parameter, so temperature 0 is best-effort reproducibility, not
+// bit-exact.
+func WithTemperature(t float64) Option {
+	return func(p *Provider) { p.temperature = &t }
+}
+
+// WithTopP pins nucleus sampling. Anthropic recommends adjusting either
+// temperature or top_p, not both. Unset keeps the provider default.
+// Ignored while extended thinking is enabled.
+func WithTopP(v float64) Option {
+	return func(p *Provider) { p.topP = &v }
+}
+
+// New creates a Claude-backed provider.
 // Auto-discovers ANTHROPIC_API_KEY from environment if apiKey is empty.
-func NewAnthropicProvider(apiKey string, model string, opts ...AnthropicOption) (*AnthropicProvider, error) {
+func New(apiKey string, model string, opts ...Option) (*Provider, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
@@ -53,14 +75,14 @@ func NewAnthropicProvider(apiKey string, model string, opts ...AnthropicOption) 
 		m = anthropic.ModelClaudeSonnet4_6
 	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	p := &AnthropicProvider{client: &client, model: m, MaxTokens: DefaultAnthropicMaxTokens}
+	p := &Provider{client: &client, model: m, MaxTokens: DefaultMaxTokens}
 	for _, opt := range opts {
 		opt(p)
 	}
 	return p, nil
 }
 
-func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
+func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
 	var systemBlocks []anthropic.TextBlockParam
 	var messages []anthropic.MessageParam
 
@@ -86,7 +108,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		case "user":
 			var blocks []anthropic.ContentBlockParamUnion
 			if len(m.Parts) > 0 {
-				blocks = anthropicBlocksFromMediaParts(m.Content, m.Parts)
+				blocks = blocksFromMediaParts(m.Content, m.Parts)
 			} else {
 				blocks = []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)}
 			}
@@ -136,12 +158,12 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 		}
 	}
 
-	var anthropicTools []anthropic.ToolUnionParam
+	var sdkTools []anthropic.ToolUnionParam
 	if availableTools != nil {
 		for _, t := range availableTools.All() {
 			desc := t.Descriptor()
 			schema := desc.Parameters
-			anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{
+			sdkTools = append(sdkTools, anthropic.ToolUnionParam{
 				OfTool: &anthropic.ToolParam{
 					Name:        desc.Name,
 					Description: anthropic.String(desc.Description),
@@ -162,8 +184,8 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	so := agent.StructuredOutputFromContext(ctx)
 	structuredToolName := ""
 	if so != nil && len(so.Schema) > 0 {
-		tool, name := synthesizeAnthropicStructuredTool(so)
-		anthropicTools = append(anthropicTools, tool)
+		tool, name := synthesizeStructuredTool(so)
+		sdkTools = append(sdkTools, tool)
 		structuredToolName = name
 	}
 
@@ -175,15 +197,17 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	if len(systemBlocks) > 0 {
 		params.System = systemBlocks
 	}
-	if len(anthropicTools) > 0 {
-		params.Tools = anthropicTools
+	if len(sdkTools) > 0 {
+		params.Tools = sdkTools
 	}
 	if structuredToolName != "" {
 		params.ToolChoice = anthropic.ToolChoiceParamOfTool(structuredToolName)
 	}
-	if b := resolveThinkingBudget(ctx, p.MaxTokens); b > 0 {
-		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(b)
+	thinkingBudget := resolveThinkingBudget(ctx, p.MaxTokens)
+	if thinkingBudget > 0 {
+		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(thinkingBudget)
 	}
+	p.applySampling(&params, thinkingBudget > 0)
 
 	streamChan <- agent.Event(agent.ThoughtEvent{Message: fmt.Sprintf("Analyzing with Claude (%s)...", p.model)})
 
@@ -298,7 +322,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}, nil
 }
 
-// synthesizeAnthropicStructuredTool builds a fake tool whose InputSchema
+// synthesizeStructuredTool builds a fake tool whose InputSchema
 // mirrors the user's StructuredOutput and returns it alongside the tool
 // name the caller should pass to ToolChoiceParamOfTool. Anthropic exposes
 // no native JSON mode, so forcing the model to call this tool is the
@@ -307,7 +331,7 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, memory []history
 // Top-level type/properties/required are extracted into the typed fields;
 // any other JSON-Schema keywords (additionalProperties, $defs, oneOf, …)
 // ride along via ExtraFields, which the SDK merges at marshal time.
-func synthesizeAnthropicStructuredTool(so *agent.StructuredOutput) (anthropic.ToolUnionParam, string) {
+func synthesizeStructuredTool(so *agent.StructuredOutput) (anthropic.ToolUnionParam, string) {
 	name := so.Name
 	if name == "" {
 		name = "structured_response"
@@ -356,6 +380,22 @@ func synthesizeAnthropicStructuredTool(so *agent.StructuredOutput) (anthropic.To
 	return tool, name
 }
 
+// applySampling stamps the configured temperature/top_p onto params.
+// Skipped when extended thinking is enabled: the API rejects temperature
+// and top_p overrides alongside thinking, so thinking wins by construction
+// instead of 400ing the call.
+func (p *Provider) applySampling(params *anthropic.MessageNewParams, thinkingEnabled bool) {
+	if thinkingEnabled {
+		return
+	}
+	if p.temperature != nil {
+		params.Temperature = anthropic.Float(*p.temperature)
+	}
+	if p.topP != nil {
+		params.TopP = anthropic.Float(*p.topP)
+	}
+}
+
 // resolveThinkingBudget clamps a caller-supplied extended-thinking budget
 // to what the Anthropic API accepts for the current request.
 //
@@ -402,7 +442,7 @@ func stampCacheControl(block *anthropic.ContentBlockParamUnion) {
 	}
 }
 
-// anthropicBlocksFromMediaParts converts MediaParts into the Anthropic
+// blocksFromMediaParts converts MediaParts into the Anthropic
 // ContentBlockParamUnion sequence. A non-empty caption is prepended as a
 // text block so plain prompts like "What's in this image?" ride along with
 // the image.
@@ -411,7 +451,7 @@ func stampCacheControl(block *anthropic.ContentBlockParamUnion) {
 // Parts with no usable payload are silently skipped (the alternative —
 // surfacing an error — would force every caller to pre-validate, which is
 // more trouble than it's worth for a format issue).
-func anthropicBlocksFromMediaParts(caption string, parts []history.MediaPart) []anthropic.ContentBlockParamUnion {
+func blocksFromMediaParts(caption string, parts []history.MediaPart) []anthropic.ContentBlockParamUnion {
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(parts)+1)
 	if caption != "" {
 		blocks = append(blocks, anthropic.NewTextBlock(caption))

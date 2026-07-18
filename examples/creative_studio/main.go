@@ -32,7 +32,9 @@ import (
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/history"
-	"github.com/hung12ct/gopheragent/pkg/llm"
+	"github.com/hung12ct/gopheragent/pkg/llm/anthropic"
+	"github.com/hung12ct/gopheragent/pkg/llm/gemini"
+	"github.com/hung12ct/gopheragent/pkg/llm/openai"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 	"github.com/hung12ct/gopheragent/pkg/tools/builtin"
 )
@@ -87,17 +89,17 @@ func buildLLMProvider() agent.LLMProvider {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER")))
 	switch provider {
 	case "anthropic", "claude":
-		if p, err := llm.NewAnthropicProvider("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL"))); err == nil {
+		if p, err := anthropic.New("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL"))); err == nil {
 			log.Printf("LLM: Anthropic")
 			return p
 		}
 	case "gemini":
-		if p, err := llm.NewGeminiProvider("", strings.TrimSpace(os.Getenv("GEMINI_MODEL"))); err == nil {
+		if p, err := gemini.New("", strings.TrimSpace(os.Getenv("GEMINI_MODEL"))); err == nil {
 			log.Printf("LLM: Gemini")
 			return p
 		}
 	default:
-		if p, err := llm.NewOpenAIProvider("", strings.TrimSpace(os.Getenv("OPENAI_MODEL"))); err == nil {
+		if p, err := openai.New("", strings.TrimSpace(os.Getenv("OPENAI_MODEL"))); err == nil {
 			log.Printf("LLM: OpenAI")
 			return p
 		}

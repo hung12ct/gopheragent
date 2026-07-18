@@ -1,4 +1,4 @@
-package llm
+package gemini
 
 import (
 	"context"
@@ -10,23 +10,23 @@ import (
 	"google.golang.org/genai"
 )
 
-// GeminiMediaAnalyzer uses Gemini's multimodal API to analyze images and videos.
+// MediaAnalyzer uses Gemini's multimodal API to analyze images and videos.
 // It accepts data URIs ("data:<mime>;base64,<data>") and passes them as inline
 // blobs, so it works for any MIME type Gemini supports — including video/mp4,
 // video/webm, video/quicktime, image/*, etc.
-type GeminiMediaAnalyzer struct {
+type MediaAnalyzer struct {
 	client *genai.Client
 	model  string
 }
 
-// NewGeminiMediaAnalyzer builds an analyzer. apiKey defaults to GEMINI_API_KEY;
+// NewMediaAnalyzer builds an analyzer. apiKey defaults to GEMINI_API_KEY;
 // model defaults to "gemini-2.5-flash".
-func NewGeminiMediaAnalyzer(apiKey, model string) (*GeminiMediaAnalyzer, error) {
+func NewMediaAnalyzer(apiKey, model string) (*MediaAnalyzer, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("GEMINI_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("llm: GEMINI_API_KEY not set")
+		return nil, fmt.Errorf("gemini: GEMINI_API_KEY not set")
 	}
 	if model == "" {
 		model = "gemini-2.5-flash"
@@ -35,17 +35,17 @@ func NewGeminiMediaAnalyzer(apiKey, model string) (*GeminiMediaAnalyzer, error) 
 		APIKey: apiKey,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("llm: gemini media: %w", err)
+		return nil, fmt.Errorf("gemini: media: %w", err)
 	}
-	return &GeminiMediaAnalyzer{client: client, model: model}, nil
+	return &MediaAnalyzer{client: client, model: model}, nil
 }
 
 // Analyze sends the media data URI and prompt to Gemini and returns the response.
 // media must be a data URI of the form "data:<mime>;base64,<data>".
-func (a *GeminiMediaAnalyzer) Analyze(ctx context.Context, media, prompt string) (string, error) {
+func (a *MediaAnalyzer) Analyze(ctx context.Context, media, prompt string) (string, error) {
 	mimeType, raw, err := parseDataURI(media)
 	if err != nil {
-		return "", fmt.Errorf("llm: gemini media: %w", err)
+		return "", fmt.Errorf("gemini: media: %w", err)
 	}
 
 	contents := []*genai.Content{
@@ -59,10 +59,10 @@ func (a *GeminiMediaAnalyzer) Analyze(ctx context.Context, media, prompt string)
 
 	resp, err := a.client.Models.GenerateContent(ctx, a.model, contents, nil)
 	if err != nil {
-		return "", fmt.Errorf("llm: gemini media: %w", err)
+		return "", fmt.Errorf("gemini: media: %w", err)
 	}
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
-		return "", fmt.Errorf("llm: gemini media: no content returned")
+		return "", fmt.Errorf("gemini: media: no content returned")
 	}
 	var sb strings.Builder
 	for _, p := range resp.Candidates[0].Content.Parts {

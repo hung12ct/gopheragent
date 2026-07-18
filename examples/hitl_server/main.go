@@ -54,7 +54,7 @@ import (
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/history"
-	"github.com/hung12ct/gopheragent/pkg/llm"
+	"github.com/hung12ct/gopheragent/pkg/llm/openai"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
@@ -163,7 +163,7 @@ func main() {
 		log.Fatal("OPENAI_API_KEY is required")
 	}
 
-	provider, err := llm.NewOpenAIProvider(apiKey, "gpt-4o-mini")
+	provider, err := openai.New(apiKey, "gpt-4o-mini")
 	if err != nil {
 		log.Fatalf("create provider: %v", err)
 	}
