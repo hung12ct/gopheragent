@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai"
 )
 
 // VisionAnalyzer calls a vision-capable OpenAI model (default gpt-4o)
