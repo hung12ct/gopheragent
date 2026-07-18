@@ -1,4 +1,4 @@
-package llm
+package gemini
 
 import (
 	"testing"
@@ -19,7 +19,7 @@ func TestApplyGeminiStructuredOutput_SetsMIMEAndSchema(t *testing.T) {
 			"required": []string{"name"},
 		},
 	}
-	applyGeminiStructuredOutput(cfg, so)
+	applyStructuredOutput(cfg, so)
 	if cfg.ResponseMIMEType != "application/json" {
 		t.Fatalf("mime: want application/json, got %q", cfg.ResponseMIMEType)
 	}
@@ -38,7 +38,7 @@ func TestApplyGeminiStructuredOutput_SetsMIMEAndSchema(t *testing.T) {
 
 func TestApplyGeminiStructuredOutput_NilIsNoOp(t *testing.T) {
 	cfg := &genai.GenerateContentConfig{}
-	applyGeminiStructuredOutput(cfg, nil)
+	applyStructuredOutput(cfg, nil)
 	if cfg.ResponseMIMEType != "" {
 		t.Fatalf("nil so must leave MIME empty, got %q", cfg.ResponseMIMEType)
 	}
@@ -51,7 +51,7 @@ func TestApplyGeminiStructuredOutput_EmptySchemaIsNoOp(t *testing.T) {
 	// Defensive: an empty map should behave like nil — Gemini rejects
 	// response_mime_type without an accompanying schema.
 	cfg := &genai.GenerateContentConfig{}
-	applyGeminiStructuredOutput(cfg, &agent.StructuredOutput{Schema: map[string]any{}})
+	applyStructuredOutput(cfg, &agent.StructuredOutput{Schema: map[string]any{}})
 	if cfg.ResponseMIMEType != "" || cfg.ResponseJsonSchema != nil {
 		t.Fatalf("empty schema must be no-op, got mime=%q schema=%v",
 			cfg.ResponseMIMEType, cfg.ResponseJsonSchema)

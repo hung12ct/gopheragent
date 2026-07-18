@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 //
 // Usage:
 //
-//	sp, _ := llm.NewSummaryProvider("", "gpt-4o-mini")
+//	sp, _ := openai.NewSummaryProvider("", "gpt-4o-mini")
 //	sm := history.NewInMemSessionManager("You are an assistant.")
 //	sm.SummaryProvider = sp
 type SummaryProvider struct {

@@ -1,5 +1,7 @@
-// Package llm provides LLM provider implementations.
-package llm
+// Package gemini implements agent.LLMProvider for Google Gemini — both
+// the public Gemini API and Vertex AI — plus the Gemini-backed embedder
+// and multimodal media analyzer.
+package gemini
 
 import (
 	"context"
@@ -14,14 +16,40 @@ import (
 	"google.golang.org/genai"
 )
 
-// GeminiProvider implements agent.LLMProvider using Google Gemini native SDK.
-type GeminiProvider struct {
-	client *genai.Client
-	model  string
+// Provider implements agent.LLMProvider using Google Gemini native SDK.
+type Provider struct {
+	client      *genai.Client
+	model       string
+	temperature *float64
+	topP        *float64
+	seed        *int64
 }
 
-// NewGeminiProvider creates a wrapper over Google Gemini's API.
-func NewGeminiProvider(apiKey string, model string) (*GeminiProvider, error) {
+// Option configures a Provider at construction.
+type Option func(*Provider)
+
+// WithTemperature pins the sampling temperature (0.0–2.0 for Gemini).
+// Use 0 for maximally reproducible classification/extraction turns; unset
+// keeps the provider default.
+func WithTemperature(t float64) Option {
+	return func(p *Provider) { p.temperature = &t }
+}
+
+// WithTopP pins nucleus sampling. Unset keeps the provider default.
+func WithTopP(v float64) Option {
+	return func(p *Provider) { p.topP = &v }
+}
+
+// WithSeed requests best-effort deterministic sampling. Gemini accepts a
+// 32-bit seed; values outside int32 range are truncated. Determinism is
+// not guaranteed across model versions — pair with a pinned temperature
+// for the strongest reproducibility Gemini offers.
+func WithSeed(n int64) Option {
+	return func(p *Provider) { p.seed = &n }
+}
+
+// New creates a wrapper over Google Gemini's API.
+func New(apiKey string, model string, opts ...Option) (*Provider, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("GEMINI_API_KEY")
 	}
@@ -36,17 +64,21 @@ func NewGeminiProvider(apiKey string, model string) (*GeminiProvider, error) {
 		APIKey: apiKey,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gemini client: %w", err)
+		return nil, fmt.Errorf("gemini: create client: %w", err)
 	}
 
-	return &GeminiProvider{
+	p := &Provider{
 		client: client,
 		model:  model,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 // GenerateStream maps GopherAgent history to Gemini API format and triggers streaming generation.
-func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
+func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
 	var contents []*genai.Content
 	var systemInstruction *genai.Content
 
@@ -65,7 +97,7 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 		case "user":
 			role = "user"
 			if len(m.Parts) > 0 {
-				parts = append(parts, geminiPartsFromMediaParts(m.Content, m.Parts)...)
+				parts = append(parts, partsFromMediaParts(m.Content, m.Parts)...)
 			} else {
 				parts = append(parts, &genai.Part{Text: m.Content})
 			}
@@ -111,8 +143,9 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 	config := &genai.GenerateContentConfig{
 		SystemInstruction: systemInstruction,
 	}
+	p.applySampling(config)
 
-	applyGeminiStructuredOutput(config, agent.StructuredOutputFromContext(ctx))
+	applyStructuredOutput(config, agent.StructuredOutputFromContext(ctx))
 
 	if availableTools != nil {
 		var geminiTools []*genai.Tool
@@ -183,14 +216,27 @@ func (p *GeminiProvider) GenerateStream(ctx context.Context, memory []history.Me
 	}, nil
 }
 
-// geminiPartsFromMediaParts converts MediaParts into Gemini's native Part
+// applySampling stamps the configured temperature/top_p/seed onto config.
+func (p *Provider) applySampling(config *genai.GenerateContentConfig) {
+	if p.temperature != nil {
+		config.Temperature = genai.Ptr(float32(*p.temperature))
+	}
+	if p.topP != nil {
+		config.TopP = genai.Ptr(float32(*p.topP))
+	}
+	if p.seed != nil {
+		config.Seed = genai.Ptr(int32(*p.seed))
+	}
+}
+
+// partsFromMediaParts converts MediaParts into Gemini's native Part
 // slice. Inline raw bytes become InlineData blobs; URLs become FileData
 // entries (Gemini Files API / Cloud Storage URIs, or plain https for
 // gemini-2.5-flash and newer).
 //
 // A non-empty caption is prepended as a text part so prompts travel
 // alongside the media. MIME defaults to image/png when unspecified.
-func geminiPartsFromMediaParts(caption string, parts []history.MediaPart) []*genai.Part {
+func partsFromMediaParts(caption string, parts []history.MediaPart) []*genai.Part {
 	out := make([]*genai.Part, 0, len(parts)+1)
 	if caption != "" {
 		out = append(out, &genai.Part{Text: caption})
@@ -221,12 +267,12 @@ func geminiPartsFromMediaParts(caption string, parts []history.MediaPart) []*gen
 	return out
 }
 
-// applyGeminiStructuredOutput translates the ctx-carried StructuredOutput
+// applyStructuredOutput translates the ctx-carried StructuredOutput
 // request to Gemini's native response_mime_type + response_json_schema
 // fields. Nil so is a no-op (default path, wire semantics unchanged).
 // Name/Description/Strict have no analog on Gemini — the API exposes no
 // schema-name field and enforces the schema unconditionally.
-func applyGeminiStructuredOutput(config *genai.GenerateContentConfig, so *agent.StructuredOutput) {
+func applyStructuredOutput(config *genai.GenerateContentConfig, so *agent.StructuredOutput) {
 	if so == nil || len(so.Schema) == 0 {
 		return
 	}

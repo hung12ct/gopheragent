@@ -17,7 +17,9 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/builder"
 	"github.com/hung12ct/gopheragent/pkg/history"
-	"github.com/hung12ct/gopheragent/pkg/llm"
+	"github.com/hung12ct/gopheragent/pkg/llm/anthropic"
+	"github.com/hung12ct/gopheragent/pkg/llm/gemini"
+	"github.com/hung12ct/gopheragent/pkg/llm/openai"
 	"github.com/hung12ct/gopheragent/pkg/tools/builtin"
 )
 
@@ -62,21 +64,21 @@ func buildProvider() agent.LLMProvider {
 	log.Printf("LLM_PROVIDER=%q", provider)
 	switch provider {
 	case "openai":
-		p, err := llm.NewOpenAIProvider("", strings.TrimSpace(os.Getenv("OPENAI_MODEL")))
+		p, err := openai.New("", strings.TrimSpace(os.Getenv("OPENAI_MODEL")))
 		if err == nil {
 			log.Printf("Using OpenAI provider")
 			return p
 		}
 		log.Printf("Warning: OpenAI provider init failed: %v", err)
 	case "anthropic", "claude":
-		p, err := llm.NewAnthropicProvider("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
+		p, err := anthropic.New("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
 		if err == nil {
 			log.Printf("Using Anthropic provider")
 			return p
 		}
 		log.Printf("Warning: Anthropic provider init failed: %v", err)
 	case "gemini":
-		p, err := llm.NewGeminiProvider("", strings.TrimSpace(os.Getenv("GEMINI_MODEL")))
+		p, err := gemini.New("", strings.TrimSpace(os.Getenv("GEMINI_MODEL")))
 		if err == nil {
 			log.Printf("Using Gemini provider")
 			return p
@@ -389,7 +391,7 @@ func initApp() {
 
 	sm := buildSessionManager(cfg.Agent.SystemPrompt)
 
-	if sp, err := llm.NewSummaryProvider("", ""); err == nil {
+	if sp, err := openai.NewSummaryProvider("", ""); err == nil {
 		switch v := sm.(type) {
 		case *history.InMemSessionManager:
 			v.SummaryProvider = sp

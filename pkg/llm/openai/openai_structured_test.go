@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 // captureOpenAIRequest spins up an httptest server that records the decoded
 // ChatCompletionRequest body and returns an immediate [DONE] SSE frame so
 // GenerateStream completes cleanly without needing real streaming content.
-func captureOpenAIRequest(t *testing.T, run func(p *OpenAIProvider)) map[string]any {
+func captureOpenAIRequest(t *testing.T, run func(p *Provider)) map[string]any {
 	t.Helper()
 	var captured map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +31,7 @@ func captureOpenAIRequest(t *testing.T, run func(p *OpenAIProvider)) map[string]
 
 	cfg := openai.DefaultConfig("test-key")
 	cfg.BaseURL = srv.URL
-	p := &OpenAIProvider{
+	p := &Provider{
 		client: openai.NewClientWithConfig(cfg),
 		model:  "gpt-4o",
 	}
@@ -56,7 +56,7 @@ func TestOpenAI_StructuredOutput_SetsResponseFormat(t *testing.T) {
 		Strict: true,
 	}
 
-	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+	req := captureOpenAIRequest(t, func(p *Provider) {
 		ctx := agent.WithStructuredOutput(context.Background(), so)
 		ch := make(chan agent.StreamEvent, 4)
 		go func() {
@@ -102,7 +102,7 @@ func TestOpenAI_StructuredOutput_DefaultsNameWhenMissing(t *testing.T) {
 	so := agent.StructuredOutput{
 		Schema: map[string]any{"type": "object"},
 	}
-	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+	req := captureOpenAIRequest(t, func(p *Provider) {
 		ctx := agent.WithStructuredOutput(context.Background(), so)
 		ch := make(chan agent.StreamEvent, 4)
 		go func() {
@@ -122,7 +122,7 @@ func TestOpenAI_StructuredOutput_DefaultsNameWhenMissing(t *testing.T) {
 func TestOpenAI_NoStructuredOutput_OmitsResponseFormat(t *testing.T) {
 	// The default path must not send response_format; that would change wire
 	// semantics for every non-JSON-mode call.
-	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+	req := captureOpenAIRequest(t, func(p *Provider) {
 		ch := make(chan agent.StreamEvent, 4)
 		go func() {
 			for range ch {
@@ -142,7 +142,7 @@ func TestOpenAI_NoStructuredOutput_OmitsResponseFormat(t *testing.T) {
 // GPT-5 rejects messages whose content field is missing — see BACKLOG
 // "OpenAI provider sends assistant tool-call messages with no content field".
 func TestOpenAI_AssistantToolCall_HasContentField(t *testing.T) {
-	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+	req := captureOpenAIRequest(t, func(p *Provider) {
 		ch := make(chan agent.StreamEvent, 4)
 		go func() {
 			for range ch {
@@ -194,7 +194,7 @@ func TestOpenAI_AssistantToolCall_HasContentField(t *testing.T) {
 // space across every role. Multimodal messages (MultiContent populated)
 // are exempt and remain untouched.
 func TestOpenAI_EmptyContent_AllRolesHaveContent(t *testing.T) {
-	req := captureOpenAIRequest(t, func(p *OpenAIProvider) {
+	req := captureOpenAIRequest(t, func(p *Provider) {
 		ch := make(chan agent.StreamEvent, 8)
 		go func() {
 			for range ch {

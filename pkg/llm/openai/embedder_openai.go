@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"context"
@@ -10,20 +10,20 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-// OpenAIEmbedder implements tools.Embedder using OpenAI's embeddings API.
+// Embedder implements tools.Embedder using OpenAI's embeddings API.
 //
 // text-embedding-3-small is the default — 1536 dimensions, ~$0.02/1M tokens,
 // and more than enough lexical/semantic signal for tool-description ranking.
 // Pass model = "" to use the default, or a specific model id (e.g.
 // openai.LargeEmbedding3 for higher fidelity at ~6x the cost).
-type OpenAIEmbedder struct {
+type Embedder struct {
 	client *openai.Client
 	model  openai.EmbeddingModel
 }
 
-// NewOpenAIEmbedder constructs an embedder. apiKey falls back to
+// NewEmbedder constructs an embedder. apiKey falls back to
 // OPENAI_API_KEY. model defaults to text-embedding-3-small.
-func NewOpenAIEmbedder(apiKey string, model string) (*OpenAIEmbedder, error) {
+func NewEmbedder(apiKey string, model string) (*Embedder, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
@@ -34,7 +34,7 @@ func NewOpenAIEmbedder(apiKey string, model string) (*OpenAIEmbedder, error) {
 	if model != "" {
 		m = openai.EmbeddingModel(model)
 	}
-	return &OpenAIEmbedder{
+	return &Embedder{
 		client: openai.NewClient(apiKey),
 		model:  m,
 	}, nil
@@ -42,7 +42,7 @@ func NewOpenAIEmbedder(apiKey string, model string) (*OpenAIEmbedder, error) {
 
 // Embed returns one vector per input in the same order. Empty input returns
 // (nil, nil).
-func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -51,19 +51,19 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		Model: e.model,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("llm: OpenAIEmbedder: create embeddings: %w", err)
+		return nil, fmt.Errorf("openai: Embedder: create embeddings: %w", err)
 	}
 	if len(resp.Data) != len(texts) {
-		return nil, fmt.Errorf("llm: OpenAIEmbedder: got %d embeddings for %d inputs", len(resp.Data), len(texts))
+		return nil, fmt.Errorf("openai: Embedder: got %d embeddings for %d inputs", len(resp.Data), len(texts))
 	}
 	out := make([][]float32, len(texts))
 	for _, d := range resp.Data {
 		if d.Index < 0 || d.Index >= len(texts) {
-			return nil, fmt.Errorf("llm: OpenAIEmbedder: embedding index %d out of range", d.Index)
+			return nil, fmt.Errorf("openai: Embedder: embedding index %d out of range", d.Index)
 		}
 		out[d.Index] = d.Embedding
 	}
 	return out, nil
 }
 
-var _ tools.Embedder = (*OpenAIEmbedder)(nil)
+var _ tools.Embedder = (*Embedder)(nil)

@@ -7,7 +7,8 @@ import (
 
 // Embedder produces fixed-size vector representations of text.
 //
-// Implementations live in pkg/llm (OpenAIEmbedder, GeminiEmbedder). A single
+// Implementations live in pkg/llm/openai and pkg/llm/gemini (each exports
+// an Embedder backed by that vendor's embeddings API). A single
 // Embed call should accept a batch and return one vector per input, in order.
 // All returned vectors must share the same dimensionality.
 type Embedder interface {

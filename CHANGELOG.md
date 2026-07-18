@@ -2,6 +2,21 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.33.0] — 2026-07-19
+
+### Added
+
+- **Sampling controls on every provider: `WithTemperature(t)`, `WithTopP(p)`, and `WithSeed(n)` (OpenAI and Gemini).** The orchestration layer was already deterministic, but token sampling was left entirely to provider defaults — there was no way to pin `temperature=0` for reproducible classification/extraction turns. Each provider constructor (including `openai.NewCompat` and `gemini.NewVertex`) now accepts options-pattern sampling knobs; unset options keep each provider's defaults, so existing behavior is unchanged and the feature is zero-cost when unused. Provider constraints are handled rather than forwarded blindly: Anthropic rejects `temperature`/`top_p` alongside extended thinking, so the overrides are dropped for thinking-enabled calls instead of failing the request (and Anthropic exposes no seed parameter — `temperature=0` there is best-effort reproducibility, not bit-exact); on OpenAI an explicit `0` is mapped to the smallest positive float32 because the SDK's `omitempty` would silently drop a literal zero and revert to the provider default; Gemini accepts a 32-bit seed, and wider values truncate (documented on the option). (`pkg/llm/anthropic`, `pkg/llm/openai`, `pkg/llm/gemini`)
+- **OKF frontmatter parsing and type/tag filtering for the YAML knowledge base.** Knowledge-base documents with YAML frontmatter no longer leak the raw frontmatter into the injected system prompt: it is stripped, and `type`/`title`/`tags` are surfaced as attributes on the injected `<file>` block. A new `KBFilter` lets an agent config load only concepts matching the requested types/tags; the zero filter preserves the existing load-all behavior. (`pkg/builder/knowledge_base.go`)
+
+### Changed (breaking)
+
+- **`pkg/llm` is split into per-provider subpackages — importing one vendor no longer statically links the other vendors' SDKs.** Previously, importing `pkg/llm` for a single constructor pulled all three provider SDKs (and their transitive trees) into the binary via static linking — measured at roughly a 2× binary-size increase for a small consumer — and dragged unused vendors' API surfaces into supply-chain/audit scope. Providers now live in `pkg/llm/anthropic`, `pkg/llm/openai` (provider, OpenAI-compatible endpoints, embedder, vision analyzer, summary provider), and `pkg/llm/gemini` (provider, Vertex AI, embedder, media analyzer); `pkg/llm` retains only the SDK-free `RouterProvider` and `llmfake`, so the Go linker prunes unimported vendors automatically. There are deliberately no re-export shims — a compatibility file importing all three subpackages would re-link everything and defeat the point. Exported names drop the now-redundant vendor prefix. Migration map:
+  - `llm.NewAnthropicProvider` → `anthropic.New` · `llm.AnthropicProvider` → `anthropic.Provider` · `llm.AnthropicOption` → `anthropic.Option` · `llm.DefaultAnthropicMaxTokens` → `anthropic.DefaultMaxTokens` (`llm.WithMaxTokens` → `anthropic.WithMaxTokens`)
+  - `llm.NewOpenAIProvider` → `openai.New` · `llm.OpenAIProvider` → `openai.Provider` · `llm.NewOpenAICompatProvider` → `openai.NewCompat` · `llm.NewOpenAIEmbedder` → `openai.NewEmbedder` · `llm.NewOpenAIVisionAnalyzer` → `openai.NewVisionAnalyzer` · `llm.NewSummaryProvider` → `openai.NewSummaryProvider`
+  - `llm.NewGeminiProvider` → `gemini.New` · `llm.GeminiProvider` → `gemini.Provider` · `llm.NewVertexGeminiProvider` → `gemini.NewVertex` · `llm.NewGeminiEmbedder` → `gemini.NewEmbedder` · `llm.NewGeminiMediaAnalyzer` → `gemini.NewMediaAnalyzer`
+  - `llm.RouterProvider`, `llm.NewRouterProvider`, and the routing conditions are unchanged in `pkg/llm`.
+
 ## [v0.32.1] — 2026-06-29
 
 ### Fixed
@@ -493,6 +508,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.33.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.33.0
 [v0.32.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.1
 [v0.32.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.0
 [v0.31.5]: https://github.com/hung12ct/gopheragent/releases/tag/v0.31.5

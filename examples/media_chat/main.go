@@ -28,7 +28,9 @@ import (
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/history"
-	"github.com/hung12ct/gopheragent/pkg/llm"
+	"github.com/hung12ct/gopheragent/pkg/llm/anthropic"
+	"github.com/hung12ct/gopheragent/pkg/llm/gemini"
+	"github.com/hung12ct/gopheragent/pkg/llm/openai"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
@@ -74,7 +76,7 @@ var allowedMIME = map[string]string{
 
 // ── Analyzer interface ────────────────────────────────────────────────────
 
-// analyzer is the narrow interface satisfied by llm.GeminiMediaAnalyzer —
+// analyzer is the narrow interface satisfied by gemini.MediaAnalyzer —
 // kept only for the video path. OpenAI vision is no longer needed because
 // image analysis happens natively in the main LLM call.
 type analyzer interface {
@@ -212,7 +214,7 @@ var (
 // Nil is a valid return value — the tool surfaces a clear error when
 // GEMINI_API_KEY is missing and the user uploads a video.
 func buildMediaAnalyzer() analyzer {
-	a, err := llm.NewGeminiMediaAnalyzer("", "")
+	a, err := gemini.NewMediaAnalyzer("", "")
 	if err != nil {
 		log.Printf("Gemini media analyzer unavailable (video uploads will fail): %v", err)
 		return nil
@@ -225,19 +227,19 @@ func buildLLMProvider() agent.LLMProvider {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER")))
 	switch provider {
 	case "anthropic", "claude":
-		p, err := llm.NewAnthropicProvider("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
+		p, err := anthropic.New("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
 		if err == nil {
 			log.Printf("LLM: Anthropic")
 			return p
 		}
 	case "gemini":
-		p, err := llm.NewGeminiProvider("", strings.TrimSpace(os.Getenv("GEMINI_MODEL")))
+		p, err := gemini.New("", strings.TrimSpace(os.Getenv("GEMINI_MODEL")))
 		if err == nil {
 			log.Printf("LLM: Gemini")
 			return p
 		}
 	default:
-		p, err := llm.NewOpenAIProvider("", strings.TrimSpace(os.Getenv("OPENAI_MODEL")))
+		p, err := openai.New("", strings.TrimSpace(os.Getenv("OPENAI_MODEL")))
 		if err == nil {
 			log.Printf("LLM: OpenAI")
 			return p

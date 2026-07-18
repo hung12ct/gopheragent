@@ -1,4 +1,4 @@
-package llm
+package gemini
 
 import (
 	"context"
@@ -10,19 +10,19 @@ import (
 	"google.golang.org/genai"
 )
 
-// GeminiEmbedder implements tools.Embedder using Google Gemini embeddings.
+// Embedder implements tools.Embedder using Google Gemini embeddings.
 //
 // Default model is text-embedding-004 (768 dims, retrieval-tuned). The SDK
 // batches automatically; large inputs should still be chunked by the caller
 // if they approach the per-request token limit.
-type GeminiEmbedder struct {
+type Embedder struct {
 	client *genai.Client
 	model  string
 }
 
-// NewGeminiEmbedder constructs an embedder. apiKey falls back to
+// NewEmbedder constructs an embedder. apiKey falls back to
 // GEMINI_API_KEY. model defaults to "text-embedding-004".
-func NewGeminiEmbedder(apiKey string, model string) (*GeminiEmbedder, error) {
+func NewEmbedder(apiKey string, model string) (*Embedder, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("GEMINI_API_KEY")
 	}
@@ -34,13 +34,13 @@ func NewGeminiEmbedder(apiKey string, model string) (*GeminiEmbedder, error) {
 	}
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{APIKey: apiKey})
 	if err != nil {
-		return nil, fmt.Errorf("llm: NewGeminiEmbedder: %w", err)
+		return nil, fmt.Errorf("gemini: NewEmbedder: %w", err)
 	}
-	return &GeminiEmbedder{client: client, model: model}, nil
+	return &Embedder{client: client, model: model}, nil
 }
 
 // Embed returns one vector per input in the same order.
-func (e *GeminiEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -52,19 +52,19 @@ func (e *GeminiEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		TaskType: "RETRIEVAL_DOCUMENT",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("llm: GeminiEmbedder: embed content: %w", err)
+		return nil, fmt.Errorf("gemini: Embedder: embed content: %w", err)
 	}
 	if len(resp.Embeddings) != len(texts) {
-		return nil, fmt.Errorf("llm: GeminiEmbedder: got %d embeddings for %d inputs", len(resp.Embeddings), len(texts))
+		return nil, fmt.Errorf("gemini: Embedder: got %d embeddings for %d inputs", len(resp.Embeddings), len(texts))
 	}
 	out := make([][]float32, len(texts))
 	for i, emb := range resp.Embeddings {
 		if emb == nil {
-			return nil, fmt.Errorf("llm: GeminiEmbedder: nil embedding at index %d", i)
+			return nil, fmt.Errorf("gemini: Embedder: nil embedding at index %d", i)
 		}
 		out[i] = emb.Values
 	}
 	return out, nil
 }
 
-var _ tools.Embedder = (*GeminiEmbedder)(nil)
+var _ tools.Embedder = (*Embedder)(nil)
