@@ -8,7 +8,7 @@
   </p>
 </div>
 
-**GopherAgent** is a **Golang multi-agent LLM framework** — deterministic ReAct loops, parallel tool execution, streaming, sub-agents, and multi-model routing. Your PM writes a YAML file. Your engineer registers a Go tool. GopherAgent wires them together at runtime — no recompile, no redeploy.
+**GopherAgent** is a **Golang multi-agent (multiagent) LLM framework** — deterministic ReAct loops, parallel tool execution, streaming, sub-agents, and multi-model routing. Your PM writes a YAML file. Your engineer registers a Go tool. GopherAgent wires them together at runtime — no recompile, no redeploy.
 
 ```yaml
 # agent.yaml — your PM creates this
