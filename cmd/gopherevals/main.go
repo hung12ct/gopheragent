@@ -48,7 +48,10 @@ func main() {
 	if f.suite == "" {
 		log.Fatal("gopherevals: -suite is required")
 	}
-	provider := buildProvider()
+	provider, err := buildProvider()
+	if err != nil {
+		log.Fatalf("gopherevals: %v", err)
+	}
 	suite, err := eval.LoadSuite(f.suite, provider)
 	if err != nil {
 		log.Fatalf("gopherevals: %v", err)
@@ -187,23 +190,32 @@ func buildCatalog() *builder.GlobalCatalog {
 	return catalog
 }
 
-// buildProvider selects an LLM provider from the environment. Falls back to a
-// mock provider so the pipeline can be smoke-tested without keys.
-func buildProvider() agent.LLMProvider {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER"))) {
+// buildProvider selects an LLM provider from the environment. When
+// LLM_PROVIDER is unset it returns a mock so the pipeline can be smoke-tested
+// without keys — but when a provider IS named and cannot be built (missing
+// key, bad model), it returns the error rather than silently downgrading to
+// the mock, so CI can never pass a real suite against a stub.
+func buildProvider() (agent.LLMProvider, error) {
+	switch name := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER"))); name {
+	case "":
+		log.Print("gopherevals: no LLM_PROVIDER set — using mock provider (set LLM_PROVIDER=openai|anthropic|gemini for real runs)")
+		return agent.NewMockProvider(), nil
 	case "openai":
-		if p, err := openai.New("", strings.TrimSpace(os.Getenv("OPENAI_MODEL"))); err == nil {
-			return p
-		}
+		return wrapProvider(openai.New("", strings.TrimSpace(os.Getenv("OPENAI_MODEL"))))
 	case "anthropic", "claude":
-		if p, err := anthropic.New("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL"))); err == nil {
-			return p
-		}
+		return wrapProvider(anthropic.New("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL"))))
 	case "gemini":
-		if p, err := gemini.New("", strings.TrimSpace(os.Getenv("GEMINI_MODEL"))); err == nil {
-			return p
-		}
+		return wrapProvider(gemini.New("", strings.TrimSpace(os.Getenv("GEMINI_MODEL"))))
+	default:
+		return nil, fmt.Errorf("unknown LLM_PROVIDER %q (want openai|anthropic|gemini)", name)
 	}
-	log.Print("gopherevals: no LLM_PROVIDER set — using mock provider (set LLM_PROVIDER=openai|anthropic|gemini for real runs)")
-	return agent.NewMockProvider()
+}
+
+// wrapProvider adapts a provider constructor's (T, error) result to the
+// interface return, wrapping the error with context.
+func wrapProvider[T agent.LLMProvider](p T, err error) (agent.LLMProvider, error) {
+	if err != nil {
+		return nil, fmt.Errorf("build provider: %w", err)
+	}
+	return p, nil
 }
