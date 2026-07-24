@@ -155,6 +155,18 @@ func TestCaptureCtxCancel(t *testing.T) {
 	}
 }
 
+func TestCaptureCtxDoesNotClobberMaxIters(t *testing.T) {
+	// A run that hit max_iters keeps that cause even if ctx also expired.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tr := Capture(ctx, stubTarget{events: []agent.StreamEvent{
+		agent.Event(agent.MaxItersReachedEvent{Limit: 3}),
+	}}, "k", history.Message{}, CaptureOptions{})
+	if tr.TerminatedBy != "max_iters" {
+		t.Fatalf("terminated = %q, want max_iters (ctx must not clobber)", tr.TerminatedBy)
+	}
+}
+
 func TestCaptureNoHistoryReaderLeavesResultEmpty(t *testing.T) {
 	tr := Capture(context.Background(), stubNoHistory{events: []agent.StreamEvent{
 		agent.Event(agent.ToolCallEvent{ID: "c1", Name: "t"}),

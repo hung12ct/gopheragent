@@ -95,7 +95,10 @@ func Capture(ctx context.Context, target Target, sessionKey string, msg history.
 	}
 	tr.Latency = time.Since(start)
 	tr.FinalAnswer = answer.String()
-	if ctx.Err() != nil && tr.Err == nil {
+	// Only attribute termination to ctx when nothing more specific fired — a
+	// run that legitimately hit max_iters/limit_exhausted keeps that cause
+	// even if the per-trial deadline also expired.
+	if ctx.Err() != nil && tr.Err == nil && tr.TerminatedBy == "done" {
 		tr.Err = ctx.Err()
 		tr.TerminatedBy = "ctx"
 	}
