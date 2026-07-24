@@ -190,11 +190,39 @@ Every constructor accepts sampling options for reproducible runs —
 only; the Anthropic API has no seed parameter, so temperature 0 there is
 best-effort, not bit-exact). Unset options keep each provider's defaults.
 
+## Evaluation
+
+`pkg/eval` evaluates an agent against a suite of tasks: it checks the tool-call
+**trajectory** (which tools ran, in what order, with what arguments), the final
+**answer** (contains / regex / exact, or an LLM-as-judge with an "unknown"
+escape hatch and N-sample majority vote), and reports **cost, tokens, and
+latency**. Tasks can be multi-turn conversations, run over N trials with pass@k
+/ pass^k, and are matched with five trajectory modes (strict, in-order,
+unordered, subset, superset).
+
+Run it two ways:
+
+```go
+// Inside go test — deterministic with a scripted provider, no API keys.
+eval.RunT(t, &eval.Runner{NewTarget: factory}, suite)
+```
+
+```bash
+# In CI — YAML suite against a real agent; exits non-zero below threshold.
+go run ./cmd/gopherevals -suite suite.yaml -agent agent.yaml -junit eval.xml -threshold 0.9
+```
+
+Reports emit as JSON, JUnit XML (rendered natively by GitHub Actions), and
+Markdown. Capture transcripts once with `-save-transcripts` and re-grade them
+against a revised rubric via `-from-transcripts` without re-running the agent.
+See [`examples/agent_eval`](./examples/agent_eval).
+
 ## Examples
 
 | Example | What it shows |
 |---|---|
 | [`examples/demo`](./examples/demo) | Full chat UI — web research, memory sidebar, Python execution, live HITL, SSE streaming |
+| [`examples/agent_eval`](./examples/agent_eval) | Agent evaluation — trajectory + answer + judge graders, JUnit/Markdown reports, CI gate |
 | [`examples/creative_studio`](./examples/creative_studio) | AI Creative Director — DALL-E 3 images + Veo 2 video clips generated inline |
 | [`examples/media_chat`](./examples/media_chat) | Media Q&A — upload image/video/doc, native multimodal history, multi-turn references |
 | [`examples/hitl_server`](./examples/hitl_server) | Human-in-the-loop approvals over HTTP (async bridge) |
