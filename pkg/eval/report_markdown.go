@@ -18,7 +18,7 @@ func WriteMarkdown(w io.Writer, rep *SuiteReport) error {
 	for _, task := range rep.Tasks {
 		toks, cost, lat := taskAverages(task)
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %d | $%.4f | %s |\n",
-			task.TaskID, resultLabel(task.Pass), yesNo(task.PassAtK), yesNo(task.PassAllK),
+			task.TaskID, taskLabel(task), yesNo(task.PassAtK), yesNo(task.PassAllK),
 			toks, cost, lat.Round(time.Millisecond))
 	}
 	writeFailureSections(&b, rep)
@@ -66,11 +66,17 @@ func taskAverages(task TaskReport) (int, float64, time.Duration) {
 	return toks / n, cost / float64(n), lat / time.Duration(n)
 }
 
-func resultLabel(pass bool) string {
-	if pass {
+// taskLabel renders a task's outcome, mirroring the JUnit writer's
+// pass/skipped/failure split so the two reports agree.
+func taskLabel(task TaskReport) string {
+	switch {
+	case task.Pass && hasOnlyUnknownGrades(task):
+		return "SKIP"
+	case task.Pass:
 		return "PASS"
+	default:
+		return "FAIL"
 	}
-	return "FAIL"
 }
 
 func yesNo(b bool) string {

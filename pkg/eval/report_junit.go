@@ -56,8 +56,7 @@ func WriteJUnit(w io.Writer, rep *SuiteReport) error {
 			tc.Skipped = &junitSkipped{Message: "judge inconclusive"}
 			suite.Skipped++
 		case !task.Pass:
-			detail := failureDetail(task)
-			tc.Failure = &junitFailure{Message: failureSummary(task), Body: detail}
+			tc.Failure = &junitFailure{Message: sanitizeXML(failureSummary(task)), Body: sanitizeXML(failureDetail(task))}
 			suite.Failures++
 		}
 		suite.Cases = append(suite.Cases, tc)
@@ -121,6 +120,18 @@ func failureDetail(task TaskReport) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// sanitizeXML drops bytes that are invalid in XML 1.0 character data (control
+// chars below 0x20 other than tab/newline/carriage-return), which tool results
+// or grader reasons can carry, so strict CI XML parsers don't reject the file.
+func sanitizeXML(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' || r >= 0x20 {
+			return r
+		}
+		return -1
+	}, s)
 }
 
 // hasOnlyUnknownGrades reports whether a task had graders and every one was

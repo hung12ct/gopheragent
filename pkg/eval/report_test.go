@@ -89,13 +89,31 @@ func TestWriteJUnit(t *testing.T) {
 	}
 }
 
+func TestWriteJUnitSanitizesControlChars(t *testing.T) {
+	rep := &SuiteReport{Suite: "s", Tasks: []TaskReport{{TaskID: "bad", Pass: false, Trials: []TrialReport{{
+		Trial: 1, Pass: false,
+		Turns: []TurnReport{{Grades: []Grade{{Grader: "contains", Reason: "got \x00\x01 junk"}}}},
+	}}}}}
+	var buf bytes.Buffer
+	if err := WriteJUnit(&buf, rep); err != nil {
+		t.Fatalf("WriteJUnit: %v", err)
+	}
+	if bytes.ContainsAny(buf.Bytes(), "\x00\x01") {
+		t.Fatalf("control chars leaked into JUnit XML")
+	}
+	var doc struct{}
+	if err := xml.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("sanitized XML must still parse: %v", err)
+	}
+}
+
 func TestWriteMarkdown(t *testing.T) {
 	var buf bytes.Buffer
 	if err := WriteMarkdown(&buf, sampleReport()); err != nil {
 		t.Fatalf("WriteMarkdown: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"Eval: demo", "2/3 passed", "| ok | PASS |", "| bad | FAIL |", "Paris", "below threshold"} {
+	for _, want := range []string{"Eval: demo", "2/3 passed", "| ok | PASS |", "| bad | FAIL |", "| maybe | SKIP |", "Paris", "below threshold"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("markdown missing %q\n%s", want, out)
 		}
