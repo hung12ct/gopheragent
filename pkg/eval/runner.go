@@ -20,6 +20,11 @@ type Runner struct {
 	// OnTrial, when non-nil, observes each finished trial (progress logging).
 	// It is called from worker goroutines and must be concurrency-safe.
 	OnTrial func(TrialReport)
+	// OnTranscript, when non-nil, receives each turn's raw Transcript as it is
+	// captured, before grading. Called from worker goroutines and must be
+	// concurrency-safe. Use it to persist transcripts for later re-grading
+	// (see WriteTranscripts / GradeRecorded).
+	OnTranscript func(*Transcript)
 }
 
 // RunSuite executes every (task, trial) pair with bounded concurrency and
@@ -102,6 +107,9 @@ func (r *Runner) runTrial(ctx context.Context, s Suite, task Task, trial int) Tr
 		}
 		tr := Capture(trialCtx, target, sessionKey, msg, r.Capture)
 		tr.TaskID, tr.Trial, tr.TurnIndex = task.ID, trial, i
+		if r.OnTranscript != nil {
+			r.OnTranscript(tr)
+		}
 		turnRep := gradeTurn(trialCtx, i, msg, tr, turn.Graders, task.Policy)
 		out.Turns = append(out.Turns, turnRep)
 		out.Usage.PromptTokens += tr.Usage.PromptTokens

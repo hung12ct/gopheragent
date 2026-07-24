@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -169,6 +170,31 @@ func TestRunSuiteThreshold(t *testing.T) {
 	rep, _ := r.RunSuite(context.Background(), suite)
 	if !rep.Summary.BelowThreshold {
 		t.Fatalf("expected BelowThreshold with 0%% pass and 0.9 threshold")
+	}
+}
+
+func TestRunSuiteOnTranscriptTwoPhase(t *testing.T) {
+	// Capture transcripts live, then re-grade them offline — same verdict.
+	var mu sync.Mutex
+	var captured []*Transcript
+	r := &Runner{
+		NewTarget:    loopFactory(llmfake.Turn{Content: "hello Alice"}),
+		OnTranscript: func(tr *Transcript) { mu.Lock(); captured = append(captured, tr); mu.Unlock() },
+	}
+	suite := Suite{Name: "s", Tasks: []Task{SingleTurn("greet", "hi", Contains("Alice"))}}
+	live, err := r.RunSuite(context.Background(), suite)
+	if err != nil {
+		t.Fatalf("RunSuite: %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 captured transcript, got %d", len(captured))
+	}
+	replay, err := GradeRecorded(context.Background(), suite, captured)
+	if err != nil {
+		t.Fatalf("GradeRecorded: %v", err)
+	}
+	if replay.Tasks[0].Pass != live.Tasks[0].Pass {
+		t.Fatalf("replay verdict %v != live %v", replay.Tasks[0].Pass, live.Tasks[0].Pass)
 	}
 }
 
