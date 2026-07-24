@@ -240,35 +240,56 @@ func matchUnordered(actual []ToolCallRecord, expected []ExpectedCall) (bool, flo
 	if len(actual) != len(expected) {
 		return false, 0, fmt.Sprintf("got %d calls, want %d (unordered requires equal counts)", len(actual), len(expected))
 	}
-	return matchSetGreedy(actual, expected)
+	return matchSet(actual, expected)
 }
 
 func matchSubset(actual []ToolCallRecord, expected []ExpectedCall) (bool, float64, string) {
-	return matchSetGreedy(actual, expected)
+	return matchSet(actual, expected)
 }
 
-// matchSetGreedy consumes one actual call per expected call (order-free).
-func matchSetGreedy(actual []ToolCallRecord, expected []ExpectedCall) (bool, float64, string) {
-	consumed := make([]bool, len(actual))
-	matched := 0
-	var missing string
-	for _, e := range expected {
-		found := false
-		for i, a := range actual {
-			if !consumed[i] && e.matches(a) {
-				consumed[i] = true
-				matched++
-				found = true
-				break
-			}
+// matchSet finds a maximum assignment of expected calls to distinct actual
+// calls (order-free), so heterogeneous arg matchers on a repeated tool name
+// cannot false-negative the way first-fit greedy would. Kuhn's bipartite
+// matching; tool-call counts are tiny so the O(V*E) cost is negligible.
+func matchSet(actual []ToolCallRecord, expected []ExpectedCall) (bool, float64, string) {
+	assignedExp := make([]int, len(actual)) // actual index → expected index, -1 = free
+	for i := range assignedExp {
+		assignedExp[i] = -1
+	}
+	matchedExp := make([]bool, len(expected))
+	for e := range expected {
+		seen := make([]bool, len(actual))
+		if augment(e, expected, actual, assignedExp, seen) {
+			matchedExp[e] = true
 		}
-		if !found && missing == "" {
-			missing = e.Name
+	}
+	matched := 0
+	missing := ""
+	for e, ok := range matchedExp {
+		if ok {
+			matched++
+		} else if missing == "" {
+			missing = expected[e].Name
 		}
 	}
 	return credit(matched, len(expected), func() string {
 		return fmt.Sprintf("matched %d of %d expected; missing: %s", matched, len(expected), missing)
 	})
+}
+
+// augment tries to match expected[e] via an augmenting path (Kuhn's DFS).
+func augment(e int, expected []ExpectedCall, actual []ToolCallRecord, assignedExp []int, seen []bool) bool {
+	for a := range actual {
+		if seen[a] || !expected[e].matches(actual[a]) {
+			continue
+		}
+		seen[a] = true
+		if assignedExp[a] == -1 || augment(assignedExp[a], expected, actual, assignedExp, seen) {
+			assignedExp[a] = e
+			return true
+		}
+	}
+	return false
 }
 
 func matchSuperset(actual []ToolCallRecord, expected []ExpectedCall) (bool, float64, string) {

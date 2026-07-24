@@ -94,6 +94,25 @@ func TestTrajectoryArgMatchers(t *testing.T) {
 	}
 }
 
+func TestTrajectoryHeterogeneousMatchersOnDuplicateTool(t *testing.T) {
+	// Greedy first-fit would let AnyArgs consume search{q:x}, stranding the
+	// ArgsSubset{q:x} matcher; bipartite matching finds the valid assignment.
+	actual := []ToolCallRecord{
+		{Name: "search", ArgsJSON: `{"q":"x"}`},
+		{Name: "search", ArgsJSON: `{"q":"y"}`},
+	}
+	expected := []ExpectedCall{
+		{Name: "search", Args: AnyArgs()},
+		{Name: "search", Args: ArgsSubset(map[string]any{"q": "x"})},
+	}
+	for _, mode := range []MatchMode{MatchUnordered, MatchSubset} {
+		g := Trajectory(mode, expected)
+		if grade := g.Grade(context.Background(), &Transcript{ToolCalls: actual}); !grade.Pass {
+			t.Fatalf("%s: bipartite match should find valid assignment: %s", mode, grade.Reason)
+		}
+	}
+}
+
 func TestTrajectoryOptions(t *testing.T) {
 	ctx := context.Background()
 	recs := []ToolCallRecord{
