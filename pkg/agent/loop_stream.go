@@ -11,6 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/hung12ct/gopheragent/pkg/cache"
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/memory"
@@ -434,6 +437,13 @@ type AgentLoop struct {
 	// them. Per-Run runLogicLoop is *not* tracked here — it terminates
 	// via the caller's ctx and the iterator's range-loop exit.
 	bgWg sync.WaitGroup
+
+	// tracer, when non-nil, opens a span per ReAct iteration (WithTracer).
+	// iterHist, when non-nil, records per-iteration latency in seconds; it is
+	// built once by WithMeter. Both nil (default) means zero instrumentation
+	// cost on the hot path (see telemetry.go).
+	tracer   trace.Tracer
+	iterHist metric.Float64Histogram
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.

@@ -34,6 +34,13 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 		return 0, true
 	}
 
+	// Open the per-iteration span; the reassigned ctx carries it into the LLM
+	// call and tool waves so their spans nest as children. No-op when telemetry
+	// is disabled (see startIterationSpan).
+	ctx, endSpan := al.startIterationSpan(ctx, sessionKey, iteration)
+	var iterErr error
+	defer func() { endSpan(iterErr) }()
+
 	// Pruning is transient: the trimmed slice fuels just this LLM call.
 	// *msgs stays at full fidelity so SetHistory / saveSession persist the
 	// untouched conversation — without this distinction every prune would
@@ -63,9 +70,13 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 			if cause == nil {
 				cause = err
 			}
-			al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrContextCancelled, cause)))
+			// Mark the iteration span as cancelled so the WithTracer path agrees
+			// with the ErrorEvent stream (which classifies this as cancellation).
+			iterErr = fmt.Errorf("%w: %w", ErrContextCancelled, cause)
+			al.emit(ctx, sessionKey, streamChan, errEvent(iterErr))
 			return 0, true
 		}
+		iterErr = err
 		al.emit(ctx, sessionKey, streamChan, errEvent(&LLMFailureError{Cause: err}))
 		return 0, true
 	}
@@ -84,6 +95,7 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 
 	ws := al.executeToolWaves(ctx, st, scheduled)
 	if ws.fatalErr != nil {
+		iterErr = ws.fatalErr
 		al.saveSession(ctx, sessionKey, *msgs)
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
 		return len(scheduled), true
