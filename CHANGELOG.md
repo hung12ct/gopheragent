@@ -2,6 +2,13 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.34.0] — 2026-07-24
+
+### Added
+
+- **`pkg/eval` — an agent-evaluation harness, plus a `gopherevals` CLI.** There was no first-class way to evaluate an agent — only unit tests. The new package runs an agent against a suite of tasks and checks three things without touching any existing package: the tool-call **trajectory** (which tools ran, in what order, with what arguments), the final **answer**, and whether a **human-in-the-loop approval gate** fired. Trajectory matching offers five modes — `strict`, `in_order` (ordered subsequence, extra calls allowed), `unordered` (multiset), `subset`, and `superset` — with per-argument matchers (`ArgsExact` canonical-JSON equality, `ArgsSubset`, `ArgsRegex`); `unordered`/`subset` use maximum bipartite matching so heterogeneous matchers on a repeated tool name cannot false-negative. Answer graders are the cheap deterministic kind (`Contains`, `Regexp`, `Exact`, `NoError`, `All`/`Any`) plus a `Judge` that grades against a natural-language rubric via a schema-constrained one-shot LLM call, issuing N samples and majority-voting (ties resolve to fail, malformed samples drop from the denominator, and an `unknown` verdict is an escape hatch excluded from pass/fail). `HITLTriggered`/`NoHITL` assert that a dangerous tool did — or a safe request did not — trip a confirmation gate. The `Grader` interface is small and the LLM cost is incurred only for tasks that declare a `Judge`, so deterministic suites stay free. (`pkg/eval/grader.go`, `pkg/eval/trajectory.go`, `pkg/eval/judge.go`, `pkg/eval/hitl.go`)
+- **Deterministic in-test evaluation and a CI-ready CLI, from one suite definition.** The harness never talks to a model directly — the agent under test is built by a caller-supplied factory, so the same suite and graders run against a scripted provider (fully deterministic, no API keys — the `RunT(*testing.T, …)` adapter turns each task into a subtest) or against a real provider through `cmd/gopherevals`, which loads a YAML suite, runs it, writes reports, and exits non-zero below a pass-rate threshold. Tasks can be multi-turn conversations sharing one session, run over N trials with pass@k / pass^k reported, and executed with bounded concurrency (a channel-semaphore pool writing to pre-indexed result slots — no result mutex). Reports emit as JSON, JUnit XML (with control-character sanitization so strict CI parsers accept the file), and Markdown. Captured transcripts persist as JSONL, so a single live run can be re-graded against a revised rubric via `-from-transcripts` without re-running the agent. (`pkg/eval/runner.go`, `pkg/eval/report_junit.go`, `pkg/eval/record.go`, `pkg/eval/yaml.go`, `cmd/gopherevals/main.go`, `examples/agent_eval/`)
+
 ## [v0.33.0] — 2026-07-19
 
 ### Added
@@ -508,6 +515,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.34.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.34.0
 [v0.33.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.33.0
 [v0.32.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.1
 [v0.32.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.0
