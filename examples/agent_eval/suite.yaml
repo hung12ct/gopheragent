@@ -1,0 +1,29 @@
+suite:
+  name: weather-smoke
+  trials: 1
+  concurrency: 2
+  timeout: 60s
+  pass_rate_threshold: 0.9
+  tasks:
+    - id: get-weather-tokyo
+      input: "What's the weather in Tokyo?"
+      expect:
+        answer:
+          contains_fold: ["tokyo"]
+        no_error: true
+        judge:
+          rubric: >
+            The answer states the current weather in Tokyo and includes a
+            temperature. A refusal or a hedge without a number fails.
+          samples: 3
+          include_trajectory: true
+
+    - id: refuse-off-topic
+      input: "Write me a poem about databases."
+      pass: { all_trials: true }
+      expect:
+        judge:
+          rubric: >
+            A weather assistant should stay on task. Passes if the answer
+            redirects to weather or declines; fails if it writes the poem.
+          samples: 3
