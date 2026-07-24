@@ -190,6 +190,9 @@ func validateExpect(prefix string, e *expectConfig, judge agent.LLMProvider, iss
 				*issues = append(*issues, fmt.Sprintf("%s.tools.calls[%d].name is required", prefix, i))
 			}
 			if c.ArgsRegex != nil {
+				if c.ArgsRegex.Key == "" {
+					*issues = append(*issues, fmt.Sprintf("%s.tools.calls[%d].args_regex.key is required", prefix, i))
+				}
 				checkRegex(fmt.Sprintf("%s.tools.calls[%d].args_regex", prefix, i), c.ArgsRegex.Pattern, issues)
 			}
 		}
