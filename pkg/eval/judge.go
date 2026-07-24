@@ -144,7 +144,9 @@ func judgeSchema() map[string]any {
 			"score":     map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 			"reasoning": map[string]any{"type": "string"},
 		},
-		"required": []any{"verdict", "reasoning"},
+		// score is required so a PassPolicy.MinScore gate never sees a
+		// silently-zero score from a judge that returned verdict:"pass".
+		"required": []any{"verdict", "score", "reasoning"},
 	}
 }
 
