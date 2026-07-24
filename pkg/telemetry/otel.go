@@ -28,6 +28,14 @@ type iterSpan struct {
 // NewOTelHandler returns an agent.EventHandler that instruments every agent iteration
 // with OpenTelemetry tracing.
 //
+// This is the lightweight, zero-configuration alternative to the richer
+// instrumentation path (agent.WithTracer + the otelllm decorator + the oteltools
+// middleware). It needs only an EventHandler registration and produces one
+// coarse span per iteration derived from stream events, but — being event-driven
+// — it cannot open true child spans for LLM calls or capture tool latency. Prefer
+// the WithTracer path when you need nested spans and per-call timings. The two
+// are mutually exclusive: enabling both double-instruments each iteration.
+//
 // Span lifecycle per session key:
 //   - Root span "agent.iteration" is opened lazily on the first event.
 //   - "tool_call" → span event "tool.execute" with tool name attribute.
@@ -79,16 +87,18 @@ func NewOTelHandler(tracer trace.Tracer) agent.EventHandler {
 			}
 
 		case agent.ErrorEvent:
-			if val, ok := spans.LoadAndDelete(sessionKey); ok {
-				s := val.(*iterSpan)
-				if p.Err != nil {
-					s.span.RecordError(p.Err)
-					s.span.SetStatus(codes.Error, p.Err.Error())
-				} else {
-					s.span.SetStatus(codes.Error, p.Message)
-				}
-				s.span.End()
+			// An error can arrive before any Thought/Content/ToolCall event,
+			// so the span may not exist yet — create it so the failure is not
+			// dropped, then delete the entry to keep the End() exactly once.
+			s := getOrCreate(ctx, sessionKey)
+			spans.Delete(sessionKey)
+			if p.Err != nil {
+				s.span.RecordError(p.Err)
+				s.span.SetStatus(codes.Error, p.Err.Error())
+			} else {
+				s.span.SetStatus(codes.Error, p.Message)
 			}
+			s.span.End()
 
 		case agent.DoneEvent:
 			_ = p
