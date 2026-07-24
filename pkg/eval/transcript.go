@@ -25,6 +25,22 @@ type ToolCallRecord struct {
 	Result string `json:"result,omitempty"`
 }
 
+// HITL record kinds — the observable outcomes of a human-in-the-loop gate.
+// The approved path emits no event and so produces no record.
+const (
+	HITLRequired = "required"  // gate reached with no ConfirmHITL wired (out-of-band)
+	HITLDenied   = "denied"    // ConfirmHITL returned false
+	HITLTimedOut = "timed_out" // ConfirmHITLTimeout expired before a response
+)
+
+// HITLRecord is one human-in-the-loop approval gate observed during a turn.
+type HITLRecord struct {
+	Tool   string `json:"tool"`
+	Args   string `json:"args,omitempty"`
+	Kind   string `json:"kind"`             // required | denied | timed_out
+	Source string `json:"source,omitempty"` // "" = top-level; "subagent:<name>" = forwarded
+}
+
 // Transcript is the record of one turn's run. It is JSON-serializable so it
 // can be persisted (see record.go) and re-graded without re-running the
 // agent. Bounded by construction: the tool-call and event counts are capped
@@ -41,7 +57,8 @@ type Transcript struct {
 	// AgentLoop.RunIteration's canonical-answer semantics.
 	FinalAnswer  string              `json:"final_answer"`
 	ToolCalls    []ToolCallRecord    `json:"tool_calls,omitempty"`
-	Events       []agent.StreamEvent `json:"-"` // retained only when KeepEvents
+	HITL         []HITLRecord        `json:"hitl,omitempty"` // approval gates that fired
+	Events       []agent.StreamEvent `json:"-"`              // retained only when KeepEvents
 	Usage        agent.TokenUsage    `json:"usage"`
 	CostUSD      float64             `json:"cost_usd,omitempty"`
 	Model        string              `json:"model,omitempty"`
@@ -144,6 +161,19 @@ func captureEvent(tr *Transcript, answer *strings.Builder, ev agent.StreamEvent,
 		if top {
 			tr.TerminatedBy = "limit_exhausted"
 		}
+	case agent.ActionRequiredEvent:
+		tr.addHITL(top || includeSubagents, p.Tool, p.Args, HITLRequired, ev.Source)
+	case agent.HITLDeniedEvent:
+		tr.addHITL(top || includeSubagents, p.Tool, p.Args, HITLDenied, ev.Source)
+	case agent.HITLTimedOutEvent:
+		tr.addHITL(top || includeSubagents, p.Tool, p.Args, HITLTimedOut, ev.Source)
+	}
+}
+
+// addHITL appends a HITL record when record is true.
+func (tr *Transcript) addHITL(record bool, tool, args, kind, source string) {
+	if record {
+		tr.HITL = append(tr.HITL, HITLRecord{Tool: tool, Args: args, Kind: kind, Source: source})
 	}
 }
 

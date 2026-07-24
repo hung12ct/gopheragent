@@ -195,8 +195,9 @@ best-effort, not bit-exact). Unset options keep each provider's defaults.
 `pkg/eval` evaluates an agent against a suite of tasks: it checks the tool-call
 **trajectory** (which tools ran, in what order, with what arguments), the final
 **answer** (contains / regex / exact, or an LLM-as-judge with an "unknown"
-escape hatch and N-sample majority vote), and reports **cost, tokens, and
-latency**. Tasks can be multi-turn conversations, run over N trials with pass@k
+escape hatch and N-sample majority vote), whether a **human-in-the-loop
+approval gate** fired for a dangerous tool (or, with `NoHITL`, that a safe
+request did *not* trip one), and reports **cost, tokens, and latency**. Tasks can be multi-turn conversations, run over N trials with pass@k
 / pass^k, and are matched with five trajectory modes (strict, in-order,
 unordered, subset, superset).
 

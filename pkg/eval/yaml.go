@@ -49,7 +49,14 @@ type expectConfig struct {
 	Tools   *toolsConfig  `yaml:"tools"`
 	Answer  *answerConfig `yaml:"answer"`
 	NoError bool          `yaml:"no_error"`
+	HITL    *hitlConfig   `yaml:"hitl"`
 	Judge   *judgeConfig  `yaml:"judge"`
+}
+
+type hitlConfig struct {
+	Triggered bool     `yaml:"triggered"` // assert a gate fired
+	Tools     []string `yaml:"tools"`     // restrict to these tools
+	None      bool     `yaml:"none"`      // assert no gate fired
 }
 
 type toolsConfig struct {
@@ -190,6 +197,14 @@ func validateExpect(prefix string, e *expectConfig, judge agent.LLMProvider, iss
 	if e.Answer != nil && e.Answer.Regex != "" {
 		checkRegex(prefix+".answer.regex", e.Answer.Regex, issues)
 	}
+	if e.HITL != nil {
+		if !e.HITL.Triggered && !e.HITL.None {
+			*issues = append(*issues, prefix+".hitl needs triggered: true or none: true")
+		}
+		if e.HITL.None && e.HITL.Triggered {
+			*issues = append(*issues, prefix+".hitl: set only one of triggered / none")
+		}
+	}
 	if e.Judge != nil {
 		if judge == nil {
 			*issues = append(*issues, prefix+".judge requires a provider — pass one to LoadSuite")
@@ -264,6 +279,13 @@ func compileGraders(e *expectConfig, judge agent.LLMProvider) []Grader {
 	}
 	if e.NoError {
 		gs = append(gs, NoError())
+	}
+	if e.HITL != nil {
+		if e.HITL.None {
+			gs = append(gs, NoHITL())
+		} else {
+			gs = append(gs, HITLTriggered(e.HITL.Tools...))
+		}
 	}
 	if e.Judge != nil {
 		gs = append(gs, &Judge{
