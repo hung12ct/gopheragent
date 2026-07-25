@@ -40,6 +40,26 @@ var (
 	// ErrLLMFailure is returned when the LLM provider returns an error during generation.
 	ErrLLMFailure = errors.New("agent: LLM generation failed")
 
+	// ErrLLMAuth is returned when the provider rejects the request for
+	// authentication or configuration reasons — a missing, invalid, or
+	// revoked API key, or a project without access to the model.
+	//
+	// It is deliberately distinct from ErrLLMFailure because the two demand
+	// opposite responses. A generation failure is transient and retrying is
+	// reasonable; an auth failure is deterministic, so every retry fails
+	// identically. Without the distinction a misconfigured key looks exactly
+	// like a flaky backend: retry loops spin, per-run call and spend budgets
+	// drain against attempts that never had a chance, and the work gets
+	// parked as bad input rather than surfaced as "fix your key".
+	//
+	// Providers classify their own terminal auth responses, so route on the
+	// sentinel rather than matching provider message text:
+	//
+	//	if errors.Is(err, agent.ErrLLMAuth) {
+	//	    return fmt.Errorf("check the provider credentials: %w", err)
+	//	}
+	ErrLLMAuth = errors.New("agent: LLM provider authentication or configuration failed")
+
 	// ErrContextCancelled is returned when the request context is cancelled mid-loop.
 	ErrContextCancelled = errors.New("agent: operation cancelled")
 

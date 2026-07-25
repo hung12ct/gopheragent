@@ -26,6 +26,18 @@ const (
 	// the model, bypassing HITL entirely. Deny overrides everything,
 	// including tools that do not declare RequiresConfirmation().
 	PermissionDeny
+	// PermissionConfirm forces the HITL gate for this call even when the
+	// tool's descriptor does not declare RequiresConfirmation.
+	//
+	// This is what makes confirmation per-argument rather than per-tool.
+	// RequiresConfirmation is a static field on ToolDescriptor, so without
+	// this a policy could only ever restrict a tool that already prompts —
+	// never escalate one that does not. A tool that is harmless for most
+	// inputs and dangerous for a few had to be split into two registered
+	// tools to get a gate on the dangerous subset.
+	//
+	//	rules.Confirm(`write_file(*"/etc/*"*)`)
+	PermissionConfirm
 )
 
 // PermissionChecker is consulted before the HITL prompt on every tool
@@ -55,8 +67,9 @@ type PermissionChecker interface {
 //	    Deny(`Bash(*"rm -rf"*)`, `Bash(*"sudo "*)`)
 //	loop.Permissions = rules
 type PermissionRuleSet struct {
-	allow []permissionRule
-	deny  []permissionRule
+	allow   []permissionRule
+	deny    []permissionRule
+	confirm []permissionRule
 }
 
 // permissionRule is a parsed Allow / Deny pattern. ArgGlob == "" means
@@ -119,9 +132,27 @@ func (r *PermissionRuleSet) AddDeny(patterns ...string) error {
 	return nil
 }
 
-// Check returns PermissionDeny / PermissionAllow / PermissionPrompt for
-// the given call. It is safe for concurrent use once all rules have
-// been registered — internal slices are only appended to by Allow/Deny.
+// AddConfirm appends one or more patterns that force the HITL gate even
+// when the tool's descriptor does not declare RequiresConfirmation. This is
+// how a policy escalates a specific argument shape — a write tool that is
+// routine everywhere except one path, say — without splitting the tool in
+// two just to attach a gate.
+//
+// Precedence is Deny, then Allow, then Confirm: an explicit allow for the
+// same call wins, so a broad Confirm can be narrowed by a specific Allow.
+func (r *PermissionRuleSet) AddConfirm(patterns ...string) error {
+	parsed, err := parseRules(patterns)
+	if err != nil {
+		return fmt.Errorf("agent: AddConfirm: %w", err)
+	}
+	r.confirm = append(r.confirm, parsed...)
+	return nil
+}
+
+// Check returns PermissionDeny / PermissionAllow / PermissionConfirm /
+// PermissionPrompt for the given call. It is safe for concurrent use once
+// all rules have been registered — internal slices are only appended to by
+// the Add* methods.
 func (r *PermissionRuleSet) Check(_ context.Context, toolName, argsJSON string) PermissionDecision {
 	for _, rule := range r.deny {
 		if rule.matches(toolName, argsJSON) {
@@ -131,6 +162,11 @@ func (r *PermissionRuleSet) Check(_ context.Context, toolName, argsJSON string) 
 	for _, rule := range r.allow {
 		if rule.matches(toolName, argsJSON) {
 			return PermissionAllow
+		}
+	}
+	for _, rule := range r.confirm {
+		if rule.matches(toolName, argsJSON) {
+			return PermissionConfirm
 		}
 	}
 	return PermissionPrompt

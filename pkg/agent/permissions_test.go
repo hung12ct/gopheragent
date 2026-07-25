@@ -5,6 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/hung12ct/gopheragent/pkg/history"
+	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
 // --- glob matcher ---
@@ -261,4 +264,117 @@ func TestPermissions_NilPermissionsDoesNotBreakExistingFlow(t *testing.T) {
 	if resp != "done" {
 		t.Fatalf("expected 'done', got %q", resp)
 	}
+}
+
+func TestPermissionRuleSet_ConfirmEscalatesUngatedCall(t *testing.T) {
+	rules, err := NewPermissionRuleSet(nil, nil)
+	if err != nil {
+		t.Fatalf("NewPermissionRuleSet: %v", err)
+	}
+	if err := rules.AddConfirm(`write_file(*"/etc/*"*)`); err != nil {
+		t.Fatalf("AddConfirm: %v", err)
+	}
+	ctx := context.Background()
+
+	if got := rules.Check(ctx, "write_file", `{"path":"/etc/hosts"}`); got != PermissionConfirm {
+		t.Fatalf("matching call should escalate, got %v", got)
+	}
+	if got := rules.Check(ctx, "write_file", `{"path":"/tmp/scratch"}`); got != PermissionPrompt {
+		t.Fatalf("non-matching call should fall through, got %v", got)
+	}
+	if got := rules.Check(ctx, "read_file", `{"path":"/etc/hosts"}`); got != PermissionPrompt {
+		t.Fatalf("different tool should not match, got %v", got)
+	}
+}
+
+// Precedence: Deny beats everything, an explicit Allow narrows a broad
+// Confirm. Without this ordering a Confirm rule could not be excepted.
+func TestPermissionRuleSet_ConfirmPrecedence(t *testing.T) {
+	rules, err := NewPermissionRuleSet(nil, nil)
+	if err != nil {
+		t.Fatalf("NewPermissionRuleSet: %v", err)
+	}
+	if err := rules.AddConfirm("write_file"); err != nil {
+		t.Fatalf("AddConfirm: %v", err)
+	}
+	if err := rules.AddAllow(`write_file(*"/tmp/*"*)`); err != nil {
+		t.Fatalf("AddAllow: %v", err)
+	}
+	if err := rules.AddDeny(`write_file(*"/etc/shadow"*)`); err != nil {
+		t.Fatalf("AddDeny: %v", err)
+	}
+	ctx := context.Background()
+
+	cases := []struct {
+		args string
+		want PermissionDecision
+	}{
+		{`{"path":"/etc/shadow"}`, PermissionDeny},
+		{`{"path":"/tmp/scratch"}`, PermissionAllow},
+		{`{"path":"/var/lib/thing"}`, PermissionConfirm},
+	}
+	for _, tc := range cases {
+		if got := rules.Check(ctx, "write_file", tc.args); got != tc.want {
+			t.Errorf("Check(%s) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+// The point of the whole change, driven through the real loop rather than a
+// restatement of its gate condition: a tool whose descriptor does NOT
+// declare RequiresConfirmation must still reach the HITL prompt when policy
+// escalates it. Before PermissionConfirm this was impossible — a policy
+// could restrict a tool that already prompted but never escalate one that
+// did not, so the only workaround was registering the tool twice.
+func TestPermissionConfirm_FiresHITLForUngatedTool(t *testing.T) {
+	run := func(t *testing.T, argsJSON string) (prompted []string, output string) {
+		t.Helper()
+		rules, err := NewPermissionRuleSet(nil, nil)
+		if err != nil {
+			t.Fatalf("NewPermissionRuleSet: %v", err)
+		}
+		if err := rules.AddConfirm(`danger(*production*)`); err != nil {
+			t.Fatalf("AddConfirm: %v", err)
+		}
+
+		reg := tools.NewRegistry()
+		reg.Register(&echoTool{name: "danger"}) // confirm:false — ungated descriptor
+
+		provider := &scriptProvider{turns: []LLMResult{
+			{ToolCalls: []PendingToolCall{{ID: "1", Name: "danger", ArgsJSON: argsJSON}}},
+			{Content: "finished"},
+		}}
+		sm := history.NewInMemSessionManager("sys")
+		loop := NewAgentLoop(sm, reg, provider)
+		loop.Permissions = rules
+		loop.ConfirmHITL = func(_ context.Context, toolName, args string) bool {
+			prompted = append(prompted, toolName+" "+args)
+			return true
+		}
+
+		msg := history.Message{Role: "user", Content: "go"}
+		for ev := range loop.Run(context.Background(), "sess", msg) {
+			if c, ok := ev.Payload.(ContentEvent); ok {
+				output += c.Text
+			}
+		}
+		return prompted, output
+	}
+
+	t.Run("matching args reach the gate", func(t *testing.T) {
+		prompted, _ := run(t, `{"env":"production"}`)
+		if len(prompted) != 1 {
+			t.Fatalf("expected exactly one HITL prompt, got %v", prompted)
+		}
+		if !strings.Contains(prompted[0], "danger") {
+			t.Fatalf("wrong tool prompted: %v", prompted)
+		}
+	})
+
+	t.Run("non-matching args stay ungated", func(t *testing.T) {
+		prompted, _ := run(t, `{"env":"staging"}`)
+		if len(prompted) != 0 {
+			t.Fatalf("a call the policy did not escalate must not prompt, got %v", prompted)
+		}
+	})
 }

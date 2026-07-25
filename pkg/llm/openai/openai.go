@@ -188,7 +188,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, req)
 	if err != nil {
-		return agent.LLMResult{}, fmt.Errorf("openai streaming error: %w", err)
+		return agent.LLMResult{}, fmt.Errorf("openai streaming error: %w", classifyErr(err))
 	}
 	defer stream.Close()
 
@@ -211,7 +211,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 			break
 		}
 		if err != nil {
-			return agent.LLMResult{}, fmt.Errorf("openai chunk read error: %w", err)
+			return agent.LLMResult{}, fmt.Errorf("openai chunk read error: %w", classifyErr(err))
 		}
 
 		// The final chunk carries Usage when StreamOptions.IncludeUsage is set.
