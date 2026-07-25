@@ -20,6 +20,7 @@ package otelsetup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel"
@@ -87,15 +88,17 @@ func Setup(ctx context.Context, cfg Config) (*Providers, func(context.Context) e
 		Meter:  mp.Meter(scopeName),
 	}
 	shutdown := func(ctx context.Context) error {
+		// Flush both regardless of the first error, and report both — a meter
+		// flush failure must not be masked by a tracer flush failure.
 		terr := tp.Shutdown(ctx)
 		merr := mp.Shutdown(ctx)
 		if terr != nil {
-			return fmt.Errorf("otelsetup: tracer shutdown: %w", terr)
+			terr = fmt.Errorf("otelsetup: tracer shutdown: %w", terr)
 		}
 		if merr != nil {
-			return fmt.Errorf("otelsetup: meter shutdown: %w", merr)
+			merr = fmt.Errorf("otelsetup: meter shutdown: %w", merr)
 		}
-		return nil
+		return errors.Join(terr, merr)
 	}
 	return providers, shutdown, nil
 }
