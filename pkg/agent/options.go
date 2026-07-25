@@ -58,6 +58,23 @@ func New(sessions SessionManager, registry *tools.Registry, llm LLMProvider, opt
 	return al
 }
 
+// Configure applies additional options to an already-constructed loop and
+// returns it for chaining. Use it to set options the constructor did not take —
+// notably wiring agent.WithTracer / agent.WithMeter onto a loop produced by the
+// YAML builder, which does not accept Option values. Apply before the first Run;
+// options run in order and later ones win, matching New. nil options are skipped.
+//
+//	loop, _, _, _ := builder.BuildFromYAMLWithSession(...)
+//	loop.Configure(agent.WithTracer(tel.Tracer), agent.WithMeter(tel.Meter))
+func (al *AgentLoop) Configure(opts ...Option) *AgentLoop {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(al)
+		}
+	}
+	return al
+}
+
 // WithMaxIters caps the number of ReAct iterations per run. The loop emits
 // MaxItersReachedEvent + LimitExhaustedEvent when the cap fires. Default: 15.
 func WithMaxIters(n int) Option {

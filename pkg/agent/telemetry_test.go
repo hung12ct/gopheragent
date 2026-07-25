@@ -163,6 +163,22 @@ func TestIterationSpan_CancelMarksError(t *testing.T) {
 	}
 }
 
+func TestConfigure_AppliesOptionsAndChains(t *testing.T) {
+	tp := sdktrace.NewTracerProvider()
+	loop := New(history.NewInMemSessionManager("sys"), tools.NewRegistry(), NewMockProvider())
+
+	got := loop.Configure(WithMaxIters(3), nil, WithTracer(tp.Tracer("test")), WithMaxIters(9))
+	if got != loop {
+		t.Fatal("Configure should return the same loop for chaining")
+	}
+	if loop.MaxIters != 9 {
+		t.Fatalf("MaxIters = %d, want 9 (later option should win)", loop.MaxIters)
+	}
+	if loop.tracer == nil {
+		t.Fatal("WithTracer via Configure did not set the tracer")
+	}
+}
+
 func TestStartIterationSpan_ZeroAllocWhenDisabled(t *testing.T) {
 	al := &AgentLoop{} // no tracer, no meter
 	allocs := testing.AllocsPerRun(1000, func() {
