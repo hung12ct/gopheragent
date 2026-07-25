@@ -2,6 +2,7 @@ package builder
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/hung12ct/gopheragent/pkg/tools"
@@ -71,5 +72,9 @@ func (c *GlobalCatalog) ListNames() []string {
 	for k := range c.availableTools {
 		names = append(names, k)
 	}
+	// Map iteration is randomized. This list is the "available tools" hint
+	// in tools_required validation errors, so without the sort the same bad
+	// config reports its options in a different order every run.
+	sort.Strings(names)
 	return names
 }
