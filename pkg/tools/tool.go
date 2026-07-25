@@ -174,7 +174,7 @@ func (r *Registry) EnableDebug(logger *slog.Logger) {
 	defer r.mu.Unlock()
 	r.debug = true
 	r.logger = logger
-	r.wrapped = nil
+	r.rebuildWrappedLocked()
 }
 
 // Register adds a tool to the registry. Overwrites any existing tool with the same name.
@@ -183,7 +183,11 @@ func (r *Registry) Register(t Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[name] = t
-	delete(r.wrapped, name)
+	if r.debug {
+		r.wrapToolLocked(name, t)
+	} else {
+		delete(r.wrapped, name)
+	}
 }
 
 // Get retrieves a tool by name. Returns false if not found.
@@ -244,18 +248,45 @@ func (r *Registry) Clone() *Registry {
 		logger: r.logger,
 	}
 	maps.Copy(c.tools, r.tools)
+	if c.debug {
+		// c is not published yet, so this needs no lock of its own. Rebuild
+		// rather than share the source map: the clone must be independently
+		// mutable, and wrappers are cheap to reconstruct.
+		c.rebuildWrappedLocked()
+	}
 	return c
 }
 
-// debugWrapped returns a cached logging-wrapped tool. Must be called under r.mu.
+// debugWrapped returns the pre-built logging wrapper for name, or t when
+// none exists. This is a pure read, which is the point: it is reached from
+// Get and All under a read lock, so it must never populate the cache.
+//
+// Building lazily here was a latent data race — an RLock is shared, not
+// exclusive, so two concurrent Get calls in debug mode raced on the map and
+// could trip a concurrent map write. The loop dispatches tools in parallel,
+// and debug mode is exactly what someone turns on to investigate that.
+// Wrappers are now built where the write lock is already held.
 func (r *Registry) debugWrapped(name string, t Tool) Tool {
 	if w, ok := r.wrapped[name]; ok {
 		return w
 	}
-	w := Chain(t, WithLogging(r.logger))
+	return t
+}
+
+// wrapToolLocked builds and stores the debug wrapper for one tool.
+// Caller must hold r.mu for writing.
+func (r *Registry) wrapToolLocked(name string, t Tool) {
 	if r.wrapped == nil {
-		r.wrapped = make(map[string]Tool)
+		r.wrapped = make(map[string]Tool, len(r.tools))
 	}
-	r.wrapped[name] = w
-	return w
+	r.wrapped[name] = Chain(t, WithLogging(r.logger))
+}
+
+// rebuildWrappedLocked regenerates every debug wrapper from scratch.
+// Caller must hold r.mu for writing.
+func (r *Registry) rebuildWrappedLocked() {
+	r.wrapped = make(map[string]Tool, len(r.tools))
+	for name, t := range r.tools {
+		r.wrapToolLocked(name, t)
+	}
 }
