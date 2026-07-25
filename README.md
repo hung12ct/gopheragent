@@ -46,6 +46,9 @@ go get github.com/hung12ct/gopheragent
 ## What you get
 
 - **YAML-defined agents** — file or `//go:embed`, with knowledge-base injection.
+- **Skills with progressive disclosure** — an [Agent Skills](https://agentskills.io)
+  loader over any `io/fs.FS`; descriptions sit in the prompt, full instructions
+  load only when a skill is used.
 - **Deterministic ReAct loop** — dependency-aware parallel tool scheduling with
   `<output_of:ID>` refs, anti-loop detection, token-budget-aware pruning.
 - **Streaming & HITL** — SSE streaming, human approvals, plan mode, self-critique.
@@ -68,6 +71,7 @@ go get github.com/hung12ct/gopheragent
 |---|---|
 | [Getting started](docs/getting-started.md) | Install, the YAML builder, persistent sessions |
 | [Tools](docs/tools.md) | Built-in tools, writing custom tools, middleware |
+| [Skills](docs/skills.md) | Progressive disclosure — catalog in the prompt, instructions on demand |
 | [Permissions & HITL](docs/permissions.md) | Confirmation gates, permission DSL, autonomous approvals |
 | [Providers](docs/providers.md) | Providers, multi-model routing, sampling, multimodal |
 | [Observability](docs/observability.md) | OpenTelemetry traces & metrics, collectors, debugging a conversation |
@@ -84,7 +88,7 @@ Full API reference: [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopherag
 | [`examples/creative_studio`](./examples/creative_studio) | AI Creative Director — DALL-E 3 images + Veo 2 video clips generated inline |
 | [`examples/media_chat`](./examples/media_chat) | Media Q&A — upload image/video/doc, native multimodal history, multi-turn references |
 | [`examples/hitl_server`](./examples/hitl_server) | Human-in-the-loop approvals over HTTP (async bridge) |
-| [`examples/yaml_agents`](./examples/yaml_agents) | Multiple YAML-defined agents sharing a catalog |
+| [`examples/yaml_agents`](./examples/yaml_agents) | Multiple YAML-defined agents sharing a catalog, plus a skills-driven assistant |
 
 ```bash
 cd examples/demo

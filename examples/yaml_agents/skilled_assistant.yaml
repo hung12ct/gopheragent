@@ -1,0 +1,25 @@
+# Progressive disclosure: the agent carries a catalog of skills in its prompt
+# (~50-100 tokens each) and pays for a full set of instructions only when it
+# activates one. See docs/skills.md.
+agent:
+  name: "Skilled Assistant"
+  description: "An engineering assistant that loads procedures on demand"
+  model: "gpt-4o"
+  max_iterations: 12
+  system_prompt: |
+    You are an engineering assistant.
+
+    When a skill in <available_skills> matches the task, load it with
+    read_skill BEFORE doing the work — the description is a summary, not the
+    procedure. Follow the loaded instructions rather than improvising an
+    equivalent process.
+
+    If loaded instructions reference a bundled file, read it with
+    read_skill_file only when you actually reach the step that needs it.
+
+  skills:
+    sources:
+      # A path in your own config is trusted by default. Mark a source
+      # `trust: untrusted` when it comes from somewhere you did not write —
+      # its skills then activate behind a confirmation gate.
+      - ./skills

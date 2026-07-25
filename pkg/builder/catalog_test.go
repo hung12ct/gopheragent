@@ -61,3 +61,24 @@ func TestCatalog_NoMiddlewareLeavesToolUnwrapped(t *testing.T) {
 		t.Fatal("wrap should return the tool unchanged when no middleware is registered")
 	}
 }
+
+func TestGlobalCatalog_ListNamesIsSorted(t *testing.T) {
+	c := NewGlobalCatalog()
+	for _, name := range []string{"zulu", "alpha", "mike", "bravo"} {
+		tools.RegisterFunc(c, name, "desc",
+			func(_ context.Context, _ struct{}) (tools.Result, error) { return tools.Text("ok"), nil })
+	}
+	want := []string{"alpha", "bravo", "mike", "zulu"}
+	// Map iteration is randomized, so a single pass can pass by luck.
+	for i := 0; i < 20; i++ {
+		got := c.ListNames()
+		if len(got) != len(want) {
+			t.Fatalf("want %d names, got %v", len(want), got)
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Fatalf("iteration %d: got %v, want %v", i, got, want)
+			}
+		}
+	}
+}
