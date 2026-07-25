@@ -16,6 +16,27 @@ import (
 // iteration on the hot path.
 var noopEndSpan = func(error) {}
 
+// noopRunEnd is the shared end function returned by startRunSpan when tracing is
+// disabled — one shared value keeps the disabled path allocation-free.
+var noopRunEnd = func() {}
+
+// startRunSpan opens the conversation-turn root span "agent.run" and returns the
+// child ctx plus its end function. Every iteration (and, through them, the LLM
+// and tool spans) nests under it, so a single turn is one trace with one trace
+// ID, filterable in the backend by the gopheragent.session.key attribute. When
+// the caller's ctx already carries a span, agent.run nests under it instead of
+// starting a new trace, preserving an outer request/conversation trace. Returns
+// the original ctx and a shared no-op when tracing is disabled (zero cost).
+func (al *AgentLoop) startRunSpan(ctx context.Context, sessionKey string) (context.Context, func()) {
+	if al.tracer == nil {
+		return ctx, noopRunEnd
+	}
+	ctx, span := al.tracer.Start(ctx, "agent.run",
+		trace.WithAttributes(semconv.SessionKey.String(sessionKey)),
+	)
+	return ctx, func() { span.End() }
+}
+
 // WithTracer enables OpenTelemetry tracing of the ReAct loop. Each iteration
 // opens an "agent.iteration" span; because that span rides on the ctx threaded
 // into the LLM call and tool execution, spans produced by the otelllm decorator

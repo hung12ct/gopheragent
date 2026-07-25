@@ -34,7 +34,8 @@ const (
 
 // gopheragent-specific attribute keys.
 const (
-	// SessionKey is the agent session identifier carried on iteration spans.
+	// SessionKey is the agent session identifier carried on the run and
+	// iteration spans — the attribute to filter a conversation's traces by.
 	SessionKey = attribute.Key("gopheragent.session.key")
 	// Iteration is the zero-based ReAct iteration index on an iteration span.
 	Iteration = attribute.Key("gopheragent.iteration")

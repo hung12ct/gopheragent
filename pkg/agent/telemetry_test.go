@@ -5,14 +5,25 @@ import (
 	"fmt"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
+	"github.com/hung12ct/gopheragent/pkg/telemetry/semconv"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
+
+func hasStrAttr(attrs []attribute.KeyValue, key attribute.Key, want string) bool {
+	for _, a := range attrs {
+		if a.Key == key && a.Value.AsString() == want {
+			return true
+		}
+	}
+	return false
+}
 
 // childSpanProvider starts a child span from the ctx it receives — emulating
 // what the otelllm decorator does — so the test can assert the iteration span
@@ -66,6 +77,67 @@ type cancelProvider struct{}
 
 func (cancelProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, _ chan<- StreamEvent) (LLMResult, error) {
 	return LLMResult{}, fmt.Errorf("provider stream: %w", context.Canceled)
+}
+
+func TestRunSpan_SingleTracePerTurn(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	tr := tp.Tracer("test")
+
+	provider := &childSpanProvider{tracer: tr}
+	loop := New(history.NewInMemSessionManager("sys"), tools.NewRegistry(), provider, WithTracer(tr))
+
+	if _, err := loop.RunIteration(context.Background(), "conv-abc", "hi"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+
+	spans := sr.Ended()
+	if len(spans) < 3 {
+		t.Fatalf("expected at least run+iteration+child spans, got %d", len(spans))
+	}
+
+	// Every span in the turn must share one trace ID.
+	var run sdktrace.ReadOnlySpan
+	traceID := spans[0].SpanContext().TraceID()
+	for _, s := range spans {
+		if s.SpanContext().TraceID() != traceID {
+			t.Fatalf("span %q has a different trace ID — turn is not a single trace", s.Name())
+		}
+		if s.Name() == "agent.run" {
+			run = s
+		}
+	}
+	if run == nil {
+		t.Fatal("no agent.run root span recorded")
+	}
+	if run.Parent().IsValid() {
+		t.Fatalf("agent.run should be the trace root, but has a parent")
+	}
+	if !hasStrAttr(run.Attributes(), semconv.SessionKey, "conv-abc") {
+		t.Fatalf("agent.run missing session.key attribute: %v", run.Attributes())
+	}
+}
+
+func TestRunSpan_NestsUnderCallerSpan(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	tr := tp.Tracer("test")
+
+	// Caller wraps the turn in its own span to own the trace ID.
+	ctx, outer := tr.Start(context.Background(), "conversation")
+	wantTrace := outer.SpanContext().TraceID()
+
+	loop := New(history.NewInMemSessionManager("sys"), tools.NewRegistry(), &childSpanProvider{tracer: tr}, WithTracer(tr))
+	if _, err := loop.RunIteration(ctx, "conv-xyz", "hi"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	outer.End()
+
+	for _, s := range sr.Ended() {
+		if s.SpanContext().TraceID() != wantTrace {
+			t.Fatalf("span %q escaped the caller's trace", s.Name())
+		}
+	}
 }
 
 func TestIterationSpan_CancelMarksError(t *testing.T) {

@@ -946,6 +946,11 @@ func (al *AgentLoop) emitPostStream(ctx context.Context, sessionKey string, ev S
 // terminal frame — final answer, fatal error, cap exhaustion, or
 // MaxIters — and never returns without emitting one.
 func (al *AgentLoop) iterateMessages(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, msgs []history.Message) {
+	// Root span for the whole turn so all iteration/LLM/tool spans share one
+	// trace ID; correlate turns of a conversation by the session.key attribute.
+	ctx, endRun := al.startRunSpan(ctx, sessionKey)
+	defer endRun()
+
 	loopTracker := loopDetectorFromHistory(msgs)
 	totalToolCalls := 0
 	for iteration := 0; iteration < al.MaxIters; iteration++ {
