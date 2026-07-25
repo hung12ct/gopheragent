@@ -2,6 +2,18 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.35.0] — 2026-07-25
+
+### Added
+
+- **OpenTelemetry observability layer — traces and metrics for the whole agent run.** There was no first-class way to see where an agent spent time or tokens; the pre-existing event→span bridge produced one coarse span per session with no LLM span and zero-duration tool events. This release instruments the real hot paths. `agent.WithTracer` / `agent.WithMeter` open **one trace per conversation turn** — a root `agent.run` span (tagged `gopheragent.session.key`) nesting an `agent.iteration` span per ReAct step. A decorator, `pkg/telemetry/otelllm.NewProvider`, wraps any `LLMProvider` to add a `chat <model>` span plus a call-latency histogram and prompt/completion token counters following the OpenTelemetry GenAI semantic conventions — without touching the `pkg/llm` providers. A middleware, `pkg/telemetry/oteltools.Instrument`, adds a per-tool `execute_tool <name>` span plus latency and error metrics through the existing `tools.Chain`, leaving `pkg/tools` untouched. To debug a reported conversation, filter the backend by the `gopheragent.session.key` span attribute. The core imports only the OpenTelemetry **API**, so instrumentation is a no-op — and allocation-free — until a provider is wired; the SDK and OTLP exporters are confined to `pkg/telemetry/otelsetup`, whose `Setup` wires an OTLP TracerProvider + MeterProvider in one call. Duration histograms ship LLM-tuned explicit buckets (the GenAI `0.01 … 81.92` s ladder) instead of the SDK's millisecond defaults, so percentiles stay meaningful for second-scale LLM latencies. (`pkg/telemetry/otelllm`, `pkg/telemetry/oteltools`, `pkg/telemetry/otelsetup`, `pkg/telemetry/semconv`, `pkg/agent/telemetry.go`)
+- **`agent.(*AgentLoop).Configure(opts ...Option) *AgentLoop`** — applies construction options to an already-built loop and returns it for chaining, so a loop produced by the YAML builder (which takes no options) can still wire `WithTracer` / `WithMeter` before `Run`. Mirrors the existing `OnEvent` fluent pattern. (`pkg/agent/options.go`)
+- **`builder.(*GlobalCatalog).Use(mw ...tools.Middleware)`** — registers middleware wrapped onto every tool the catalog hands to a built agent, so `oteltools.Instrument` (or any middleware) can instrument all of a YAML agent's tools without per-tool `tools.Chain`. No-op when unset; middleware must preserve `Descriptor().Name`. (`pkg/builder/catalog.go`)
+
+### Fixed
+
+- **`telemetry.NewOTelHandler` dropped the span when an `ErrorEvent` arrived before any other event** (the `LoadAndDelete` missed a span that was never stored), so an error at the very start of a session emitted nothing. It now creates the span on demand and records exactly one error span. (`pkg/telemetry/otel.go`)
+
 ## [v0.34.0] — 2026-07-24
 
 ### Added
@@ -515,6 +527,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.35.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.35.0
 [v0.34.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.34.0
 [v0.33.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.33.0
 [v0.32.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.32.1
