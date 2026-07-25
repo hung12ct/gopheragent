@@ -202,7 +202,7 @@ func ParseYAMLConfig(yamlPath string) (AgentConfig, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return config, fmt.Errorf("invalid YAML syntax in %q: %w", yamlPath, err)
 	}
-	return resolveKnowledgeBase(config, filepath.Dir(yamlPath))
+	return resolvePrompt(config, filepath.Dir(yamlPath))
 }
 
 // ParseYAMLBytes is the bytes counterpart to ParseYAMLConfig. Use it when the
@@ -215,13 +215,22 @@ func ParseYAMLBytes(data []byte, baseDir string) (AgentConfig, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return config, fmt.Errorf("invalid YAML syntax in embedded bytes: %w", err)
 	}
-	return resolveKnowledgeBase(config, baseDir)
+	return resolvePrompt(config, baseDir)
 }
 
-// resolveKnowledgeBase applies knowledge_base augmentation to config.Agent.SystemPrompt.
-// Relative KB paths are resolved against baseDir; absolute paths pass through unchanged.
-// An empty baseDir with a relative KB path is an error.
-func resolveKnowledgeBase(config AgentConfig, baseDir string) (AgentConfig, error) {
+// resolvePrompt applies every system-prompt augmentation the config
+// declares and is the single source of truth for all of them.
+//
+// It must stay the only place that builds the final prompt. Callers reach
+// the prompt by two routes — ParseYAMLConfig, for constructing a session
+// manager before the loop, and buildFromConfig — and an augmentation added
+// to one route only would silently change behavior based on which session
+// backend the adopter chose.
+//
+// Relative paths resolve against baseDir; absolute paths pass through
+// unchanged. An empty baseDir with a relative path is an error rather than
+// a silent resolve against the process working directory.
+func resolvePrompt(config AgentConfig, baseDir string) (AgentConfig, error) {
 	if config.Agent.KnowledgeBase == "" {
 		return config, nil
 	}
@@ -270,23 +279,15 @@ func buildFromConfig(config AgentConfig, baseDir string, sourceLabel string, cat
 		return nil, nil, config, err
 	}
 
-	// Resolve knowledge_base relative to baseDir so the config stays portable
-	// across working directories. Absolute paths pass through filepath.Join
-	// unchanged. If baseDir is empty and the path is relative, error out
-	// rather than silently resolving against the current working directory.
-	if config.Agent.KnowledgeBase != "" {
-		kbDir := config.Agent.KnowledgeBase
-		if !filepath.IsAbs(kbDir) {
-			if baseDir == "" {
-				return nil, nil, config, fmt.Errorf("agent.knowledge_base %q is relative but no baseDir was provided — pass baseDir or use an absolute path", kbDir)
-			}
-			kbDir = filepath.Join(baseDir, kbDir)
-		}
-		augmented, kbErr := WithKnowledgeBase(config.Agent.SystemPrompt, kbDir)
-		if kbErr != nil {
-			return nil, nil, config, kbErr
-		}
-		config.Agent.SystemPrompt = augmented
+	// Shared with ParseYAMLConfig and ParseYAMLBytes. Both routes must
+	// produce the same prompt: the documented persistent-session workflow
+	// builds its SessionManager from ParseYAMLConfig's SystemPrompt and then
+	// builds the loop separately, so any augmentation applied on only one
+	// side gives File- and MySQL-backed adopters a different system prompt
+	// from in-memory ones.
+	config, err := resolvePrompt(config, baseDir)
+	if err != nil {
+		return nil, nil, config, err
 	}
 
 	registry := tools.NewRegistry()
