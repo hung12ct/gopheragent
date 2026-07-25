@@ -8,7 +8,10 @@
   </p>
 </div>
 
-**GopherAgent** is a **Golang multi-agent (multiagent) LLM framework** — deterministic ReAct loops, parallel tool execution, streaming, sub-agents, and multi-model routing. Your PM writes a YAML file. Your engineer registers a Go tool. GopherAgent wires them together at runtime — no recompile, no redeploy.
+**GopherAgent** is a **Golang multi-agent LLM framework** — deterministic ReAct
+loops, parallel tool execution, streaming, sub-agents, and multi-model routing.
+Your PM writes a YAML file. Your engineer registers a Go tool. GopherAgent wires
+them together at runtime — no recompile, no redeploy.
 
 ```yaml
 # agent.yaml — your PM creates this
@@ -34,203 +37,49 @@ loop.RunIteration(ctx, sessionKey, userMessage)
 
 **That's it.** Change the YAML, get a different agent. No code changes.
 
-## Installation
+## Install
 
 ```bash
 go get github.com/hung12ct/gopheragent
 ```
 
-## The YAML Builder
+## What you get
 
-Engineers register tools into a catalog; PMs wire agents with YAML.
+- **YAML-defined agents** — file or `//go:embed`, with knowledge-base injection.
+- **Deterministic ReAct loop** — dependency-aware parallel tool scheduling with
+  `<output_of:ID>` refs, anti-loop detection, token-budget-aware pruning.
+- **Streaming & HITL** — SSE streaming, human approvals, plan mode, self-critique.
+- **Custom tools** — one interface, schema derived from a Go struct; a middleware
+  chain for logging, timing, rate limiting, and tracing.
+- **Multi-provider** — OpenAI, Anthropic, Gemini, Vertex, and OpenAI-compatible
+  backends, each in its own subpackage; multi-model routing; sampling controls.
+- **Sub-agents & async** — sub-agent streaming, conversation forking, background
+  workers, first-class task tracking.
+- **Cross-session memory** — a post-session consolidator distills transcripts
+  into notes the loader prepends to future sessions.
+- **Observability** — OpenTelemetry traces + metrics (one trace per turn, nested
+  LLM/tool spans, GenAI-convention token metrics), zero-cost when off.
+- **Evaluation** — grade trajectory + answer + HITL with `pkg/eval` and a
+  CI-ready `gopherevals` CLI.
 
-```go
-catalog := builder.NewGlobalCatalog()
-catalog.Register(&CheckInventoryTool{})
-catalog.Register(builtin.NewReadURLTool())
-webSearch, _ := builtin.NewWebSearchTool("")
-catalog.Register(webSearch)
+## Documentation
 
-provider, _ := openai.New("", "gpt-4o") // pkg/llm/openai
-loop, _, _, _ := builder.BuildFromYAML("agent.yaml", catalog, provider, nil)
-resp, _ := loop.RunIteration(ctx, "session_1", "Do we have iPhone 16 in stock?")
-```
+| Guide | Use it for |
+|---|---|
+| [Getting started](docs/getting-started.md) | Install, the YAML builder, persistent sessions |
+| [Tools](docs/tools.md) | Built-in tools, writing custom tools, middleware |
+| [Permissions & HITL](docs/permissions.md) | Confirmation gates, permission DSL, autonomous approvals |
+| [Providers](docs/providers.md) | Providers, multi-model routing, sampling, multimodal |
+| [Observability](docs/observability.md) | OpenTelemetry traces & metrics, collectors, debugging a conversation |
+| [Evaluation](docs/evaluation.md) | Grade an agent with `pkg/eval` + `gopherevals` |
 
-More YAML agent patterns (customer support, data analyst, content writer,
-multi-agent SQL hub) live in [`examples/yaml_agents`](./examples/yaml_agents).
-
-## Built-in Tools
-
-Import `github.com/hung12ct/gopheragent/pkg/tools/builtin`:
-
-| Tool | Constructor | Description |
-|---|---|---|
-| Web search | `NewWebSearchTool(apiKey)` | Internet search via Tavily API |
-| Read URL | `NewReadURLTool()` | Fetch and parse any web page to plain text; SSRF-protected |
-| Show media | `NewShowMediaTool()` | Embed images or videos inline in streaming UIs |
-| HTTP request | `NewHTTPRequestTool()` | Call JSON APIs and webhooks; SSRF-protected + host allowlist |
-| File read | `NewFileReadTool(root)` | Read local files; path-traversal-safe root sandbox |
-| Media analyze | `NewMediaAnalyzeTool(analyzer)` | Describe images or videos via any multimodal model |
-| Memory set/get/delete/list | `NewMemorySetTool(store)` etc. | Agent-curated key/value facts; survives context pruning |
-| Task tracking (create/update/list) | `RegisterTaskTools(registry, store)` | Structured planning scratchpad with enum status (pending/in_progress/completed) |
-| Code interpreter | `NewCodeInterpreterTool()` | Execute Python or Node snippets; output-capped, timeout-bounded |
-| SQL agent | `NewSQLAgentTool(db, schema, sm, provider)` | Natural language → read-only SQL; DML-proof + self-consistency |
-| Generate image | `NewGenerateImageTool(apiKey, model)` | DALL-E 3 image generation; returns inline markdown embed |
-| Generate video | `NewGenerateVideoTool(apiKey, model)` | Veo 2 video generation (5–8 s); inline `<video>` result |
-
-## Writing Custom Tools
-
-Implement the `tools.Tool` interface — one struct, five methods. Use
-`tools.SchemaFor[T]()` to derive the JSON schema from a Go struct:
-
-```go
-type CheckInventoryArgs struct {
-    ProductName string `json:"product_name" description:"Product to check"`
-}
-
-type CheckInventoryTool struct{ db *sql.DB }
-
-func (t *CheckInventoryTool) Name() string        { return "check_inventory" }
-func (t *CheckInventoryTool) Description() string { return "Check product stock" }
-func (t *CheckInventoryTool) ParametersSchema() tools.ToolSchema {
-    return tools.SchemaFor[CheckInventoryArgs]()
-}
-func (t *CheckInventoryTool) RequiresConfirmation() bool { return false }
-func (t *CheckInventoryTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-    var args CheckInventoryArgs
-    _ = json.Unmarshal([]byte(argsJSON), &args)
-    return `{"in_stock": 250}`, nil
-}
-```
-
-Supported tags: `json`, `description`, `enum`, `required`. See
-[`pkg/tools/schema.go`](./pkg/tools/schema.go) for the full type list.
-
-## Permission Flow
-
-When a tool returns `RequiresConfirmation() = true`, the loop denies the
-call **unless one of**:
-
-- A `loop.ConfirmHITL` hook returns `true` (human approves), or
-- A `loop.Permissions` rule returns `PermissionAllow` (policy auto-approves).
-
-With neither, the call is denied and the model receives a directive
-"permission gate" message telling it to ask the user for approval.
-
-For autonomous agents (no human reviewer), pre-approve trusted tools:
-
-```go
-loop.Permissions = agent.NewPermissionRuleSet().
-    Allow("call_sql_agent").     // bypass HITL for this tool
-    Deny("dangerous_tool")       // deny-over-allow ordering
-```
-
-Or opt the tool out of confirmation entirely at the source:
-
-```go
-sqlTool := builtin.NewSQLAgentTool(db, "", sm, provider).
-    WithRequiresConfirmation(false)
-```
-
-## Native Multimodal Input
-
-Conversation history accepts typed `MediaPart`s — images go straight into
-the LLM request on OpenAI, Anthropic, and Gemini, no base64 round-trip per
-turn. See [`examples/media_chat`](./examples/media_chat).
-
-## Production-Ready Features
-
-Full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent).
-
-**Runtime**
-- Streaming (SSE), HITL approvals, plan mode, self-critique (Reflect)
-- Dependency-aware parallel tool scheduling with `<output_of:ID>` refs
-- Sub-agent streaming, conversation forking, first-class task tracking
-
-**Cost & performance**
-- Structured output / JSON mode across OpenAI, Anthropic, Gemini
-- Anthropic prompt-cache hints, speculative tool execution
-- Per-session token budget, thinking budget, tool RAG (50+ tools)
-- Multi-model routing (`llm.RouterProvider`)
-
-**Reliability**
-- Exponential-backoff retry, structured errors (`errors.Is` / `errors.As`)
-- Structured tool-error hints for better LLM recovery
-- Session TTL + auto cleanup, SSRF-hardened HTTP tools
-
-**Ops**
-- OpenTelemetry traces + metrics: one trace per turn (root `agent.run` span)
-  nesting iteration → LLM → tool spans with latency and GenAI-convention token
-  metrics — enable with `agent.WithTracer` / `agent.WithMeter`, the `otelllm`
-  provider decorator, and the `oteltools` middleware. YAML-built agents wire the
-  same via `loop.Configure(...)` + `catalog.Use(...)`. Filter a reported
-  conversation by the `gopheragent.session.key` span attribute. One-call OTLP
-  export via `telemetry/otelsetup.Setup`; the API-only core stays a no-op (zero
-  cost) until a provider is wired
-- Prometheus / OpenMetrics token usage via `agentmetrics.Handler(bt)`
-- Custom event sinks (`OnEvent`), tool middleware chain
-
-**Extensibility**
-- YAML-driven agents (file or `//go:embed`) + knowledge base injection
-- Permission DSL (`Allow` / `Deny` glob patterns)
-- Typed event payloads, bounded async workers
-- Cross-session memory (`pkg/memory`): post-session `Consolidator` distills
-  transcripts into notes that the loader prepends to future sessions —
-  agents learn between conversations without retraining
-
-## Supported Providers
-
-Each provider lives in its own subpackage, so a binary that uses one vendor
-does not statically link the other vendors' SDKs:
-
-| Provider | Import | Constructor | Models |
-|---|---|---|---|
-| OpenAI | `pkg/llm/openai` | `openai.New(key, model)` | gpt-4o, gpt-4o-mini, o1, ... |
-| Anthropic | `pkg/llm/anthropic` | `anthropic.New(key, model)` | claude-sonnet, claude-opus, ... |
-| Google Gemini | `pkg/llm/gemini` | `gemini.New(key, model)` | gemini-2.5-flash, gemini-2.5-pro, ... |
-| Vertex AI (Gemini) | `pkg/llm/gemini` | `gemini.NewVertex(project, location, model)` | Vertex-hosted Gemini via ADC |
-| OpenAI-compatible | `pkg/llm/openai` | `openai.NewCompat(key, model, baseURL)` | Ollama, Groq, vLLM, Together, ... |
-
-All providers auto-discover API keys from environment variables when key is `""`.
-
-Every constructor accepts sampling options for reproducible runs —
-`WithTemperature(t)`, `WithTopP(p)`, and `WithSeed(n)` (OpenAI and Gemini
-only; the Anthropic API has no seed parameter, so temperature 0 there is
-best-effort, not bit-exact). Unset options keep each provider's defaults.
-
-## Evaluation
-
-`pkg/eval` evaluates an agent against a suite of tasks: it checks the tool-call
-**trajectory** (which tools ran, in what order, with what arguments), the final
-**answer** (contains / regex / exact, or an LLM-as-judge with an "unknown"
-escape hatch and N-sample majority vote), whether a **human-in-the-loop
-approval gate** fired for a dangerous tool (or, with `NoHITL`, that a safe
-request did *not* trip one), and reports **cost, tokens, and latency**. Tasks can be multi-turn conversations, run over N trials with pass@k
-/ pass^k, and are matched with five trajectory modes (strict, in-order,
-unordered, subset, superset).
-
-Run it two ways:
-
-```go
-// Inside go test — deterministic with a scripted provider, no API keys.
-eval.RunT(t, &eval.Runner{NewTarget: factory}, suite)
-```
-
-```bash
-# In CI — YAML suite against a real agent; exits non-zero below threshold.
-go run ./cmd/gopherevals -suite suite.yaml -agent agent.yaml -junit eval.xml -threshold 0.9
-```
-
-Reports emit as JSON, JUnit XML (rendered natively by GitHub Actions), and
-Markdown. Capture transcripts once with `-save-transcripts` and re-grade them
-against a revised rubric via `-from-transcripts` without re-running the agent.
-See [`examples/agent_eval`](./examples/agent_eval).
+Full API reference: [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent).
 
 ## Examples
 
 | Example | What it shows |
 |---|---|
-| [`examples/demo`](./examples/demo) | Full chat UI — web research, memory sidebar, Python execution, live HITL, SSE streaming |
+| [`examples/demo`](./examples/demo) | Full chat UI — web research, memory sidebar, Python execution, live HITL, SSE streaming, OTLP export |
 | [`examples/agent_eval`](./examples/agent_eval) | Agent evaluation — trajectory + answer + judge graders, JUnit/Markdown reports, CI gate |
 | [`examples/creative_studio`](./examples/creative_studio) | AI Creative Director — DALL-E 3 images + Veo 2 video clips generated inline |
 | [`examples/media_chat`](./examples/media_chat) | Media Q&A — upload image/video/doc, native multimodal history, multi-turn references |
@@ -239,7 +88,7 @@ See [`examples/agent_eval`](./examples/agent_eval).
 
 ```bash
 cd examples/demo
-echo "LLM_PROVIDER=openai\nOPENAI_API_KEY=sk-..." > .env
+printf "LLM_PROVIDER=openai\nOPENAI_API_KEY=sk-...\n" > .env
 go run .
 # open http://localhost:8888
 ```
