@@ -55,6 +55,19 @@ const (
 	TokenTypeOutput = "output"
 )
 
+// DurationBucketsSeconds is the explicit histogram bucket boundaries (in
+// seconds) for all gopheragent duration histograms — LLM calls, tool
+// executions, and iterations. It follows the OpenTelemetry GenAI semantic
+// convention for gen_ai.client.operation.duration: an exponential ladder from
+// 10 ms to ~82 s that gives real resolution across LLM-scale latencies. The
+// SDK-default buckets (0, 5, 10, 25, … 10000) assume milliseconds and collapse
+// every sub-5-second call into one bucket, making p50/p95 meaningless for
+// second-scale LLM traffic. Attached as an instrument advisory so it stays in
+// the API-only core; consumers can still override via an SDK View.
+var DurationBucketsSeconds = []float64{
+	0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
+}
+
 // Metric instrument names.
 const (
 	// MetricLLMDuration is the LLM call latency histogram (seconds).

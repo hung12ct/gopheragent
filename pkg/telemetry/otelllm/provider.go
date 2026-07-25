@@ -108,6 +108,7 @@ func (p *instrumentedProvider) initInstruments(meter metric.Meter) {
 		semconv.MetricLLMDuration,
 		metric.WithUnit("s"),
 		metric.WithDescription("Duration of LLM GenerateStream calls."),
+		metric.WithExplicitBucketBoundaries(semconv.DurationBucketsSeconds...),
 	); err == nil {
 		p.duration = h
 	}

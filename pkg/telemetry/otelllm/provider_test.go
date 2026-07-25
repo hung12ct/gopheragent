@@ -88,6 +88,50 @@ func TestGenerateStream_SpanAndMetricsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestGenerateStream_DurationHistogramUsesLLMBuckets(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	p := otelllm.NewProvider(&fakeProvider{res: agent.LLMResult{Usage: agent.TokenUsage{PromptTokens: 1}}},
+		otelllm.WithModel("m"), otelllm.WithMeter(mp.Meter("test")))
+
+	if _, err := p.GenerateStream(context.Background(), nil, nil, nil); err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	bounds := histogramBounds(t, rm, semconv.MetricLLMDuration)
+	want := semconv.DurationBucketsSeconds
+	if len(bounds) != len(want) {
+		t.Fatalf("bucket count = %d, want %d (default ms buckets leaked?)", len(bounds), len(want))
+	}
+	for i := range want {
+		if bounds[i] != want[i] {
+			t.Fatalf("bucket[%d] = %v, want %v", i, bounds[i], want[i])
+		}
+	}
+}
+
+func histogramBounds(t *testing.T, rm metricdata.ResourceMetrics, name string) []float64 {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			h, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok || len(h.DataPoints) == 0 {
+				t.Fatalf("%s is not a float histogram with data points", name)
+			}
+			return h.DataPoints[0].Bounds
+		}
+	}
+	t.Fatalf("histogram %q not found", name)
+	return nil
+}
+
 func TestGenerateStream_ErrorSetsSpanStatus(t *testing.T) {
 	sr, _, tp, _ := newRecorders(t)
 	sentinel := errors.New("provider boom")
