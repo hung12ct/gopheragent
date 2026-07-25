@@ -20,6 +20,8 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/llm/anthropic"
 	"github.com/hung12ct/gopheragent/pkg/llm/gemini"
 	"github.com/hung12ct/gopheragent/pkg/llm/openai"
+	"github.com/hung12ct/gopheragent/pkg/telemetry"
+	"github.com/hung12ct/gopheragent/pkg/telemetry/otelsetup"
 	"github.com/hung12ct/gopheragent/pkg/tools/builtin"
 )
 
@@ -547,9 +549,37 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// setupTelemetry wires OpenTelemetry OTLP export when OTEL_EXPORTER_OTLP_ENDPOINT
+// is set, and attaches the lightweight per-iteration span bridge to the loop.
+// Returns a shutdown func to flush exporters, or nil when telemetry is disabled.
+//
+// This demo uses the YAML builder, so it takes the zero-config bridge path. Apps
+// that construct the loop with agent.New can instead pass agent.WithTracer /
+// agent.WithMeter and wrap the provider with otelllm.NewProvider plus the tools
+// with oteltools.Instrument for nested LLM and tool spans.
+func setupTelemetry() func(context.Context) error {
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
+		return nil
+	}
+	tel, shutdown, err := otelsetup.Setup(context.Background(), otelsetup.Config{
+		ServiceName: "gopheragent-demo",
+		Insecure:    true,
+	})
+	if err != nil {
+		log.Printf("OpenTelemetry disabled: %v", err)
+		return nil
+	}
+	myAgentApp.OnEvent(telemetry.NewOTelHandler(tel.Tracer))
+	log.Printf("OpenTelemetry export enabled (endpoint=%s)", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	return shutdown
+}
+
 func main() {
 	loadEnvFiles()
 	initApp()
+	if shutdown := setupTelemetry(); shutdown != nil {
+		defer func() { _ = shutdown(context.Background()) }()
+	}
 	http.Handle("/", http.FileServer(http.Dir("./frontend")))
 	http.HandleFunc("/api/chat", ChatHandler)
 	http.HandleFunc("/api/approve", ApproveHandler)

@@ -159,7 +159,14 @@ Full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent).
 - Session TTL + auto cleanup, SSRF-hardened HTTP tools
 
 **Ops**
-- OpenTelemetry tracing, Prometheus via `BudgetTracker.MetricsHandler()`
+- OpenTelemetry traces + metrics: one trace per turn (root `agent.run` span)
+  nesting iteration → LLM → tool spans with latency and GenAI-convention token
+  metrics — enable with `agent.WithTracer` / `agent.WithMeter`, the `otelllm`
+  provider decorator, and the `oteltools` middleware. Filter a reported
+  conversation by the `gopheragent.session.key` span attribute. One-call OTLP
+  export via `telemetry/otelsetup.Setup`; the API-only core stays a no-op (zero
+  cost) until a provider is wired
+- Prometheus / OpenMetrics token usage via `agentmetrics.Handler(bt)`
 - Custom event sinks (`OnEvent`), tool middleware chain
 
 **Extensibility**
