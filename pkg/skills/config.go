@@ -31,9 +31,16 @@ const (
 	DefaultMaxResourceBytes int64 = 256 << 10
 	// DefaultMaxFilesPerSkill caps captured resource paths per skill.
 	DefaultMaxFilesPerSkill = 256
-	// DefaultMaxDepth caps directory descent below the FS root. Deep
-	// enough for skills nested a few groups down, shallow enough that a
-	// symlinked or generated tree cannot walk forever.
+	// DefaultMaxDepth caps directory descent. Deep enough for skills nested
+	// a few groups down, shallow enough that a generated or symlinked tree
+	// cannot be walked forever.
+	//
+	// It applies independently to the two descents: finding skill
+	// directories below the FS root, and collecting resource files below a
+	// skill. The budget deliberately restarts at each skill, so a skill
+	// nested near the limit still gets its references/ subtree instead of
+	// silently exposing no files. Worst-case absolute depth is therefore
+	// 2 x MaxDepth; MaxFilesPerSkill bounds the result either way.
 	DefaultMaxDepth = 8
 
 	// MaxNameLen and MaxDescriptionLen come from the Agent Skills spec.

@@ -156,6 +156,12 @@ func BuildFromYAMLBytesContext(ctx context.Context, data []byte, baseDir string,
 	return buildFromYAMLBytes(ctx, data, baseDir, catalog, llm, hook, sm)
 }
 
+// BuildFromConfigContext is BuildFromConfig with a context. See
+// BuildFromYAMLContext for when the context matters.
+func BuildFromConfigContext(ctx context.Context, config AgentConfig, baseDir string, catalog *GlobalCatalog, llm agent.LLMProvider, hook agent.Hook, sm agent.SessionManager) (*agent.AgentLoop, agent.SessionManager, AgentConfig, error) {
+	return buildFromConfig(ctx, config, baseDir, "<config>", catalog, llm, hook, sm)
+}
+
 // ParseYAMLConfigContext is ParseYAMLConfig with a context, for configs that
 // declare agent.skills.
 func ParseYAMLConfigContext(ctx context.Context, yamlPath string) (AgentConfig, error) {
@@ -164,6 +170,20 @@ func ParseYAMLConfigContext(ctx context.Context, yamlPath string) (AgentConfig, 
 		return config, err
 	}
 	config, _, err = resolvePrompt(ctx, config, filepath.Dir(yamlPath))
+	return config, err
+}
+
+// ParseYAMLBytesContext is ParseYAMLBytes with a context.
+//
+// This is the //go:embed route, so it is the one a config with agent.skills
+// is most likely to take: pass the directory the skill paths resolve against
+// as baseDir.
+func ParseYAMLBytesContext(ctx context.Context, data []byte, baseDir string) (AgentConfig, error) {
+	config, err := unmarshalYAMLBytes(data)
+	if err != nil {
+		return config, err
+	}
+	config, _, err = resolvePrompt(ctx, config, baseDir)
 	return config, err
 }
 
@@ -258,12 +278,17 @@ func readYAMLFile(yamlPath string) (AgentConfig, error) {
 // baseDir, when non-empty, is used to resolve a relative knowledge_base path.
 // Pass "" when the YAML has no knowledge_base or when knowledge_base is absolute.
 func ParseYAMLBytes(data []byte, baseDir string) (AgentConfig, error) {
+	return ParseYAMLBytesContext(context.Background(), data, baseDir)
+}
+
+// unmarshalYAMLBytes parses an in-memory config document. Shared by
+// ParseYAMLBytes and its context variant so both report identical errors.
+func unmarshalYAMLBytes(data []byte) (AgentConfig, error) {
 	var config AgentConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return config, fmt.Errorf("invalid YAML syntax in embedded bytes: %w", err)
 	}
-	config, _, err := resolvePrompt(context.Background(), config, baseDir)
-	return config, err
+	return config, nil
 }
 
 // resolvePrompt applies every system-prompt augmentation the config

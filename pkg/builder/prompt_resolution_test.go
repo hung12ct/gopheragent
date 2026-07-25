@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,4 +89,51 @@ agent:
 	if _, _, _, err := BuildFromYAMLBytes(doc, "", NewGlobalCatalog(), nil, nil); err == nil {
 		t.Fatal("BuildFromYAMLBytes should reject a relative path with no baseDir")
 	}
+}
+
+// Every entry point that can reach resolvePrompt must have a ctx-first
+// variant, since skill loading does filesystem I/O. The //go:embed route is
+// the easiest one to forget and the likeliest to carry a skills block.
+func TestContextVariantsProduceIdenticalPrompt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "kb/api.md", "# API\nUse POST /v1/chat.")
+	doc := []byte(`
+agent:
+  name: "Ctx Parity Agent"
+  system_prompt: "Base."
+  knowledge_base: "./kb"
+`)
+	writeFile(t, dir, "agent.yaml", string(doc))
+	yamlPath := filepath.Join(dir, "agent.yaml")
+	ctx := context.Background()
+
+	fromFile, err := ParseYAMLConfigContext(ctx, yamlPath)
+	if err != nil {
+		t.Fatalf("ParseYAMLConfigContext: %v", err)
+	}
+	fromBytes, err := ParseYAMLBytesContext(ctx, doc, dir)
+	if err != nil {
+		t.Fatalf("ParseYAMLBytesContext: %v", err)
+	}
+	if fromFile.Agent.SystemPrompt != fromBytes.Agent.SystemPrompt {
+		t.Fatalf("ctx variants diverged:\nfile:  %q\nbytes: %q",
+			fromFile.Agent.SystemPrompt, fromBytes.Agent.SystemPrompt)
+	}
+
+	_, _, fromConfig, err := BuildFromConfigContext(ctx, mustParse(t, doc), dir, NewGlobalCatalog(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildFromConfigContext: %v", err)
+	}
+	if fromConfig.Agent.SystemPrompt != fromFile.Agent.SystemPrompt {
+		t.Fatalf("BuildFromConfigContext diverged: %q", fromConfig.Agent.SystemPrompt)
+	}
+}
+
+func mustParse(t *testing.T, doc []byte) AgentConfig {
+	t.Helper()
+	cfg, err := unmarshalYAMLBytes(doc)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return cfg
 }

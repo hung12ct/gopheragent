@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -365,5 +366,42 @@ func TestFromFS_OSDirFSInterop(t *testing.T) {
 	content, truncated, err := set.File(context.Background(), "ondisk", "references/notes.md")
 	if err != nil || truncated || content != "notes" {
 		t.Fatalf("File over os.DirFS: %q %v %v", content, truncated, err)
+	}
+}
+
+// Rejection reasons must be classified by sentinel, not by words in a
+// message. Rewording an error should never silently reclassify a skip.
+func TestFromFS_OversizeClassifiedBySentinelNotWording(t *testing.T) {
+	fsys := fstest.MapFS{
+		// A name containing the old magic substring: if classification ever
+		// regresses to matching message text, this is where it goes wrong.
+		"exceeds-quota/SKILL.md": {Data: []byte(skillDoc("exceeds-quota", strings.Repeat("d", 400)))},
+	}
+	set := mustLoad(t, fsys, MaxSkillBytes(64))
+	skipped := set.Skipped()
+	if len(skipped) != 1 || skipped[0].Reason != SkipOversize {
+		t.Fatalf("want SkipOversize, got %+v", skipped)
+	}
+	if !errors.Is(skipped[0].Err, errOversize) {
+		t.Fatalf("oversize rejection must wrap the sentinel: %v", skipped[0].Err)
+	}
+}
+
+// MaxDepth restarts at each skill so a deeply-nested skill still exposes its
+// references/ subtree. Documented on DefaultMaxDepth; pinned here because the
+// alternative reading (absolute depth) would silently drop those files.
+func TestFromFS_DepthBudgetRestartsPerSkill(t *testing.T) {
+	fsys := fstest.MapFS{
+		"a/b/sk/SKILL.md":     {Data: []byte(skillDoc("sk", "Nested near the limit."))},
+		"a/b/sk/x/y/deep.md":  {Data: []byte("deep")},
+		"a/b/sk/x/y/z/w/f.md": {Data: []byte("past the per-skill budget")},
+	}
+	set := mustLoad(t, fsys, MaxDepth(3), TrustedSource())
+	sk, ok := set.Get("sk")
+	if !ok {
+		t.Fatalf("skill at depth 3 should load under MaxDepth(3); skipped=%+v", set.Skipped())
+	}
+	if len(sk.Files) != 1 || sk.Files[0] != "x/y/deep.md" {
+		t.Fatalf("want the within-budget file only, got %v", sk.Files)
 	}
 }

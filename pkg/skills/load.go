@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -15,6 +16,12 @@ import (
 // for "skill.md" with the same file, which would admit a skill whose name
 // the spec does not sanction.
 const skillFileName = "SKILL.md"
+
+// errOversize marks a SKILL.md that blew the size bound, so admit can
+// classify the rejection with errors.Is rather than by matching words in a
+// message. Classification that depends on error wording breaks silently the
+// first time someone rephrases the text.
+var errOversize = errors.New("skills: file exceeds size limit")
 
 // FromFS loads every skill in fsys.
 //
@@ -57,6 +64,10 @@ func FromFS(ctx context.Context, fsys fs.FS, opts ...Option) (*Set, error) {
 // is no fs.FS behind them for Set.File to read. A source that does have
 // resources should implement fs.FS and go through FromFS instead — that is
 // the case the io/fs abstraction exists to cover.
+//
+// Trust on each input Skill is ignored and replaced by the load option, so
+// one call cannot mix vouched and unvouched content. Load them separately
+// and combine with Merge when a source has both.
 func New(ctx context.Context, skills []Skill, opts ...Option) (*Set, error) {
 	l := &loader{cfg: newConfig(opts), byName: make(map[string]int)}
 	for _, s := range skills {
@@ -190,7 +201,7 @@ func (l *loader) admit(fsys fs.FS, dir string, entries []fs.DirEntry) {
 	body, err := l.readSkillFile(fsys, dir)
 	if err != nil {
 		reason := SkipUnreadable
-		if strings.Contains(err.Error(), "exceeds") {
+		if errors.Is(err, errOversize) {
 			reason = SkipOversize
 		}
 		l.skip(dir, name, reason, err)
@@ -257,7 +268,7 @@ func (l *loader) consider(s Skill) {
 func (l *loader) readSkillFile(fsys fs.FS, dir string) (string, error) {
 	p := path.Join(dir, skillFileName)
 	if info, err := fs.Stat(fsys, p); err == nil && info.Size() > l.cfg.maxSkillBytes {
-		return "", fmt.Errorf("skills: %s exceeds %d bytes", p, l.cfg.maxSkillBytes)
+		return "", fmt.Errorf("skills: %s is %d bytes: %w of %d", p, info.Size(), errOversize, l.cfg.maxSkillBytes)
 	}
 	f, err := fsys.Open(p)
 	if err != nil {
@@ -269,7 +280,7 @@ func (l *loader) readSkillFile(fsys fs.FS, dir string) (string, error) {
 		return "", fmt.Errorf("skills: read %s: %w", p, err)
 	}
 	if int64(len(data)) > l.cfg.maxSkillBytes {
-		return "", fmt.Errorf("skills: %s exceeds %d bytes", p, l.cfg.maxSkillBytes)
+		return "", fmt.Errorf("skills: %s: %w of %d", p, errOversize, l.cfg.maxSkillBytes)
 	}
 	return string(data), nil
 }
