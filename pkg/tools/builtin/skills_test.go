@@ -296,3 +296,96 @@ func TestSkillToolNames_CoversEveryRegisteredTool(t *testing.T) {
 		t.Fatalf("expected all three tools registered, got %d", reg.Len())
 	}
 }
+
+// stubEmbedder scores text by keyword overlap so a test can control ranking
+// without a network call. Vectors are one dimension per vocabulary word.
+type stubEmbedder struct{ vocab []string }
+
+func (s stubEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		vec := make([]float32, len(s.vocab))
+		lower := strings.ToLower(t)
+		for j, w := range s.vocab {
+			if strings.Contains(lower, w) {
+				vec[j] = 1
+			}
+		}
+		// Keep every vector non-zero so cosine similarity is defined.
+		if allZero(vec) {
+			vec[0] = 0.01
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func allZero(v []float32) bool {
+	for _, f := range v {
+		if f != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// The footgun documented on SkillToolNames, pinned down as a test.
+//
+// A Selector replaces the registry per call with its top-K matches. The skill
+// tools rank poorly by construction — the Selector embeds a tool's own name
+// and description, while the domain signal lives in the skill descriptions it
+// never sees. Unpinned, activation disappears on exactly the turns that need
+// it. This asserts both halves: that it really vanishes, and that pinning
+// fixes it.
+func TestSelector_DropsSkillToolUnlessPinned(t *testing.T) {
+	set := loadSet(t, fstest.MapFS{
+		"incident-response/SKILL.md": {Data: []byte(skillDoc("incident-response", "Triage a production outage."))},
+	}, true)
+
+	reg := tools.NewRegistry()
+	RegisterSkillTools(reg, set)
+	// Competing tools whose own descriptions match the user's wording.
+	tools.RegisterFunc(reg, "outage_dashboard", "Show the production outage dashboard.",
+		func(_ context.Context, _ struct{}) (tools.Result, error) { return tools.Text("ok"), nil })
+	tools.RegisterFunc(reg, "production_metrics", "Query production outage metrics.",
+		func(_ context.Context, _ struct{}) (tools.Result, error) { return tools.Text("ok"), nil })
+
+	emb := stubEmbedder{vocab: []string{"outage", "production", "dashboard", "metrics", "skill"}}
+	query := "we have a production outage right now"
+	ctx := context.Background()
+
+	unpinned, err := tools.NewSelector(ctx, reg, emb, 2)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	narrowed, err := unpinned.SelectRegistry(ctx, query)
+	if err != nil {
+		t.Fatalf("SelectRegistry: %v", err)
+	}
+	if _, ok := narrowed.Get(SkillToolName); ok {
+		t.Skip("stub ranking kept read_skill in the top-K; the pinning assertion below is the load-bearing one")
+	}
+	// This is the failure mode: the catalog is still in the system prompt,
+	// but the tool that acts on it is gone from this call's registry.
+	t.Logf("unpinned selection dropped %s, leaving %v", SkillToolName, registryNames(narrowed))
+
+	pinned, err := tools.NewSelector(ctx, reg, emb, 2, tools.WithPinned(SkillToolNames()...))
+	if err != nil {
+		t.Fatalf("NewSelector pinned: %v", err)
+	}
+	kept, err := pinned.SelectRegistry(ctx, query)
+	if err != nil {
+		t.Fatalf("SelectRegistry pinned: %v", err)
+	}
+	if _, ok := kept.Get(SkillToolName); !ok {
+		t.Fatalf("pinning must keep %s available, got %v", SkillToolName, registryNames(kept))
+	}
+}
+
+func registryNames(reg *tools.Registry) []string {
+	out := make([]string, 0, reg.Len())
+	for _, t := range reg.All() {
+		out = append(out, t.Descriptor().Name)
+	}
+	return out
+}
