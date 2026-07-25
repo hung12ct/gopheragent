@@ -60,6 +60,7 @@ func WithMeter(m metric.Meter) Option {
 			semconv.MetricIterationDuration,
 			metric.WithUnit("s"),
 			metric.WithDescription("Duration of a single ReAct iteration."),
+			metric.WithExplicitBucketBoundaries(semconv.DurationBucketsSeconds...),
 		); err == nil {
 			al.iterHist = h
 		}

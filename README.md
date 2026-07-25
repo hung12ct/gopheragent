@@ -162,7 +162,8 @@ Full API on [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent).
 - OpenTelemetry traces + metrics: one trace per turn (root `agent.run` span)
   nesting iteration → LLM → tool spans with latency and GenAI-convention token
   metrics — enable with `agent.WithTracer` / `agent.WithMeter`, the `otelllm`
-  provider decorator, and the `oteltools` middleware. Filter a reported
+  provider decorator, and the `oteltools` middleware. YAML-built agents wire the
+  same via `loop.Configure(...)` + `catalog.Use(...)`. Filter a reported
   conversation by the `gopheragent.session.key` span attribute. One-call OTLP
   export via `telemetry/otelsetup.Setup`; the API-only core stays a no-op (zero
   cost) until a provider is wired

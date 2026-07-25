@@ -12,6 +12,7 @@ import (
 type GlobalCatalog struct {
 	mu             sync.RWMutex
 	availableTools map[string]tools.Tool
+	middlewares    []tools.Middleware
 }
 
 // NewGlobalCatalog initializes a fresh Tool Marketplace.
@@ -26,6 +27,29 @@ func (c *GlobalCatalog) Register(tool tools.Tool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.availableTools[tool.Descriptor().Name] = tool
+}
+
+// Use registers middleware applied to every tool the catalog hands to a built
+// agent, in registration order (outermost first, per tools.Chain). Call before
+// building. The common use is wrapping all tools with oteltools.Instrument so a
+// YAML-built agent gets per-tool spans and latency metrics without editing each
+// tool. Middleware must preserve Descriptor().Name so the registry keys stay
+// stable.
+func (c *GlobalCatalog) Use(mw ...tools.Middleware) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.middlewares = append(c.middlewares, mw...)
+}
+
+// wrap applies the catalog's middleware chain to tool. It returns tool unchanged
+// when no middleware is registered, so the no-middleware path is zero-overhead.
+func (c *GlobalCatalog) wrap(tool tools.Tool) tools.Tool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.middlewares) == 0 {
+		return tool
+	}
+	return tools.Chain(tool, c.middlewares...)
 }
 
 // Get retrieves a tool by its exact string name defined in the YAML flow file.

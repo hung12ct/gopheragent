@@ -66,6 +66,7 @@ func Instrument(opts ...Option) tools.Middleware {
 			semconv.MetricToolDuration,
 			metric.WithUnit("s"),
 			metric.WithDescription("Duration of tool executions."),
+			metric.WithExplicitBucketBoundaries(semconv.DurationBucketsSeconds...),
 		)
 		errCounter, _ = cfg.meter.Int64Counter(
 			semconv.MetricToolErrors,
