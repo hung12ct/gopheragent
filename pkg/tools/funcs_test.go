@@ -86,3 +86,63 @@ func TestRegisterFunc_PropagatesFnError(t *testing.T) {
 		t.Fatalf("expected ctx.Canceled, got %v", err)
 	}
 }
+
+func TestRegisterFunc_SchemaOverrideReplacesReflection(t *testing.T) {
+	reg := NewRegistry()
+	// The enum is runtime data — exactly the case struct tags cannot express.
+	discovered := []string{"beta", "alpha"}
+	RegisterFunc(reg, "pick", "Pick a discovered name",
+		func(_ context.Context, a lookupArgs) (Result, error) {
+			return Text("picked " + a.UserID), nil
+		},
+		FuncToolOpts{Schema: &ToolSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"user_id": map[string]any{"type": "string", "enum": discovered},
+			},
+			Required: []string{"user_id"},
+		}})
+
+	tool, ok := reg.Get("pick")
+	if !ok {
+		t.Fatal("tool not registered")
+	}
+	params := tool.Descriptor().Parameters
+	if _, hasLimit := params.Properties["limit"]; hasLimit {
+		t.Fatalf("override should replace reflection, not merge: %+v", params)
+	}
+	prop, ok := params.Properties["user_id"].(map[string]any)
+	if !ok {
+		t.Fatalf("user_id property missing or wrong shape: %+v", params.Properties)
+	}
+	enum, ok := prop["enum"].([]string)
+	if !ok || len(enum) != 2 || enum[0] != "beta" {
+		t.Fatalf("runtime enum did not survive into descriptor: %+v", prop)
+	}
+
+	// T still decodes argsJSON — the override only shapes what the LLM sees.
+	res, err := tool.Execute(context.Background(), `{"user_id":"alpha"}`)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Text != "picked alpha" {
+		t.Fatalf("unexpected result: %q", res.Text)
+	}
+}
+
+func TestRegisterFunc_NilSchemaUsesReflection(t *testing.T) {
+	reg := NewRegistry()
+	RegisterFunc(reg, "reflected", "Reflected schema",
+		func(_ context.Context, a lookupArgs) (Result, error) { return Text("ok"), nil },
+		FuncToolOpts{Cacheable: true}) // Schema left nil
+
+	tool, _ := reg.Get("reflected")
+	got := tool.Descriptor().Parameters
+	want := SchemaFor[lookupArgs]()
+	if got.Type != want.Type || len(got.Properties) != len(want.Properties) {
+		t.Fatalf("nil override changed reflected schema: got %+v want %+v", got, want)
+	}
+	if _, hasLimit := got.Properties["limit"]; !hasLimit {
+		t.Fatalf("reflected schema lost a field: %+v", got.Properties)
+	}
+}

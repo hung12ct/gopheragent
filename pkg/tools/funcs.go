@@ -15,12 +15,24 @@ type FuncToolOpts struct {
 	Cacheable            bool
 	Inline               bool
 	Display              ToolDisplay
+
+	// Schema, when non-nil, replaces the reflected SchemaFor[T] output.
+	// Reflection reads enum values from struct tags, which are
+	// compile-time constants — so a tool whose valid parameter values are
+	// only known at runtime (names discovered from disk, IDs read from a
+	// database) cannot express them any other way.
+	//
+	// T still decodes argsJSON, so the override must stay structurally
+	// compatible with T: a property the override declares but T lacks is
+	// dropped silently on unmarshal.
+	Schema *ToolSchema
 }
 
 // RegisterFunc registers a tool built from a strongly-typed function,
 // dropping the per-tool struct/Descriptor/Execute boilerplate. The
-// parameter schema is generated via SchemaFor[T]; argsJSON arriving
-// from the LLM is unmarshalled into T before fn runs.
+// parameter schema is generated via SchemaFor[T] unless FuncToolOpts.Schema
+// overrides it; argsJSON arriving from the LLM is unmarshalled into T
+// before fn runs.
 //
 // Example:
 //
@@ -50,11 +62,15 @@ func RegisterFunc[T any](reg Registerer, name, description string, fn func(ctx c
 	if o.Display == (ToolDisplay{}) {
 		o.Display = DefaultDisplay(name, description)
 	}
+	params := SchemaFor[T]()
+	if o.Schema != nil {
+		params = *o.Schema
+	}
 	reg.Register(&funcTool[T]{
 		desc: ToolDescriptor{
 			Name:                 name,
 			Description:          description,
-			Parameters:           SchemaFor[T](),
+			Parameters:           params,
 			RequiresConfirmation: o.RequiresConfirmation,
 			Cacheable:            o.Cacheable,
 			Inline:               o.Inline,
