@@ -176,7 +176,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 
 	for resp, err := range iter {
 		if err != nil {
-			return agent.LLMResult{}, err
+			return agent.LLMResult{}, classifyErr(err)
 		}
 
 		if resp == nil {

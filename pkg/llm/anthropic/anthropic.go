@@ -227,7 +227,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 			// raise MaxTokens, and ship whatever's intact. Partial tool_use
 			// blocks are dropped during extraction below.
 			if len(accumulated.Content) == 0 {
-				return agent.LLMResult{}, fmt.Errorf("anthropic accumulate error: %w", err)
+				return agent.LLMResult{}, fmt.Errorf("anthropic accumulate error: %w", classifyErr(err))
 			}
 			streamChan <- agent.Event(agent.LimitExhaustedEvent{
 				Kind:   agent.LimitKindProviderMaxTokens,
@@ -269,7 +269,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	}
 
 	if !truncated && stream.Err() != nil {
-		return agent.LLMResult{}, fmt.Errorf("anthropic stream error: %w", stream.Err())
+		return agent.LLMResult{}, fmt.Errorf("anthropic stream error: %w", classifyErr(stream.Err()))
 	}
 
 	// Surface the per-call MaxTokens truncation as a typed cap event so

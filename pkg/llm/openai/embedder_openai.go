@@ -51,7 +51,7 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 		Model: e.model,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("openai: Embedder: create embeddings: %w", err)
+		return nil, fmt.Errorf("openai: Embedder: create embeddings: %w", classifyErr(err))
 	}
 	if len(resp.Data) != len(texts) {
 		return nil, fmt.Errorf("openai: Embedder: got %d embeddings for %d inputs", len(resp.Data), len(texts))

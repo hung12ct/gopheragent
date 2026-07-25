@@ -52,7 +52,7 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 		TaskType: "RETRIEVAL_DOCUMENT",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("gemini: Embedder: embed content: %w", err)
+		return nil, fmt.Errorf("gemini: Embedder: embed content: %w", classifyErr(err))
 	}
 	if len(resp.Embeddings) != len(texts) {
 		return nil, fmt.Errorf("gemini: Embedder: got %d embeddings for %d inputs", len(resp.Embeddings), len(texts))
