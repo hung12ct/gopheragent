@@ -117,7 +117,10 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		return
 	}
 
-	if desc.RequiresConfirmation && permDecision != PermissionAllow {
+	// PermissionConfirm escalates a tool that would otherwise run ungated;
+	// RequiresConfirmation covers tools that always prompt. Allow bypasses
+	// both.
+	if (desc.RequiresConfirmation || permDecision == PermissionConfirm) && permDecision != PermissionAllow {
 		outcome := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
 		if outcome != hitlApproved {
 			var msg string
