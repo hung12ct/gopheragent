@@ -221,3 +221,75 @@ skills. When strict parsing fails, a fallback scanner recovers `name` and
 `description` — and nothing else. A file whose YAML does not parse is precisely
 where a privilege grant must not be read out of half-understood text.
 `Skill.Lenient` reports when that happened.
+
+## Measuring whether it actually works
+
+Everything above is mechanical: the catalog renders, the tool returns a body.
+None of it proves the thing the feature rests on — that a real model reaches
+for the right skill from its description alone. That is a property of your
+descriptions, not of this package, so it has to be measured rather than
+assumed.
+
+`pkg/eval` already does this. Activation is a trajectory assertion:
+
+```go
+// should activate, and specifically this one
+eval.Trajectory(eval.MatchSubset, []eval.ExpectedCall{
+    {Name: "read_skill", Args: eval.ArgsSubset(map[string]any{
+        "name": "incident-response",
+    })},
+})
+
+// should activate nothing — MatchSuperset with an empty expected set means
+// every actual call must match something expected, and nothing is
+eval.Trajectory(eval.MatchSuperset, nil)
+```
+
+**Test both directions.** A model that never activates makes the feature
+useless, but a model that activates for *everything* is worse: it pays a
+body's tokens on every turn and inverts the saving. Include trivia and
+greetings that should load nothing, and near-misses — a question that
+mentions deploys without being an incident.
+
+**Read pass^k, not pass@k.** With `Trials: 3`, pass@k means one lucky trial
+out of three. pass^k means every trial activated. The gap between them is the
+signal:
+
+| Result | What it means |
+|---|---|
+| pass^k | the description reliably carries the decision |
+| pass@k but not pass^k | the description is ambiguous — rewrite it |
+| neither | the description is not doing its job at all |
+
+`TaskReport.PassAllK` is computed for every task, so you can name the
+inconsistent ones and iterate on their wording.
+
+A worked suite lives in `examples/agent_eval/skills_eval_test.go`. It skips
+without `OPENAI_API_KEY` so CI stays green:
+
+```bash
+OPENAI_API_KEY=... go test ./examples/agent_eval/ -run TestSkillsActivation -v
+```
+
+Measured against `gpt-4o-mini` with the four example skills: **8/8 tasks at
+pass^k over 3 trials each** — every positive case activated the right skill on
+every trial, and every negative case activated nothing.
+
+One caveat when you build your own suite: confirm the graders can fail before
+trusting a green result. Assert the *wrong* skill, or assert no-activation on
+a case that does activate, and check those fail. A grader that passes
+vacuously proves nothing.
+
+### What it costs
+
+For those four skills:
+
+```
+catalog (tier 1):  1072 chars  ~268 tokens   paid every turn
+all bodies:        3299 chars  ~824 tokens   the old all-or-nothing cost
+largest body:      1020 chars  ~255 tokens   what one activation costs
+```
+
+A 68% per-turn reduction at four skills, and the gap widens with each skill
+added — the catalog grows by one description while the alternative grows by a
+whole body.
