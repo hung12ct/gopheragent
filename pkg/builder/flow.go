@@ -292,7 +292,7 @@ func buildFromConfig(config AgentConfig, baseDir string, sourceLabel string, cat
 	registry := tools.NewRegistry()
 	for _, toolName := range config.Agent.ToolsRequired {
 		tool, _ := catalog.Get(toolName) // already validated above
-		registry.Register(tool)
+		registry.Register(catalog.wrap(tool))
 	}
 
 	if llm == nil {
