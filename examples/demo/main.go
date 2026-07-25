@@ -20,10 +20,15 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/llm/anthropic"
 	"github.com/hung12ct/gopheragent/pkg/llm/gemini"
 	"github.com/hung12ct/gopheragent/pkg/llm/openai"
-	"github.com/hung12ct/gopheragent/pkg/telemetry"
+	"github.com/hung12ct/gopheragent/pkg/telemetry/otelllm"
 	"github.com/hung12ct/gopheragent/pkg/telemetry/otelsetup"
+	"github.com/hung12ct/gopheragent/pkg/telemetry/oteltools"
 	"github.com/hung12ct/gopheragent/pkg/tools/builtin"
 )
+
+// telProviders holds the OTel Tracer/Meter when export is enabled; nil disables
+// all demo instrumentation.
+var telProviders *otelsetup.Providers
 
 var myAgentApp *agent.AgentLoop
 
@@ -61,29 +66,43 @@ func loadEnvFiles() {
 	}
 }
 
+// instrumentLLM wraps p with the OTel decorator when telemetry is enabled,
+// tagging spans/metrics with the vendor and model. A no-op otherwise.
+func instrumentLLM(p agent.LLMProvider, system, model string) agent.LLMProvider {
+	if telProviders == nil {
+		return p
+	}
+	return otelllm.NewProvider(p,
+		otelllm.WithSystem(system), otelllm.WithModel(model),
+		otelllm.WithTracer(telProviders.Tracer), otelllm.WithMeter(telProviders.Meter))
+}
+
 func buildProvider() agent.LLMProvider {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER")))
 	log.Printf("LLM_PROVIDER=%q", provider)
 	switch provider {
 	case "openai":
-		p, err := openai.New("", strings.TrimSpace(os.Getenv("OPENAI_MODEL")))
+		model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+		p, err := openai.New("", model)
 		if err == nil {
 			log.Printf("Using OpenAI provider")
-			return p
+			return instrumentLLM(p, "openai", model)
 		}
 		log.Printf("Warning: OpenAI provider init failed: %v", err)
 	case "anthropic", "claude":
-		p, err := anthropic.New("", strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
+		model := strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL"))
+		p, err := anthropic.New("", model)
 		if err == nil {
 			log.Printf("Using Anthropic provider")
-			return p
+			return instrumentLLM(p, "anthropic", model)
 		}
 		log.Printf("Warning: Anthropic provider init failed: %v", err)
 	case "gemini":
-		p, err := gemini.New("", strings.TrimSpace(os.Getenv("GEMINI_MODEL")))
+		model := strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
+		p, err := gemini.New("", model)
 		if err == nil {
 			log.Printf("Using Gemini provider")
-			return p
+			return instrumentLLM(p, "gemini", model)
 		}
 		log.Printf("Warning: Gemini provider init failed: %v", err)
 	}
@@ -349,6 +368,14 @@ func getStream(sessionKey string) chan<- agent.StreamEvent {
 func initApp() {
 	catalog := builder.NewGlobalCatalog()
 
+	// Instrument every catalog tool with per-Execute spans + latency metrics.
+	// Must run before the loop is built so tools are wrapped at registration.
+	if telProviders != nil {
+		catalog.Use(oteltools.Instrument(
+			oteltools.WithTracer(telProviders.Tracer),
+			oteltools.WithMeter(telProviders.Meter)))
+	}
+
 	// Web tools — Register* helpers use tools.RegisterFunc internally
 	// so the catalog gets a typed-args funcTool without the per-tool
 	// struct boilerplate.
@@ -414,6 +441,12 @@ func initApp() {
 	loop.ConfirmHITL = buildHITL()
 	loop.ConfirmPlan = buildConfirmPlan()
 	planModeDefault = os.Getenv("PLAN_MODE") == "true"
+
+	// Open a run/iteration span per turn so LLM (via the decorated provider) and
+	// tool (via catalog middleware) spans nest into one trace per conversation.
+	if telProviders != nil {
+		loop.Configure(agent.WithTracer(telProviders.Tracer), agent.WithMeter(telProviders.Meter))
+	}
 
 	myAgentApp = loop
 	log.Printf("Demo loaded: %s", yamlPath)
@@ -552,11 +585,9 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 // setupTelemetry wires OpenTelemetry OTLP export when OTEL_EXPORTER_OTLP_ENDPOINT
 // is set, and attaches the lightweight per-iteration span bridge to the loop.
 // Returns a shutdown func to flush exporters, or nil when telemetry is disabled.
-//
-// This demo uses the YAML builder, so it takes the zero-config bridge path. Apps
-// that construct the loop with agent.New can instead pass agent.WithTracer /
-// agent.WithMeter and wrap the provider with otelllm.NewProvider plus the tools
-// with oteltools.Instrument for nested LLM and tool spans.
+// It sets telProviders; the rest of the wiring (provider decorator, catalog tool
+// middleware, loop.Configure) reads that global so a YAML-built agent still gets
+// fully nested run → iteration → LLM → tool spans.
 func setupTelemetry() func(context.Context) error {
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
 		return nil
@@ -569,17 +600,20 @@ func setupTelemetry() func(context.Context) error {
 		log.Printf("OpenTelemetry disabled: %v", err)
 		return nil
 	}
-	myAgentApp.OnEvent(telemetry.NewOTelHandler(tel.Tracer))
+	telProviders = tel
 	log.Printf("OpenTelemetry export enabled (endpoint=%s)", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	return shutdown
 }
 
 func main() {
 	loadEnvFiles()
-	initApp()
-	if shutdown := setupTelemetry(); shutdown != nil {
+	// Set up telemetry before initApp so buildProvider, the tool catalog, and the
+	// loop can all be instrumented as they are constructed.
+	shutdown := setupTelemetry()
+	if shutdown != nil {
 		defer func() { _ = shutdown(context.Background()) }()
 	}
+	initApp()
 	http.Handle("/", http.FileServer(http.Dir("./frontend")))
 	http.HandleFunc("/api/chat", ChatHandler)
 	http.HandleFunc("/api/approve", ApproveHandler)
