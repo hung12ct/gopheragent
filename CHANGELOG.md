@@ -2,6 +2,26 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.37.0] — 2026-07-25
+
+### Added
+
+- **`agent.ErrLLMAuth` — provider authentication and configuration failures are now distinguishable from transient ones.** A rejected API key surfaced as `ErrLLMFailure`, the same bucket as a genuinely flaky backend, so the two demanded opposite responses but looked identical. A generation failure is transient and worth retrying; an auth failure is deterministic, so every retry fails the same way — draining per-run call and spend budgets against attempts that never had a chance, and reporting a configuration problem as an unstable service. Each provider classifies its own terminal responses (HTTP 401 and 403 across Anthropic, OpenAI, and Gemini/Vertex; OpenAI additionally falls back to the error `code` — `invalid_api_key`, `account_deactivated` — because OpenAI-compatible backends frequently omit a usable HTTP status, and misreading a real auth failure as transient is the exact failure this prevents). 403 is included alongside 401 deliberately: a key that authenticates but lacks access to the model, or a Vertex project missing its API enablement, is just as deterministic as a bad key. Classification lives in each provider subpackage so `pkg/agent` still links no vendor SDK — consumers route with `errors.Is(err, agent.ErrLLMAuth)` and import nothing new. Rate limits and server errors stay on the retryable side. (`pkg/agent/errors.go`, `pkg/llm/anthropic`, `pkg/llm/openai`, `pkg/llm/gemini`)
+- **`agent.PermissionConfirm` and `PermissionRuleSet.AddConfirm` — confirmation is now per-argument, not per-tool.** `RequiresConfirmation` is a static field on `ToolDescriptor`, and the gate consulted it before the policy decision, so a `PermissionChecker` could only ever *restrict* a tool that already prompted — never *escalate* one that did not. A tool that is routine for most inputs and dangerous for a few had to be registered twice, under two names, purely to attach a gate to the dangerous subset. The new decision forces the HITL gate for a matching call regardless of the descriptor. Precedence is Deny, then Allow, then Confirm, so a broad Confirm can be narrowed by a specific Allow rather than being all-or-nothing:
+
+  ```go
+  rules.AddConfirm("write_file")                   // gate every write
+  rules.AddAllow(`write_file(*"/tmp/*"*)`)         // except scratch space
+  rules.AddDeny(`write_file(*"/etc/shadow"*)`)     // never this one
+  ```
+
+  Existing `Allow` / `Deny` / `Prompt` behavior is unchanged. (`pkg/agent/permissions.go`, `pkg/agent/loop_execute.go`)
+
+### Fixed
+
+- **`tools.Registry` raced on its debug-wrapper cache.** `Get` and `All` built logging wrappers lazily while holding only a read lock. An `RLock` is shared rather than exclusive, so two concurrent lookups in debug mode raced on the same map and could trip a concurrent map write — a runtime panic, not merely a race-detector warning. It was reachable in ordinary operation because the loop dispatches tools in parallel, and debug mode is precisely what an operator enables to investigate that. Wrappers are now built in `Register`, `EnableDebug`, and `Clone`, where the write lock is already held, making the read paths pure reads and removing a first-call latency spike along the way. (`pkg/tools/tool.go`)
+- **`Registry.Clone` silently dropped debug logging.** The clone copied the debug flag and logger but never the wrapper cache, so a cloned registry reported itself as being in debug mode while emitting nothing. Wrappers are now rebuilt for the clone. (`pkg/tools/tool.go`)
+
 ## [v0.36.0] — 2026-07-25
 
 ### Added
@@ -544,6 +564,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.37.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.37.0
 [v0.36.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.36.0
 [v0.35.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.35.0
 [v0.34.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.34.0
