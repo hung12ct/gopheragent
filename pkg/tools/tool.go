@@ -64,6 +64,22 @@ type Result struct {
 	Degraded   *Degradation
 }
 
+// String returns the result's model-facing text, so a Result formats
+// sensibly with %s / %q / %v instead of dumping a struct with a raw
+// pointer in it.
+//
+// Load-bearing beyond convenience: without a String method, `go vet`'s
+// printf check rejects `%s`/`%q` on a Result because of the *Degradation
+// field, and that failure lands in adopters' builds — including callers
+// who never touch the degradation feature. Do not remove it without
+// re-checking `go vet` in a module that only consumes this package.
+//
+// Deliberately renders Text alone. Structured, Parts, and Degraded are
+// separate channels with their own consumers; folding them in here would
+// make a debug line's output depend on which of them a tool happened to
+// populate.
+func (r Result) String() string { return r.Text }
+
 // Degradation marks a tool call that half-succeeded: the expensive,
 // durable part of the work landed but the derived bookkeeping did not.
 // A tool that writes a file and then fails to update its index is the

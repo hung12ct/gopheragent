@@ -103,8 +103,14 @@ func (al *AgentLoop) installDegradationAccumulator(ctx context.Context, sessionK
 // Run's accumulator. No-op when called outside a Run that installed one
 // (sub-agent tools invoked directly in tests, for example).
 func recordDegradation(ctx context.Context, toolName string, d *tools.Degradation) {
+	// Check d first: the speculative path calls this on every successful
+	// execution, and the overwhelming majority pass nil. Testing the
+	// pointer before walking the ctx chain keeps the common case free.
+	if d == nil {
+		return
+	}
 	acc := degradedAccFromContext(ctx)
-	if acc == nil || d == nil {
+	if acc == nil {
 		return
 	}
 	acc.add(ToolDegradation{
