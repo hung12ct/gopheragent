@@ -48,7 +48,7 @@ func TestPruneContextMessages_ShortMessagesUntouched(t *testing.T) {
 		{Role: "user", Content: "hello"},
 		{Role: "tool", Content: "short result"},
 	}
-	pruned := pruneContextMessages(msgs, 1)
+	pruned, _ := pruneContextMessages(msgs, 1)
 	if pruned[2].Content != "short result" {
 		t.Fatal("short tool message should not be pruned")
 	}
@@ -61,7 +61,7 @@ func TestPruneContextMessages_SoftTrim(t *testing.T) {
 		{Role: "tool", Content: longContent},
 		{Role: "user", Content: "latest"},
 	}
-	pruned := pruneContextMessages(msgs, 1)
+	pruned, _ := pruneContextMessages(msgs, 1)
 	if len(pruned[1].Content) >= len(longContent) {
 		t.Fatal("expected soft trimmed content to be shorter")
 	}
@@ -77,7 +77,7 @@ func TestPruneContextMessages_OutlierGuard(t *testing.T) {
 		{Role: "tool", Content: hugeContent},
 		{Role: "user", Content: "latest"},
 	}
-	pruned := pruneContextMessages(msgs, 1)
+	pruned, _ := pruneContextMessages(msgs, 1)
 	if !strings.Contains(pruned[1].Content, "Outlier Payload Truncated") {
 		t.Fatal("expected outlier truncation")
 	}
@@ -90,7 +90,7 @@ func TestPruneContextMessages_ProtectsRecentMessages(t *testing.T) {
 		{Role: "tool", Content: longContent}, // protected (within last 3)
 		{Role: "user", Content: "latest"},
 	}
-	pruned := pruneContextMessages(msgs, 3) // protect all 3
+	pruned, _ := pruneContextMessages(msgs, 3) // protect all 3
 	if pruned[1].Content != longContent {
 		t.Fatal("protected message should not be pruned")
 	}
@@ -103,7 +103,7 @@ func TestPruneContextMessages_SystemAndUserNeverPruned(t *testing.T) {
 		{Role: "user", Content: longContent},
 		{Role: "assistant", Content: "short"},
 	}
-	pruned := pruneContextMessages(msgs, 1)
+	pruned, _ := pruneContextMessages(msgs, 1)
 	if pruned[0].Content != longContent {
 		t.Fatal("system message should never be pruned")
 	}
@@ -223,7 +223,7 @@ func TestPatchDanglingToolCalls_DanglingBeforeUserTurn(t *testing.T) {
 
 func TestTruncateToolArguments_ShortContent(t *testing.T) {
 	msgs := []history.Message{{Role: "tool", Content: "short"}}
-	got := truncateToolArguments(msgs)
+	got, _ := truncateToolArguments(msgs)
 	if got[0].Content != "short" {
 		t.Fatalf("short content should not be truncated, got %q", got[0].Content)
 	}
@@ -232,7 +232,7 @@ func TestTruncateToolArguments_ShortContent(t *testing.T) {
 func TestTruncateToolArguments_LongContent(t *testing.T) {
 	long := strings.Repeat("x", toolArgTruncateLen+500)
 	msgs := []history.Message{{Role: "tool", Content: long}}
-	got := truncateToolArguments(msgs)
+	got, _ := truncateToolArguments(msgs)
 	if len(got[0].Content) >= len(long) {
 		t.Fatalf("expected truncation, got len %d >= %d", len(got[0].Content), len(long))
 	}
@@ -248,7 +248,7 @@ func TestTruncateToolArguments_NonToolMessagesUntouched(t *testing.T) {
 		{Role: "assistant", Content: long},
 		{Role: "system", Content: long},
 	}
-	got := truncateToolArguments(msgs)
+	got, _ := truncateToolArguments(msgs)
 	for i, m := range got {
 		if m.Content != long {
 			t.Fatalf("non-tool message #%d should not be truncated", i)
@@ -260,7 +260,7 @@ func TestTruncateToolArguments_UTF8Safe(t *testing.T) {
 	// Each CJK char is 3 bytes but 1 rune. Make a content well over the limit.
 	cjk := strings.Repeat("漢字", toolArgTruncateLen)
 	msgs := []history.Message{{Role: "tool", Content: cjk}}
-	got := truncateToolArguments(msgs)
+	got, _ := truncateToolArguments(msgs)
 	// Result must be valid UTF-8 (no corruption from byte-level cut).
 	if !isValidUTF8(got[0].Content) {
 		t.Fatalf("truncation corrupted UTF-8: %q", got[0].Content)

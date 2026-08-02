@@ -18,4 +18,12 @@ const (
 	// budgetWarnRatio is the fraction of MaxTokenBudget at which
 	// aggressive context pruning kicks in (truncate tool arguments).
 	budgetWarnRatio = 0.85
+
+	// defaultProtectedEnds is how many trailing messages the routine
+	// depth prune leaves untouched on every LLM call.
+	defaultProtectedEnds = 3
+
+	// emergencyProtectedEnds is the shallower protection used once the
+	// estimate has blown past MaxTokenBudget outright.
+	emergencyProtectedEnds = 1
 )

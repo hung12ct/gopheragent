@@ -55,21 +55,29 @@ func runeSlice(s string, start, end int) string {
 // It performs a soft trim by cutting the middle of excessively long tool responses
 // but strictly protects the last 'protectedEnds' messages from any modification.
 // All slicing is rune-safe to avoid corrupting multi-byte UTF-8 (CJK, emoji).
-func pruneContextMessages(msgs []history.Message, protectedEnds int) []history.Message {
+//
+// The second return value records every message this call rewrote, in
+// index order, so enforceTokenBudget can turn the decision into a
+// ContextTraceEvent. It is nil when nothing was trimmed — the function
+// stays pure and allocates no trace on the healthy path.
+func pruneContextMessages(msgs []history.Message, protectedEnds int) ([]history.Message, []ContextRef) {
 	if len(msgs) == 0 {
-		return msgs
+		return msgs, nil
 	}
 
 	result := make([]history.Message, 0, len(msgs))
+	var changes []ContextRef
 
 	protectStartIdx := max(len(msgs)-protectedEnds, 0)
 
 	for i, msg := range msgs {
 		if (msg.Role == "tool" || msg.Role == "assistant") && i < protectStartIdx {
 			runeLen := utf8.RuneCountInString(msg.Content)
+			estBefore := len(msg.Content) / 4
 
 			if runeLen > outlierTrimThreshold {
 				msg.Content = fmt.Sprintf("\n[System: Outlier Payload Truncated] The tool returned %d characters which exceeds the safety threshold of %d. Payload was completely discarded to avoid context explosion. Retry with tighter parameters.\n", runeLen, outlierTrimThreshold)
+				changes = append(changes, contextRefFor(i, msg, ContextChangeOutlierDiscarded, estBefore, len(msg.Content)/4))
 				result = append(result, msg)
 				continue
 			}
@@ -80,12 +88,13 @@ func pruneContextMessages(msgs []history.Message, protectedEnds int) []history.M
 				omitted := runeLen - retentionHead - retentionTail
 
 				msg.Content = fmt.Sprintf("%s\n\n... [%d chars truncated] ...\n\n%s", head, omitted, tail)
+				changes = append(changes, contextRefFor(i, msg, ContextChangeSoftTrim, estBefore, len(msg.Content)/4))
 			}
 		}
 		result = append(result, msg)
 	}
 
-	return result
+	return result, changes
 }
 
 // hasDanglingToolCalls walks msgs once and returns true if any assistant
@@ -195,19 +204,25 @@ func patchDanglingToolCalls(msgs []history.Message) []history.Message {
 // truncateToolArguments forcefully truncates tool outputs to prevent context
 // window overflow when running tight on token budget. Non-tool messages pass
 // through unchanged. Truncation is rune-safe.
-func truncateToolArguments(msgs []history.Message) []history.Message {
+//
+// Like pruneContextMessages, the second return value names the messages
+// this call clipped and is nil when none were.
+func truncateToolArguments(msgs []history.Message) ([]history.Message, []ContextRef) {
 	if len(msgs) == 0 {
-		return msgs
+		return msgs, nil
 	}
 	result := make([]history.Message, 0, len(msgs))
-	for _, msg := range msgs {
+	var changes []ContextRef
+	for i, msg := range msgs {
 		if msg.Role == "tool" {
 			runeLen := utf8.RuneCountInString(msg.Content)
 			if runeLen > toolArgTruncateLen {
+				estBefore := len(msg.Content) / 4
 				msg.Content = runeSlice(msg.Content, 0, toolArgTruncateLen) + "\n... (output truncated by system to save tokens)"
+				changes = append(changes, contextRefFor(i, msg, ContextChangeArgsTruncated, estBefore, len(msg.Content)/4))
 			}
 		}
 		result = append(result, msg)
 	}
-	return result
+	return result, changes
 }

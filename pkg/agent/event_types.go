@@ -77,6 +77,10 @@ const (
 	// computed dollar cost under the configured PriceTable. Skipped
 	// when no PriceTable is configured (zero-cost when unused).
 	EventTypeRunCost StreamEventType = "run_cost"
+	// EventTypeContextTrace records what the pruner rewrote on the way
+	// into one LLM call. Emitted only when a prune actually changed
+	// something, so a turn whose context always fits stays silent.
+	EventTypeContextTrace StreamEventType = "context_trace"
 )
 
 // LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
@@ -381,6 +385,33 @@ type RunCostEvent struct {
 func (RunCostEvent) isEventPayload()            {}
 func (RunCostEvent) eventType() StreamEventType { return EventTypeRunCost }
 
+// ContextTraceEvent is the typed payload of EventTypeContextTrace. It is
+// the answer to "why did the agent forget what I told it earlier" —
+// context pruning runs before every LLM call and, without this, leaves no
+// artifact behind.
+//
+// Emitted once per LLM call, and only when the pruner actually rewrote a
+// message: a turn whose context comfortably fits produces no events at
+// all. Changes lists every rewritten message with its reason; the same
+// Index can appear twice when a message was both argument-truncated and
+// soft-trimmed in one pass.
+//
+// EstTokensBefore/After are whole-conversation estimates under the same
+// 4-chars/token heuristic MaxTokenBudget enforcement uses — good for
+// spotting how much a prune actually saved, not for billing.
+//
+// Iteration is the 0-indexed loop iteration the prune fed.
+type ContextTraceEvent struct {
+	Policy          ContextPolicy `json:"policy"`
+	Iteration       int           `json:"iteration"`
+	Changes         []ContextRef  `json:"changes"`
+	EstTokensBefore int           `json:"est_tokens_before"`
+	EstTokensAfter  int           `json:"est_tokens_after"`
+}
+
+func (ContextTraceEvent) isEventPayload()            {}
+func (ContextTraceEvent) eventType() StreamEventType { return EventTypeContextTrace }
+
 // HITLTimedOutEvent is the typed payload of EventTypeHITLTimedOut. Mirrors
 // HITLDeniedEvent and additionally carries the configured Timeout so a UI
 // can show "approval expired after 2m" without reaching back into agent
@@ -519,6 +550,10 @@ func decodePayload(t StreamEventType, raw []byte) EventPayload {
 		var p RunCostEvent
 		_ = json.Unmarshal(raw, &p)
 		return p
+	case EventTypeContextTrace:
+		var p ContextTraceEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	default:
 		return UnknownEvent{OriginalType: t, RawJSON: string(raw)}
 	}
@@ -553,6 +588,7 @@ type EventVisitor interface {
 	VisitMemoryLoaded(MemoryLoadedEvent)
 	VisitMemoryConsolidated(MemoryConsolidatedEvent)
 	VisitRunCost(RunCostEvent)
+	VisitContextTrace(ContextTraceEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -602,6 +638,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitMemoryConsolidated(p)
 	case RunCostEvent:
 		v.VisitRunCost(p)
+	case ContextTraceEvent:
+		v.VisitContextTrace(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	default:

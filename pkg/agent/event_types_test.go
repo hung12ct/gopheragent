@@ -171,8 +171,9 @@ func (r *recordingVisitor) VisitMemoryLoaded(MemoryLoadedEvent)     { r.visited 
 func (r *recordingVisitor) VisitMemoryConsolidated(MemoryConsolidatedEvent) {
 	r.visited = "memory_consolidated"
 }
-func (r *recordingVisitor) VisitRunCost(RunCostEvent) { r.visited = "run_cost" }
-func (r *recordingVisitor) VisitUnknown(UnknownEvent) { r.visited = "unknown" }
+func (r *recordingVisitor) VisitRunCost(RunCostEvent)           { r.visited = "run_cost" }
+func (r *recordingVisitor) VisitContextTrace(ContextTraceEvent) { r.visited = "context_trace" }
+func (r *recordingVisitor) VisitUnknown(UnknownEvent)           { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 	cases := []struct {
