@@ -5,15 +5,18 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hung12ct/gopheragent/pkg/cache"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
 // halfSuccessTool writes its "artifact" fine and always fails the derived
 // bookkeeping, which is the exact shape DegradedEvent exists for.
 type halfSuccessTool struct {
-	name string
-	err  error
+	name      string
+	err       error
+	cacheable bool
 }
 
 func (t *halfSuccessTool) Descriptor() tools.ToolDescriptor {
@@ -21,6 +24,7 @@ func (t *halfSuccessTool) Descriptor() tools.ToolDescriptor {
 		Name:        t.name,
 		Description: "writes a report and updates the index",
 		Parameters:  tools.ToolSchema{Type: "object"},
+		Cacheable:   t.cacheable,
 	}
 }
 
@@ -174,4 +178,82 @@ func TestDegradedAcc_DrainIsIdempotent(t *testing.T) {
 	if got := acc.drain(); len(got) != 0 {
 		t.Fatalf("second drain = %+v, want empty so terminals cannot double-emit", got)
 	}
+}
+
+func TestDegraded_ParallelWaveCollectsEveryUnit(t *testing.T) {
+	// Three half-success tools in one wave exercise degradedAcc's mutex.
+	// Run under -race; an unguarded append would be caught here.
+	provider := &scriptProvider{turns: []LLMResult{
+		{ToolCalls: []PendingToolCall{
+			{ID: "c1", Name: "w1", ArgsJSON: `{}`},
+			{ID: "c2", Name: "w2", ArgsJSON: `{}`},
+			{ID: "c3", Name: "w3", ArgsJSON: `{}`},
+		}},
+		{Content: "all three ran"},
+	}}
+	loop, _ := setup(provider,
+		&halfSuccessTool{name: "w1"}, &halfSuccessTool{name: "w2"}, &halfSuccessTool{name: "w3"})
+
+	var units []ToolDegradation
+	for _, ev := range drainEvents(t, loop, "s1", "run all three") {
+		if p, ok := ev.Payload.(DegradedEvent); ok {
+			units = append(units, p.Units...)
+		}
+	}
+	if len(units) != 3 {
+		t.Fatalf("want 3 degradations from a 3-tool wave, got %d: %+v", len(units), units)
+	}
+	seen := map[string]bool{}
+	for _, u := range units {
+		seen[u.Tool] = true
+	}
+	for _, name := range []string{"w1", "w2", "w3"} {
+		if !seen[name] {
+			t.Fatalf("missing degradation from %s: %+v", name, units)
+		}
+	}
+}
+
+func TestDegraded_NotCachedSoAReplayCannotFakeSuccess(t *testing.T) {
+	// A cacheable tool that degrades must not populate the cache: a hit
+	// would replay the partial-success note to a later turn's model while
+	// the host sees no DegradedEvent at all.
+	tool := &halfSuccessTool{name: "write_report", cacheable: true}
+	newRun := func() (*AgentLoop, *cache.SearchCache) {
+		c := cache.NewSearchCache(10, time.Minute)
+		provider := &scriptProvider{turns: []LLMResult{
+			{ToolCalls: []PendingToolCall{{ID: "c1", Name: "write_report", ArgsJSON: `{}`}}},
+			{Content: "done"},
+		}}
+		loop, _ := setup(provider, tool)
+		loop.Cache = c
+		return loop, c
+	}
+
+	loop, shared := newRun()
+	if evs := degradedUnits(drainEvents(t, loop, "s1", "write it")); len(evs) != 1 {
+		t.Fatalf("first run: want 1 degradation, got %d", len(evs))
+	}
+
+	// Second run reuses the same cache; the tool must execute again.
+	provider2 := &scriptProvider{turns: []LLMResult{
+		{ToolCalls: []PendingToolCall{{ID: "c1", Name: "write_report", ArgsJSON: `{}`}}},
+		{Content: "done"},
+	}}
+	loop2, _ := setup(provider2, tool)
+	loop2.Cache = shared
+	if evs := degradedUnits(drainEvents(t, loop2, "s2", "write it")); len(evs) != 1 {
+		t.Fatalf("second run served a degraded result from cache — host saw %d degradations, want 1", len(evs))
+	}
+}
+
+// degradedUnits flattens every DegradedEvent payload in evs.
+func degradedUnits(evs []StreamEvent) []ToolDegradation {
+	var out []ToolDegradation
+	for _, ev := range evs {
+		if p, ok := ev.Payload.(DegradedEvent); ok {
+			out = append(out, p.Units...)
+		}
+	}
+	return out
 }

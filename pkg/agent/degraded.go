@@ -76,8 +76,15 @@ func degradedAccFromContext(ctx context.Context) *degradedAcc {
 
 // installDegradationAccumulator stashes a fresh accumulator on ctx and
 // returns it alongside a sweep callback that emits any degradation no
-// terminal path has claimed yet. Caller pattern mirrors the cost
-// accumulator:
+// terminal path has claimed yet.
+//
+// Unlike installRunCostAccumulator, which skips the ctx allocation
+// entirely when PriceTable is nil, this one always allocates: whether a
+// tool will degrade is not knowable up front and there is no config knob
+// to gate on. The cost is one small struct, one ctx value, and one
+// closure per Run — deliberate, not an oversight.
+//
+// Caller pattern:
 //
 //	ctx, sweepDegraded := al.installDegradationAccumulator(ctx, sessionKey, streamChan)
 //	defer sweepDegraded()
@@ -108,6 +115,26 @@ func recordDegradation(ctx context.Context, toolName string, d *tools.Degradatio
 	})
 }
 
+// applyDegradation annotates a half-succeeded tool result so the model
+// does not redo the half that landed, and files the report against the
+// Run's accumulator. Returns result unchanged when the call did not
+// degrade, or when it degraded into an outright error — there the error
+// is the story and the failure path already tells it.
+//
+// A speculated result is annotated but not filed: spawnSpeculative
+// reports at execution time instead, so a speculation the loop later
+// discards (retry reset, stream error) still reaches the host. Filing
+// again here would double-count it.
+func applyDegradation(ctx context.Context, toolName, result string, d *tools.Degradation, execErr error, speculated bool) string {
+	if d == nil || execErr != nil {
+		return result
+	}
+	if !speculated {
+		recordDegradation(ctx, toolName, d)
+	}
+	return result + degradationNote(d)
+}
+
 // emitDegradedIfAny drains the accumulator and emits a DegradedEvent when
 // anything degraded this Run. Called immediately before DoneEvent on the
 // final-answer path, and again from the Run-level defer to catch turns
@@ -132,9 +159,13 @@ func (al *AgentLoop) emitDegradedIfAny(ctx context.Context, sessionKey string, s
 // the work that landed, which is the failure mode a bare error would
 // cause.
 func degradationNote(d *tools.Degradation) string {
+	reason := d.Reason
+	if reason == "" {
+		reason = "the tool reported that part of its work did not complete"
+	}
 	var b strings.Builder
 	b.WriteString("\n\n[System: partial success] ")
-	b.WriteString(d.Reason)
+	b.WriteString(reason)
 	if len(d.Artifacts) > 0 {
 		b.WriteString("\nLanded and must NOT be retried or discarded: ")
 		b.WriteString(strings.Join(d.Artifacts, ", "))

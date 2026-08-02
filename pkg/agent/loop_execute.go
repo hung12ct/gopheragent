@@ -232,15 +232,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 			execErr = nil
 		}
 	}
-	// A degradation only means anything on a call that otherwise
-	// succeeded — once the hook chain turns the call into an error, the
-	// error is the story. The note goes to the model so it does not redo
-	// the half of the work that landed; the record goes to the host as a
-	// terminal DegradedEvent.
-	if degraded != nil && execErr == nil {
-		toolResult += degradationNote(degraded)
-		recordDegradation(ctx, tCall.Name, degraded)
-	}
+	toolResult = applyDegradation(ctx, tCall.Name, toolResult, degraded, execErr, speculated)
 
 	content := toolResult
 	isToolErr := execErr != nil
@@ -259,7 +251,12 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ContentEvent{Text: "\n\n" + content + "\n\n"}))
 	}
 
-	if cacheOK && !isToolErr {
+	// Never cache a degraded result. Its text carries a partial-success
+	// note naming artifacts that landed *this* run, and a cache hit
+	// short-circuits before recordDegradation — so replaying it would
+	// tell a later turn's model that work already exists while the host
+	// sees a clean turn with no DegradedEvent.
+	if cacheOK && !isToolErr && degraded == nil {
 		al.Cache.Put(cacheKey, content)
 	}
 
