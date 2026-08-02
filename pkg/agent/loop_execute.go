@@ -232,7 +232,7 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 			execErr = nil
 		}
 	}
-	toolResult = applyDegradation(ctx, tCall.Name, toolResult, degraded, execErr, speculated)
+	toolResult = applyDegradation(ctx, tCall.Name, toolResult, degraded, execErr)
 
 	content := toolResult
 	isToolErr := execErr != nil

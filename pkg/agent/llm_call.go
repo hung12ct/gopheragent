@@ -99,6 +99,10 @@ func (al *AgentLoop) callLLM(ctx context.Context, st *iterationState, msgs []his
 	st.specMu.Lock()
 	for k, sm := range st.specMap {
 		sm.cancel()
+		// This entry will never be awaited, so the wave executor's
+		// post-hook filing cannot happen for it. Report any degradation
+		// now — the tool already ran and its side effects are real.
+		reportOrphanedSpeculation(ctx, sm)
 		delete(st.specMap, k)
 	}
 	st.specMu.Unlock()

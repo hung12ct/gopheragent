@@ -22,6 +22,7 @@ import (
 // after the drainer signals completion — no concurrent map access.
 type speculativeExec struct {
 	id         string
+	name       string
 	doneCh     chan struct{}
 	cancel     context.CancelFunc
 	result     string
@@ -95,6 +96,7 @@ func (al *AgentLoop) spawnSpeculative(
 	specCtx, cancel := context.WithCancel(ctx)
 	sm := &speculativeExec{
 		id:     id,
+		name:   name,
 		doneCh: make(chan struct{}),
 		cancel: cancel,
 	}
@@ -125,17 +127,26 @@ func (al *AgentLoop) spawnSpeculative(
 		// for this call when it processes the result.
 		res, err := tool.Execute(specCtx, argsJSON)
 		sm.result, sm.structured, sm.err, sm.degraded = res.Text, res.Structured, err, res.Degraded
-		// File the degradation here rather than at await time: the tool
-		// really ran and really half-succeeded, so the state is degraded
-		// whether or not the loop ends up consuming this result. A retry
-		// reset or a stream error drops the entry without ever awaiting
-		// it, and losing the report there is exactly the double-write
-		// this feature exists to prevent. Uses ctx, not specCtx, so a
-		// cancelled speculation still reports.
-		if err == nil {
-			recordDegradation(ctx, name, res.Degraded)
-		}
 	}()
+}
+
+// reportOrphanedSpeculation files the degradation of a speculation that
+// completed but is being discarded without ever being awaited — a retry
+// reset or a stream error drops the entry, and the tool's side effects
+// are real regardless. Consumed speculations are NOT filed here; the
+// wave executor files those after OnToolResult has had its say, so the
+// two paths are mutually exclusive and cannot double-count.
+//
+// Non-blocking: a speculation still in flight has left no side effect to
+// report yet, and blocking here would stall the retry.
+func reportOrphanedSpeculation(ctx context.Context, sm *speculativeExec) {
+	select {
+	case <-sm.doneCh:
+		if sm.err == nil {
+			recordDegradation(ctx, sm.name, sm.degraded)
+		}
+	default:
+	}
 }
 
 // awaitSpeculative blocks until the speculative execution completes and

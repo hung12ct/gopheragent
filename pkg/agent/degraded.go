@@ -127,17 +127,19 @@ func recordDegradation(ctx context.Context, toolName string, d *tools.Degradatio
 // degrade, or when it degraded into an outright error — there the error
 // is the story and the failure path already tells it.
 //
-// A speculated result is annotated but not filed: spawnSpeculative
-// reports at execution time instead, so a speculation the loop later
-// discards (retry reset, stream error) still reaches the host. Filing
-// again here would double-count it.
-func applyDegradation(ctx context.Context, toolName, result string, d *tools.Degradation, execErr error, speculated bool) string {
+// This is the single filing point for every consumed tool result,
+// speculated or not, and it deliberately runs AFTER the OnToolResult
+// hook chain: that hook can recover an error into a success or convert a
+// success into an error, so deciding earlier would report a degradation
+// the loop then hands to the model as a hard failure, or drop one the
+// hook just recovered. The only other filer is
+// reportOrphanedSpeculation, which covers entries this path can never
+// see because they are discarded before being awaited.
+func applyDegradation(ctx context.Context, toolName, result string, d *tools.Degradation, execErr error) string {
 	if d == nil || execErr != nil {
 		return result
 	}
-	if !speculated {
-		recordDegradation(ctx, toolName, d)
-	}
+	recordDegradation(ctx, toolName, d)
 	return result + degradationNote(d)
 }
 

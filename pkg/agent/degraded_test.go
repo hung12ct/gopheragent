@@ -29,17 +29,23 @@ func (t *halfSuccessTool) Descriptor() tools.ToolDescriptor {
 }
 
 func (t *halfSuccessTool) Execute(context.Context, string) (tools.Result, error) {
-	if t.err != nil {
-		return tools.Result{}, t.err
-	}
-	return tools.Result{
+	// The degradation rides along even on the error branch: a tool that
+	// wrote its artifact and then failed hard still left the artifact
+	// behind. Whether that gets reported is the loop's decision, and it
+	// depends on the post-hook error state — which is exactly what the
+	// speculative and non-speculative paths must agree on.
+	res := tools.Result{
 		Text: "report written to /reports/q3.md",
 		Degraded: &tools.Degradation{
 			Reason:     "report written but the search index update failed",
 			Artifacts:  []string{"/reports/q3.md"},
 			Unreliable: []string{"search_index"},
 		},
-	}, nil
+	}
+	if t.err != nil {
+		return res, t.err
+	}
+	return res, nil
 }
 
 // drainEvents runs one streaming turn and returns every event emitted.
@@ -256,4 +262,45 @@ func degradedUnits(evs []StreamEvent) []ToolDegradation {
 		}
 	}
 	return out
+}
+
+// --- speculative execution ---
+
+func TestDegraded_SpeculatedResultFiledExactlyOnce(t *testing.T) {
+	// The tool runs in the drainer's speculation goroutine and its result
+	// is consumed by the wave executor. Exactly one filer must claim it:
+	// double-filing would show the operator two failures for one call.
+	loop, _ := setup(
+		&streamingToolCallReadyProvider{toolName: "write_report", argsJSON: `{}`},
+		&halfSuccessTool{name: "write_report"},
+	)
+	loop.SpeculativeTools = true
+
+	units := degradedUnits(drainEvents(t, loop, "s1", "write it"))
+	if len(units) != 1 {
+		t.Fatalf("want exactly 1 degradation from a speculated call, got %d: %+v", len(units), units)
+	}
+	if units[0].Tool != "write_report" {
+		t.Fatalf("unit = %+v, want write_report", units[0])
+	}
+}
+
+func TestDegraded_SpeculatedResultRecoveredByHookIsStillFiled(t *testing.T) {
+	// OnToolResult can recover an errored call into a success. The
+	// degradation must be judged against the POST-hook state: deciding at
+	// execution time reports nothing here, so the model is told the work
+	// half-landed while the host sees a clean turn.
+	loop, _ := setup(
+		&streamingToolCallReadyProvider{toolName: "write_report", argsJSON: `{}`},
+		&halfSuccessTool{name: "write_report", err: errors.New("index update failed")},
+	)
+	loop.SpeculativeTools = true
+	loop.OnToolResult = func(_ context.Context, _, _, _, _ string, _ any, _ error) (string, error) {
+		return "report written, index repair queued", nil // error in -> recovered
+	}
+
+	units := degradedUnits(drainEvents(t, loop, "s1", "write it"))
+	if len(units) != 1 {
+		t.Fatalf("hook recovered the call, so the degradation must be reported; got %d: %+v", len(units), units)
+	}
 }
