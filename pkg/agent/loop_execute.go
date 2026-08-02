@@ -210,12 +210,13 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	var toolResult string
 	var structured any
 	var execErr error
+	var degraded *tools.Degradation
 	if speculated {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)}))
-		toolResult, structured, execErr = awaitSpeculative(toolCtx, sm)
+		toolResult, structured, degraded, execErr = awaitSpeculative(toolCtx, sm)
 	} else {
 		res, err := tool.Execute(toolCtx, tCall.ArgsJSON)
-		toolResult, structured, execErr = res.Text, res.Structured, err
+		toolResult, structured, degraded, execErr = res.Text, res.Structured, res.Degraded, err
 	}
 	if al.OnToolResult != nil {
 		rewritten, hookErr := al.OnToolResult(toolCtx, callID, tCall.Name, tCall.ArgsJSON, toolResult, structured, execErr)
@@ -231,6 +232,16 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 			execErr = nil
 		}
 	}
+	// A degradation only means anything on a call that otherwise
+	// succeeded — once the hook chain turns the call into an error, the
+	// error is the story. The note goes to the model so it does not redo
+	// the half of the work that landed; the record goes to the host as a
+	// terminal DegradedEvent.
+	if degraded != nil && execErr == nil {
+		toolResult += degradationNote(degraded)
+		recordDegradation(ctx, tCall.Name, degraded)
+	}
+
 	content := toolResult
 	isToolErr := execErr != nil
 	if isToolErr {

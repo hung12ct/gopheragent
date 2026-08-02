@@ -173,6 +173,7 @@ func (r *recordingVisitor) VisitMemoryConsolidated(MemoryConsolidatedEvent) {
 }
 func (r *recordingVisitor) VisitRunCost(RunCostEvent)           { r.visited = "run_cost" }
 func (r *recordingVisitor) VisitContextTrace(ContextTraceEvent) { r.visited = "context_trace" }
+func (r *recordingVisitor) VisitDegraded(DegradedEvent)         { r.visited = "degraded" }
 func (r *recordingVisitor) VisitUnknown(UnknownEvent)           { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {

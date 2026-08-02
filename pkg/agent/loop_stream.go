@@ -798,6 +798,14 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	ctx, emitCost = al.installRunCostAccumulator(ctx, sessionKey, streamChan)
 	defer emitCost()
 
+	// Per-Run degradation accumulator. The final-answer path drains it
+	// before DoneEvent; this deferred sweep catches Runs that degraded and
+	// then ended on a cap or fatal error, where the unreliable state most
+	// needs reporting. drain() makes the two mutually exclusive.
+	var sweepDegraded func()
+	ctx, sweepDegraded = al.installDegradationAccumulator(ctx, sessionKey, streamChan)
+	defer sweepDegraded()
+
 	// Load memory notes once per Run and stash on ctx; buildMsgsForLLM
 	// reads the cached value on every iteration so notes show up on every
 	// LLM call without re-hitting the Store. Persisted history is left

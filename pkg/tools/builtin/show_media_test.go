@@ -30,7 +30,7 @@ func TestShowMedia_AcceptsDirectImageURL(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.Text, "![hello](https://example.com/photo.jpg)") {
-		t.Fatalf("unexpected output: %q", out)
+		t.Fatalf("unexpected output: %q", out.Text)
 	}
 }
 
@@ -71,7 +71,7 @@ func TestShowMedia_AcceptsVideoURL(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.Text, "<video") || !strings.Contains(out.Text, "https://example.com/clip.mp4") {
-		t.Fatalf("unexpected output: %q", out)
+		t.Fatalf("unexpected output: %q", out.Text)
 	}
 }
 

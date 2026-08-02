@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"sync"
+
+	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
 // speculativeExec carries the in-flight or completed result of a tool that
@@ -25,6 +27,7 @@ type speculativeExec struct {
 	result     string
 	structured any
 	err        error
+	degraded   *tools.Degradation
 }
 
 // newSpeculativeMap returns an initialized map keyed by tool call ID.
@@ -121,20 +124,21 @@ func (al *AgentLoop) spawnSpeculative(
 		// sub-agent emitter. The wave executor owns user-visible emissions
 		// for this call when it processes the result.
 		res, err := tool.Execute(specCtx, argsJSON)
-		sm.result, sm.structured, sm.err = res.Text, res.Structured, err
+		sm.result, sm.structured, sm.err, sm.degraded = res.Text, res.Structured, err, res.Degraded
 	}()
 }
 
 // awaitSpeculative blocks until the speculative execution completes and
-// returns its (result, structured, err). Safe to call from the wave executor
-// after the LLM stream has closed; doneCh acts as the happens-before barrier.
-// structured is non-nil only when the underlying tool implemented
-// tools.StructuredResult.
-func awaitSpeculative(ctx context.Context, sm *speculativeExec) (string, any, error) {
+// returns its (result, structured, degraded, err). Safe to call from the wave
+// executor after the LLM stream has closed; doneCh acts as the happens-before
+// barrier. structured is non-nil only when the underlying tool implemented
+// tools.StructuredResult; degraded is non-nil only when the tool reported a
+// partial success.
+func awaitSpeculative(ctx context.Context, sm *speculativeExec) (string, any, *tools.Degradation, error) {
 	select {
 	case <-sm.doneCh:
-		return sm.result, sm.structured, sm.err
+		return sm.result, sm.structured, sm.degraded, sm.err
 	case <-ctx.Done():
-		return "", nil, ctx.Err()
+		return "", nil, nil, ctx.Err()
 	}
 }

@@ -79,6 +79,10 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 		}
 	}
 	al.saveSession(ctx, st.sessionKey, msgs)
+	// Degraded precedes Done rather than replacing it: the answer is real
+	// and consumers that gate on Done must still see it. No-op unless a
+	// tool reported a partial success this Run.
+	al.emitDegradedIfAny(ctx, st.sessionKey, st.streamChan)
 	al.emit(ctx, st.sessionKey, st.streamChan, Event(DoneEvent{}))
 }
 

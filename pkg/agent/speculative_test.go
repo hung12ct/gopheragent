@@ -90,7 +90,7 @@ func TestSpawnSpeculative_CachesResult(t *testing.T) {
 		t.Fatal("speculative entry should be registered before the goroutine runs")
 	}
 
-	result, _, err := awaitSpeculative(context.Background(), sm)
+	result, _, _, err := awaitSpeculative(context.Background(), sm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSpawnSpeculative_CancelAbortsTool(t *testing.T) {
 	sm.cancel()
 
 	// Tool must abort with ctx.Canceled rather than completing.
-	_, _, err := awaitSpeculative(context.Background(), sm)
+	_, _, _, err := awaitSpeculative(context.Background(), sm)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected ctx.Canceled after sm.cancel(), got %v", err)
 	}
@@ -162,7 +162,7 @@ func TestSpawnSpeculative_MissingToolSurfacesError(t *testing.T) {
 	mu.Lock()
 	sm := store["c1"]
 	mu.Unlock()
-	_, _, err := awaitSpeculative(context.Background(), sm)
+	_, _, _, err := awaitSpeculative(context.Background(), sm)
 	if err == nil {
 		t.Fatal("expected ToolNotFoundError from speculative execution")
 	}
@@ -178,7 +178,7 @@ func TestAwaitSpeculative_ContextCancelReturnsEarly(t *testing.T) {
 		cancel()
 	}()
 
-	_, _, err := awaitSpeculative(ctx, sm)
+	_, _, _, err := awaitSpeculative(ctx, sm)
 	if err == nil {
 		t.Fatal("expected ctx.Err() when caller cancels before speculative done")
 	}

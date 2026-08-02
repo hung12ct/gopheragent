@@ -81,6 +81,11 @@ const (
 	// into one LLM call. Emitted only when a prune actually changed
 	// something, so a turn whose context always fits stays silent.
 	EventTypeContextTrace StreamEventType = "context_trace"
+	// EventTypeDegraded reports that the turn finished with some tool's
+	// derived bookkeeping left inconsistent, even though the turn itself
+	// produced a real answer. Precedes the terminal event, never replaces
+	// it — a consumer that ignores it sees exactly today's behavior.
+	EventTypeDegraded StreamEventType = "degraded"
 )
 
 // LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
@@ -412,6 +417,30 @@ type ContextTraceEvent struct {
 func (ContextTraceEvent) isEventPayload()            {}
 func (ContextTraceEvent) eventType() StreamEventType { return EventTypeContextTrace }
 
+// DegradedEvent is the typed payload of EventTypeDegraded — the terminal
+// state that had no representation before: the expensive artifact landed,
+// the derived bookkeeping did not. Reporting it as Done would hide a real
+// inconsistency; reporting it as an error would invite a retry that
+// duplicates work that already succeeded.
+//
+// Emitted immediately before the turn's terminal event (DoneEvent on the
+// final-answer path, or whatever cap / error terminal fired instead), and
+// only when at least one tool returned a tools.Degradation. It annotates
+// the terminal rather than replacing it, so existing consumers are
+// unaffected.
+//
+// Units lists every degradation of the Run in the order the tools raised
+// them. Err carries the same information as a *DegradedError for adopters
+// that classify by errors.Is(err, ErrDegraded); it is reconstructed from
+// Units when the event is decoded from the wire.
+type DegradedEvent struct {
+	Units []ToolDegradation `json:"units"`
+	Err   error             `json:"-"`
+}
+
+func (DegradedEvent) isEventPayload()            {}
+func (DegradedEvent) eventType() StreamEventType { return EventTypeDegraded }
+
 // HITLTimedOutEvent is the typed payload of EventTypeHITLTimedOut. Mirrors
 // HITLDeniedEvent and additionally carries the configured Timeout so a UI
 // can show "approval expired after 2m" without reaching back into agent
@@ -554,6 +583,13 @@ func decodePayload(t StreamEventType, raw []byte) EventPayload {
 		var p ContextTraceEvent
 		_ = json.Unmarshal(raw, &p)
 		return p
+	case EventTypeDegraded:
+		var p DegradedEvent
+		_ = json.Unmarshal(raw, &p)
+		if p.Err == nil && len(p.Units) > 0 {
+			p.Err = &DegradedError{Units: p.Units}
+		}
+		return p
 	default:
 		return UnknownEvent{OriginalType: t, RawJSON: string(raw)}
 	}
@@ -589,6 +625,7 @@ type EventVisitor interface {
 	VisitMemoryConsolidated(MemoryConsolidatedEvent)
 	VisitRunCost(RunCostEvent)
 	VisitContextTrace(ContextTraceEvent)
+	VisitDegraded(DegradedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -640,6 +677,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitRunCost(p)
 	case ContextTraceEvent:
 		v.VisitContextTrace(p)
+	case DegradedEvent:
+		v.VisitDegraded(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	default:

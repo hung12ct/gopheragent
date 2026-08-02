@@ -54,10 +54,36 @@ type ToolDescriptor struct {
 //
 // Parts is optional multi-modal output for providers that accept non-text
 // tool results. Empty when the tool returns text only.
+//
+// Degraded is set by a tool that half-succeeded — see Degradation. Nil for
+// the overwhelming majority of calls; the loop pays one nil check.
 type Result struct {
 	Text       string
 	Structured any
 	Parts      []MediaPart
+	Degraded   *Degradation
+}
+
+// Degradation marks a tool call that half-succeeded: the expensive,
+// durable part of the work landed but the derived bookkeeping did not.
+// A tool that writes a file and then fails to update its index is the
+// canonical case — returning an error would invite a retry that
+// duplicates the write, and returning a clean Result would hide the
+// inconsistency.
+//
+// A tool raises one by returning a normal (non-error) Result with this
+// field set. The loop appends a short partial-success note to the text
+// the model sees, and rolls every degradation of the turn into a
+// terminal DegradedEvent for the host.
+//
+// Reason is a one-line human summary. Artifacts names what did land and
+// must not be discarded or redone; Unreliable names the state a
+// subsequent run should treat as suspect and repair. Both are opaque
+// identifiers chosen by the tool (paths, IDs, table names).
+type Degradation struct {
+	Reason     string
+	Artifacts  []string
+	Unreliable []string
 }
 
 // MediaPart is a leaf-package multi-modal output unit. Tools that emit

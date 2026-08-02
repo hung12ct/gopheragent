@@ -49,11 +49,11 @@ func TestMemoryTools_SessionsAreIsolated(t *testing.T) {
 	}
 	out, _ := get.Execute(memCtx("s1"), `{"key":"k"}`)
 	if !strings.Contains(out.Text, `"value":"one"`) {
-		t.Fatalf("s1 cross-talk: %s", out)
+		t.Fatalf("s1 cross-talk: %s", out.Text)
 	}
 	out, _ = get.Execute(memCtx("s2"), `{"key":"k"}`)
 	if !strings.Contains(out.Text, `"value":"two"`) {
-		t.Fatalf("s2 cross-talk: %s", out)
+		t.Fatalf("s2 cross-talk: %s", out.Text)
 	}
 }
 
@@ -87,7 +87,7 @@ func TestMemoryTools_Delete(t *testing.T) {
 	}
 	out, _ := get.Execute(ctx, `{"key":"k"}`)
 	if !strings.Contains(out.Text, `"found":false`) {
-		t.Fatalf("key still present: %s", out)
+		t.Fatalf("key still present: %s", out.Text)
 	}
 }
 

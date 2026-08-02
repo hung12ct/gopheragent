@@ -108,6 +108,12 @@ func (al *AgentLoop) continueLogicLoop(ctx context.Context, sessionKey string, s
 	ctx, emitCost = al.installRunCostAccumulator(ctx, sessionKey, streamChan)
 	defer emitCost()
 
+	// Mirror runLogicLoop so a resumed Run reports partial-success state
+	// the same way a fresh one does.
+	var sweepDegraded func()
+	ctx, sweepDegraded = al.installDegradationAccumulator(ctx, sessionKey, streamChan)
+	defer sweepDegraded()
+
 	msgs, err := al.Sessions.History(ctx, sessionKey)
 	if err != nil {
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: continue: load history: %w", err)))

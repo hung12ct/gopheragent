@@ -80,7 +80,7 @@ func TestCodeInterpreterTool_TimesOut(t *testing.T) {
 	}
 	_ = json.Unmarshal([]byte(out.Text), &env)
 	if !env.TimedOut {
-		t.Fatalf("expected timeout flag, envelope: %s", out)
+		t.Fatalf("expected timeout flag, envelope: %s", out.Text)
 	}
 }
 

@@ -149,7 +149,7 @@ func TestCallSubAgentTool_ForwardsEventsWhenEmitterPresent(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 	if !strings.Contains(result.Text, "worker report") {
-		t.Fatalf("expected worker content in report, got %q", result)
+		t.Fatalf("expected worker content in report, got %q", result.Text)
 	}
 
 	mu.Lock()
@@ -196,7 +196,7 @@ func TestCallSubAgentTool_NonStreamingFallbackWhenNoEmitter(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	if !strings.Contains(res.Text, "legacy path") {
-		t.Fatalf("expected legacy path reply, got %q", res)
+		t.Fatalf("expected legacy path reply, got %q", res.Text)
 	}
 }
 
@@ -259,10 +259,10 @@ func TestCallSubAgentTool_HITLDenialBubbleUp(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 	if !strings.Contains(res.Text, "HITL_BLOCKED: denied") {
-		t.Fatalf("expected HITL_BLOCKED denial directive in result, got: %q", res)
+		t.Fatalf("expected HITL_BLOCKED denial directive in result, got: %q", res.Text)
 	}
 	if !strings.Contains(res.Text, "dangerous_action") {
-		t.Fatalf("expected tool name in result, got: %q", res)
+		t.Fatalf("expected tool name in result, got: %q", res.Text)
 	}
 }
 
