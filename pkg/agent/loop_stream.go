@@ -353,6 +353,10 @@ type AgentLoop struct {
 	//
 	// Costs one Score call per round plus one for the original. See Scorer
 	// for the latency and token-spend caveats.
+	//
+	// Only the self-critique path consumes this today, so setting it with
+	// Reflect == 0 is inert. The interface is deliberately generic — a
+	// best-of-K runner is the intended second consumer.
 	Scorer Scorer
 
 	// ThinkingBudget turns on extended reasoning for providers that support

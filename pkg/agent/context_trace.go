@@ -43,7 +43,11 @@ const (
 
 // ContextRef identifies one message the pruner rewrote for a single LLM
 // call. Index is the position in the pre-prune slice; because no pruning
-// path reorders or removes messages, it also indexes the post-prune slice.
+// path reorders or removes messages, it also indexes the post-prune
+// slice — and, since the loop prunes a transient copy and persists the
+// conversation at full fidelity, the same position in the slice returned
+// by Sessions.History. That is what makes a trace joinable back to the
+// stored transcript.
 //
 // ToolCallID and CorrelationID are the stable handles for naming a tool
 // result across events — CorrelationID is the agent-generated ID also
