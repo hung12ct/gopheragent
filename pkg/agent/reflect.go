@@ -50,7 +50,7 @@ func (al *AgentLoop) runReflectRounds(ctx context.Context, st *iterationState, m
 		}
 
 		msgs[last].Content = revised
-		var adopted float64
+		var adopted *float64
 		if al.Scorer != nil {
 			score, ok := al.scoreCandidate(ctx, st, msgs, revised, r)
 			// An unranked revision cannot be shown to be an improvement,
@@ -63,7 +63,7 @@ func (al *AgentLoop) runReflectRounds(ctx context.Context, st *iterationState, m
 				}))
 				continue
 			}
-			bestScore, haveBest, adopted = score, true, score
+			bestScore, haveBest, adopted = score, true, &score
 		}
 
 		best = revised

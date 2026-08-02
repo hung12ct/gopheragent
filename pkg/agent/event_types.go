@@ -239,13 +239,19 @@ func (DoneEvent) eventType() StreamEventType { return EventTypeDone }
 //
 // The event fires only for a round the loop actually adopted, so the
 // last-seen-wins contract holds whether or not AgentLoop.Scorer is set.
-// Score is the adopted round's rank under that Scorer, present only when
-// one is configured — a rejected round emits a thought event naming its
-// score instead.
+// Score is the adopted round's rank under that Scorer, and is nil when no
+// Scorer is configured — a rejected round emits a thought event naming
+// its score instead.
+//
+// It is a pointer because zero is a legitimate score: a 0–100 rubric can
+// return 0, and the Scorer docs offer negated latency as a valid unit
+// where 0 is the best possible value. A bare float64 with omitempty would
+// erase that score from the wire and make it indistinguishable from
+// "unscored" in Go.
 type ReflectedEvent struct {
-	Text  string  `json:"text"`
-	Round int     `json:"round"`
-	Score float64 `json:"score,omitempty"`
+	Text  string   `json:"text"`
+	Round int      `json:"round"`
+	Score *float64 `json:"score,omitempty"`
 }
 
 func (ReflectedEvent) isEventPayload()            {}
@@ -404,13 +410,22 @@ func (RunCostEvent) eventType() StreamEventType { return EventTypeRunCost }
 //
 // Emitted once per LLM call, and only when the pruner actually rewrote a
 // message: a turn whose context comfortably fits produces no events at
-// all. Changes lists every rewritten message with its reason; the same
-// Index can appear twice when a message was both argument-truncated and
-// soft-trimmed in one pass.
+// all. Changes lists every rewritten message with its reason, in index
+// order. A given Index appears at most once under the current thresholds
+// (argument truncation clips to well under the soft-trim threshold, and
+// only tool messages are eligible for both) — treat that as an
+// observation, not a guarantee, and do not key a map on Index.
 //
-// EstTokensBefore/After are whole-conversation estimates under the same
-// 4-chars/token heuristic MaxTokenBudget enforcement uses — good for
-// spotting how much a prune actually saved, not for billing.
+// Because the loop prunes a transient copy and leaves session history at
+// full fidelity, the same long tool result is re-trimmed and re-reported
+// on every iteration of a turn. Consumers that log these should expect
+// near-duplicates across a multi-iteration run.
+//
+// EstTokensBefore/After are whole-conversation estimates that include
+// tool-call arguments, so they will not equal the sum of the per-Change
+// numbers, which cover message content only. Both use the 4-chars/token
+// heuristic MaxTokenBudget enforcement uses — good for spotting how much
+// a prune saved, not for billing.
 //
 // Iteration is the 0-indexed loop iteration the prune fed.
 type ContextTraceEvent struct {
@@ -430,11 +445,19 @@ func (ContextTraceEvent) eventType() StreamEventType { return EventTypeContextTr
 // inconsistency; reporting it as an error would invite a retry that
 // duplicates work that already succeeded.
 //
-// Emitted immediately before the turn's terminal event (DoneEvent on the
-// final-answer path, or whatever cap / error terminal fired instead), and
-// only when at least one tool returned a tools.Degradation. It annotates
-// the terminal rather than replacing it, so existing consumers are
-// unaffected.
+// Fires only when at least one tool returned a tools.Degradation, and
+// annotates the turn's terminal rather than replacing it, so existing
+// consumers are unaffected. Position depends on how the turn ended:
+//
+//   - Final answer: emitted immediately BEFORE DoneEvent.
+//   - Cap or fatal error (MaxIters, tool-call cap, LLM failure): emitted
+//     by a deferred Run-level sweep, so it arrives AFTER the
+//     LimitExhaustedEvent / ErrorEvent frame.
+//
+// The second case matters: a consumer that tears down on the first error
+// frame will miss it. Drain the stream to completion if you need the
+// degradation record from failed turns — which is exactly the turn whose
+// unreliable state most needs repairing.
 //
 // Units lists every degradation of the Run in the order the tools raised
 // them. Err carries the same information as a *DegradedError for adopters

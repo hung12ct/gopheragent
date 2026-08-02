@@ -21,12 +21,28 @@ type reflectProvider struct {
 	idx           int
 	capturedTools []bool // whether each call received a non-nil tool registry
 	lastMsgLens   []int
+	// critiqued records the assistant answer each critique round was
+	// asked to review, so a test can prove a rejected round was rolled
+	// back before the next round saw the conversation.
+	critiqued []string
+}
+
+// lastAssistant returns the content of the final assistant message, or ""
+// when there is none (the initial answer turn).
+func lastAssistant(msgs []history.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 func (p *reflectProvider) GenerateStream(_ context.Context, msgs []history.Message, tl *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
 	p.mu.Lock()
 	p.capturedTools = append(p.capturedTools, tl != nil)
 	p.lastMsgLens = append(p.lastMsgLens, len(msgs))
+	p.critiqued = append(p.critiqued, lastAssistant(msgs))
 	var text string
 	if p.idx < len(p.turns) {
 		text = p.turns[p.idx]
@@ -298,6 +314,22 @@ func TestReflect_ScorerRejectsRegressionAndRecritiquesBest(t *testing.T) {
 	if got != "best" {
 		t.Fatalf("answer = %q, want %q", got, "best")
 	}
+	// The rollback is the actual claim: round 2 must critique the
+	// incumbent, not the revision that was just thrown away. Asserting
+	// only the final answer passes even with the rollback deleted,
+	// because "best" outscores the incumbent either way.
+	provider.mu.Lock()
+	critiqued := append([]string(nil), provider.critiqued...)
+	provider.mu.Unlock()
+	if len(critiqued) != 3 {
+		t.Fatalf("want 3 provider calls (answer + 2 critiques), got %d: %q", len(critiqued), critiqued)
+	}
+	if critiqued[1] != "original" {
+		t.Fatalf("round 1 critiqued %q, want the original answer", critiqued[1])
+	}
+	if critiqued[2] != "original" {
+		t.Fatalf("round 2 critiqued %q — the rejected revision was not rolled back", critiqued[2])
+	}
 }
 
 func TestReflect_ScorerTieKeepsIncumbent(t *testing.T) {
@@ -364,7 +396,7 @@ func TestReflect_AdoptedRoundCarriesItsScore(t *testing.T) {
 	if len(reflected) != 1 {
 		t.Fatalf("want exactly one ReflectedEvent for the adopted round, got %d", len(reflected))
 	}
-	if reflected[0].Score != 7 || reflected[0].Round != 1 {
+	if reflected[0].Score == nil || *reflected[0].Score != 7 || reflected[0].Round != 1 {
 		t.Fatalf("event = %+v, want round 1 scored 7", reflected[0])
 	}
 }
