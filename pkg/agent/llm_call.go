@@ -56,27 +56,7 @@ func (al *AgentLoop) callLLMWithRetry(ctx context.Context, st *iterationState, m
 func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, msgs []history.Message, finalContent string) {
 	msgs = append(msgs, history.Message{Role: "assistant", Content: finalContent})
 	if al.Reflect > 0 && finalContent != "" {
-		for r := 1; r <= al.Reflect; r++ {
-			al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
-				Message: fmt.Sprintf("Self-critique pass %d/%d...", r, al.Reflect),
-			}))
-			revised, rerr := al.reflectOnce(ctx, st.sessionKey, msgs, r, st.streamChan)
-			if rerr != nil {
-				al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
-					Message: fmt.Sprintf("Self-critique aborted: %v", rerr),
-				}))
-				break
-			}
-			if revised == "" || revised == finalContent {
-				continue
-			}
-			finalContent = revised
-			msgs[len(msgs)-1].Content = finalContent
-			al.emit(ctx, st.sessionKey, st.streamChan, Event(ReflectedEvent{
-				Text:  finalContent,
-				Round: r,
-			}))
-		}
+		msgs[len(msgs)-1].Content = al.runReflectRounds(ctx, st, msgs, finalContent)
 	}
 	al.saveSession(ctx, st.sessionKey, msgs)
 	// Degraded precedes Done rather than replacing it: the answer is real

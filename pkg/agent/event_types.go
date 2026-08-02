@@ -236,9 +236,16 @@ func (DoneEvent) eventType() StreamEventType { return EventTypeDone }
 // ReflectedEvent delivers a post-critique canonical answer. Round indicates
 // which self-critique pass produced it (1-indexed); consumers typically keep
 // the last seen payload as the authoritative response.
+//
+// The event fires only for a round the loop actually adopted, so the
+// last-seen-wins contract holds whether or not AgentLoop.Scorer is set.
+// Score is the adopted round's rank under that Scorer, present only when
+// one is configured — a rejected round emits a thought event naming its
+// score instead.
 type ReflectedEvent struct {
-	Text  string `json:"text"`
-	Round int    `json:"round"`
+	Text  string  `json:"text"`
+	Round int     `json:"round"`
+	Score float64 `json:"score,omitempty"`
 }
 
 func (ReflectedEvent) isEventPayload()            {}
