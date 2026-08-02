@@ -321,7 +321,9 @@ type AgentLoop struct {
 	// final answer with no pending tool calls. Each pass appends a synthetic
 	// critique prompt and asks the model to revise its answer; the final
 	// round's text becomes the canonical response saved to history and
-	// emitted to callers. 0 (default) disables reflection entirely.
+	// emitted to callers — unless Scorer is set, in which case the
+	// best-scoring round wins instead. 0 (default) disables reflection
+	// entirely.
 	//
 	// Reflection is opt-in because it multiplies latency and token cost by
 	// (1 + N). It targets correctness-critical tasks — SQL generation, code
@@ -336,6 +338,26 @@ type AgentLoop struct {
 	// (e.g. "check every JOIN condition binds a valid FK") when the default
 	// misses task-specific pitfalls.
 	ReflectPrompt string
+
+	// Scorer ranks candidate answers so a self-critique pass keeps the
+	// best round rather than the last one. nil (default) preserves the
+	// historical last-wins behavior: every non-empty, textually different
+	// revision is accepted, so a critique round can make the answer worse
+	// and the earlier text is unrecoverable.
+	//
+	// With a Scorer set, the model's original answer is scored as round 0
+	// and each revision must beat the best score so far to be adopted; a
+	// revision that scores lower is discarded and the next round critiques
+	// the best answer instead. The kept round's score rides along on
+	// ReflectedEvent so a UI can show why.
+	//
+	// Costs one Score call per round plus one for the original. See Scorer
+	// for the latency and token-spend caveats.
+	//
+	// Only the self-critique path consumes this today, so setting it with
+	// Reflect == 0 is inert. The interface is deliberately generic — a
+	// best-of-K runner is the intended second consumer.
+	Scorer Scorer
 
 	// ThinkingBudget turns on extended reasoning for providers that support
 	// it. It is a token hint, not a hard cap — see WithThinkingBudget for the
@@ -797,6 +819,14 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	var emitCost func()
 	ctx, emitCost = al.installRunCostAccumulator(ctx, sessionKey, streamChan)
 	defer emitCost()
+
+	// Per-Run degradation accumulator. The final-answer path drains it
+	// before DoneEvent; this deferred sweep catches Runs that degraded and
+	// then ended on a cap or fatal error, where the unreliable state most
+	// needs reporting. drain() makes the two mutually exclusive.
+	var sweepDegraded func()
+	ctx, sweepDegraded = al.installDegradationAccumulator(ctx, sessionKey, streamChan)
+	defer sweepDegraded()
 
 	// Load memory notes once per Run and stash on ctx; buildMsgsForLLM
 	// reads the cached value on every iteration so notes show up on every

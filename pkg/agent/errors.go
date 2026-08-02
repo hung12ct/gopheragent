@@ -21,6 +21,12 @@ var (
 	// ErrLoopDetected is returned when the anti-loop detector terminates the cycle.
 	ErrLoopDetected = errors.New("agent: infinite loop detected")
 
+	// ErrDegraded classifies a turn that produced a real answer while some
+	// tool's derived bookkeeping failed — neither a clean success nor a
+	// failure worth retrying. It is never returned from Run (the answer is
+	// good); adopters match it via errors.Is on DegradedEvent.Err.
+	ErrDegraded = errors.New("agent: turn completed with degraded state")
+
 	// ErrToolNotFound is returned when the LLM requests a tool that is not registered.
 	ErrToolNotFound = errors.New("agent: tool not found")
 

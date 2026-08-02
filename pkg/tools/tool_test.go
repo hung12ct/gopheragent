@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -171,5 +172,35 @@ func TestRegistry_DebugWrapsRegardlessOfOrder(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "before") {
 		t.Fatalf("clone lost debug wrapping: %q", buf.String())
+	}
+}
+
+func TestResult_StringRendersModelFacingText(t *testing.T) {
+	// String() is what keeps `go vet` happy about %s/%q on a Result in
+	// adopter code — the *Degradation field makes the bare struct
+	// unprintable. If this method is ever removed, every downstream
+	// caller that logs a Result starts failing vet.
+	var _ fmt.Stringer = Result{}
+
+	res := Result{
+		Text:       "report written",
+		Structured: map[string]int{"rows": 3},
+		Degraded:   &Degradation{Reason: "index update failed"},
+	}
+	// Delimiters keep this a genuine %s-verb exercise rather than a bare
+	// Sprintf-of-a-Stringer, which staticcheck rightly rewrites away.
+	if got := fmt.Sprintf("[%s]", res); got != "[report written]" {
+		t.Fatalf("%%s rendered %q, want the model-facing text", got)
+	}
+	if got := fmt.Sprintf("%q", res); got != `"report written"` {
+		t.Fatalf("%%q rendered %s, want a quoted text", got)
+	}
+	// %v routes through String too, so a debug line stays readable
+	// instead of printing a raw pointer.
+	if got := fmt.Sprintf("%v", res); got != "report written" {
+		t.Fatalf("%%v rendered %q, want the model-facing text", got)
+	}
+	if got := Text("plain").String(); got != "plain" {
+		t.Fatalf("Text().String() = %q", got)
 	}
 }

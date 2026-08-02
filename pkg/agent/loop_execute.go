@@ -210,12 +210,13 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	var toolResult string
 	var structured any
 	var execErr error
+	var degraded *tools.Degradation
 	if speculated {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Reusing speculative result for %s.", tCall.Name)}))
-		toolResult, structured, execErr = awaitSpeculative(toolCtx, sm)
+		toolResult, structured, degraded, execErr = awaitSpeculative(toolCtx, sm)
 	} else {
 		res, err := tool.Execute(toolCtx, tCall.ArgsJSON)
-		toolResult, structured, execErr = res.Text, res.Structured, err
+		toolResult, structured, degraded, execErr = res.Text, res.Structured, res.Degraded, err
 	}
 	if al.OnToolResult != nil {
 		rewritten, hookErr := al.OnToolResult(toolCtx, callID, tCall.Name, tCall.ArgsJSON, toolResult, structured, execErr)
@@ -231,6 +232,8 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 			execErr = nil
 		}
 	}
+	toolResult = applyDegradation(ctx, tCall.Name, toolResult, degraded, execErr)
+
 	content := toolResult
 	isToolErr := execErr != nil
 	if isToolErr {
@@ -248,7 +251,12 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ContentEvent{Text: "\n\n" + content + "\n\n"}))
 	}
 
-	if cacheOK && !isToolErr {
+	// Never cache a degraded result. Its text carries a partial-success
+	// note naming artifacts that landed *this* run, and a cache hit
+	// short-circuits before recordDegradation — so replaying it would
+	// tell a later turn's model that work already exists while the host
+	// sees a clean turn with no DegradedEvent.
+	if cacheOK && !isToolErr && degraded == nil {
 		al.Cache.Put(cacheKey, content)
 	}
 

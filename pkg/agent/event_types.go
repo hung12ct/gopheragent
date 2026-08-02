@@ -77,6 +77,15 @@ const (
 	// computed dollar cost under the configured PriceTable. Skipped
 	// when no PriceTable is configured (zero-cost when unused).
 	EventTypeRunCost StreamEventType = "run_cost"
+	// EventTypeContextTrace records what the pruner rewrote on the way
+	// into one LLM call. Emitted only when a prune actually changed
+	// something, so a turn whose context always fits stays silent.
+	EventTypeContextTrace StreamEventType = "context_trace"
+	// EventTypeDegraded reports that the turn finished with some tool's
+	// derived bookkeeping left inconsistent, even though the turn itself
+	// produced a real answer. Precedes the terminal event, never replaces
+	// it — a consumer that ignores it sees exactly today's behavior.
+	EventTypeDegraded StreamEventType = "degraded"
 )
 
 // LimitKind enumerates the cap categories surfaced via LimitExhaustedEvent.
@@ -227,9 +236,22 @@ func (DoneEvent) eventType() StreamEventType { return EventTypeDone }
 // ReflectedEvent delivers a post-critique canonical answer. Round indicates
 // which self-critique pass produced it (1-indexed); consumers typically keep
 // the last seen payload as the authoritative response.
+//
+// The event fires only for a round the loop actually adopted, so the
+// last-seen-wins contract holds whether or not AgentLoop.Scorer is set.
+// Score is the adopted round's rank under that Scorer, and is nil when no
+// Scorer is configured — a rejected round emits a thought event naming
+// its score instead.
+//
+// It is a pointer because zero is a legitimate score: a 0–100 rubric can
+// return 0, and the Scorer docs offer negated latency as a valid unit
+// where 0 is the best possible value. A bare float64 with omitempty would
+// erase that score from the wire and make it indistinguishable from
+// "unscored" in Go.
 type ReflectedEvent struct {
-	Text  string `json:"text"`
-	Round int    `json:"round"`
+	Text  string   `json:"text"`
+	Round int      `json:"round"`
+	Score *float64 `json:"score,omitempty"`
 }
 
 func (ReflectedEvent) isEventPayload()            {}
@@ -381,6 +403,77 @@ type RunCostEvent struct {
 func (RunCostEvent) isEventPayload()            {}
 func (RunCostEvent) eventType() StreamEventType { return EventTypeRunCost }
 
+// ContextTraceEvent is the typed payload of EventTypeContextTrace. It is
+// the answer to "why did the agent forget what I told it earlier" —
+// context pruning runs before every LLM call and, without this, leaves no
+// artifact behind.
+//
+// Emitted once per LLM call, and only when the pruner actually rewrote a
+// message: a turn whose context comfortably fits produces no events at
+// all. Changes lists every rewritten message with its reason, grouped by
+// the pass that produced it — argument truncation first, then depth
+// pruning — so Index is ascending within a group but not across the
+// whole slice. A given Index appears at most once under the current
+// thresholds
+// (argument truncation clips to well under the soft-trim threshold, and
+// only tool messages are eligible for both) — treat that as an
+// observation, not a guarantee, and do not key a map on Index.
+//
+// Because the loop prunes a transient copy and leaves session history at
+// full fidelity, the same long tool result is re-trimmed and re-reported
+// on every iteration of a turn. Consumers that log these should expect
+// near-duplicates across a multi-iteration run.
+//
+// EstTokensBefore/After are whole-conversation estimates that include
+// tool-call arguments, so they will not equal the sum of the per-Change
+// numbers, which cover message content only. Both use the 4-chars/token
+// heuristic MaxTokenBudget enforcement uses — good for spotting how much
+// a prune saved, not for billing.
+//
+// Iteration is the 0-indexed loop iteration the prune fed.
+type ContextTraceEvent struct {
+	Policy          ContextPolicy `json:"policy"`
+	Iteration       int           `json:"iteration"`
+	Changes         []ContextRef  `json:"changes"`
+	EstTokensBefore int           `json:"est_tokens_before"`
+	EstTokensAfter  int           `json:"est_tokens_after"`
+}
+
+func (ContextTraceEvent) isEventPayload()            {}
+func (ContextTraceEvent) eventType() StreamEventType { return EventTypeContextTrace }
+
+// DegradedEvent is the typed payload of EventTypeDegraded — the terminal
+// state that had no representation before: the expensive artifact landed,
+// the derived bookkeeping did not. Reporting it as Done would hide a real
+// inconsistency; reporting it as an error would invite a retry that
+// duplicates work that already succeeded.
+//
+// Fires only when at least one tool returned a tools.Degradation, and
+// annotates the turn's terminal rather than replacing it, so existing
+// consumers are unaffected. Position depends on how the turn ended:
+//
+//   - Final answer: emitted immediately BEFORE DoneEvent.
+//   - Cap or fatal error (MaxIters, tool-call cap, LLM failure): emitted
+//     by a deferred Run-level sweep, so it arrives AFTER the
+//     LimitExhaustedEvent / ErrorEvent frame.
+//
+// The second case matters: a consumer that tears down on the first error
+// frame will miss it. Drain the stream to completion if you need the
+// degradation record from failed turns — which is exactly the turn whose
+// unreliable state most needs repairing.
+//
+// Units lists every degradation of the Run in the order the tools raised
+// them. Err carries the same information as a *DegradedError for adopters
+// that classify by errors.Is(err, ErrDegraded); it is reconstructed from
+// Units when the event is decoded from the wire.
+type DegradedEvent struct {
+	Units []ToolDegradation `json:"units"`
+	Err   error             `json:"-"`
+}
+
+func (DegradedEvent) isEventPayload()            {}
+func (DegradedEvent) eventType() StreamEventType { return EventTypeDegraded }
+
 // HITLTimedOutEvent is the typed payload of EventTypeHITLTimedOut. Mirrors
 // HITLDeniedEvent and additionally carries the configured Timeout so a UI
 // can show "approval expired after 2m" without reaching back into agent
@@ -519,6 +612,17 @@ func decodePayload(t StreamEventType, raw []byte) EventPayload {
 		var p RunCostEvent
 		_ = json.Unmarshal(raw, &p)
 		return p
+	case EventTypeContextTrace:
+		var p ContextTraceEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
+	case EventTypeDegraded:
+		var p DegradedEvent
+		_ = json.Unmarshal(raw, &p)
+		if p.Err == nil && len(p.Units) > 0 {
+			p.Err = &DegradedError{Units: p.Units}
+		}
+		return p
 	default:
 		return UnknownEvent{OriginalType: t, RawJSON: string(raw)}
 	}
@@ -553,6 +657,8 @@ type EventVisitor interface {
 	VisitMemoryLoaded(MemoryLoadedEvent)
 	VisitMemoryConsolidated(MemoryConsolidatedEvent)
 	VisitRunCost(RunCostEvent)
+	VisitContextTrace(ContextTraceEvent)
+	VisitDegraded(DegradedEvent)
 	VisitUnknown(UnknownEvent)
 }
 
@@ -602,6 +708,10 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitMemoryConsolidated(p)
 	case RunCostEvent:
 		v.VisitRunCost(p)
+	case ContextTraceEvent:
+		v.VisitContextTrace(p)
+	case DegradedEvent:
+		v.VisitDegraded(p)
 	case UnknownEvent:
 		v.VisitUnknown(p)
 	default:

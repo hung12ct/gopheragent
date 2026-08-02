@@ -21,12 +21,28 @@ type reflectProvider struct {
 	idx           int
 	capturedTools []bool // whether each call received a non-nil tool registry
 	lastMsgLens   []int
+	// critiqued records the assistant answer each critique round was
+	// asked to review, so a test can prove a rejected round was rolled
+	// back before the next round saw the conversation.
+	critiqued []string
+}
+
+// lastAssistant returns the content of the final assistant message, or ""
+// when there is none (the initial answer turn).
+func lastAssistant(msgs []history.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 func (p *reflectProvider) GenerateStream(_ context.Context, msgs []history.Message, tl *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
 	p.mu.Lock()
 	p.capturedTools = append(p.capturedTools, tl != nil)
 	p.lastMsgLens = append(p.lastMsgLens, len(msgs))
+	p.critiqued = append(p.critiqued, lastAssistant(msgs))
 	var text string
 	if p.idx < len(p.turns) {
 		text = p.turns[p.idx]
@@ -240,4 +256,147 @@ func (p *erroringReflectProvider) GenerateStream(_ context.Context, _ []history.
 	}
 	ch <- Event(ContentEvent{Text: p.draft})
 	return LLMResult{Content: p.draft}, nil
+}
+
+// --- Scorer: keep the best round, not the last one ---
+
+// scoreByAnswer ranks candidates from a lookup table, so a test can make
+// a later round strictly worse than an earlier one.
+func scoreByAnswer(table map[string]float64) Scorer {
+	return ScorerFunc(func(_ context.Context, r RunResult) (float64, error) {
+		return table[r.Answer], nil
+	})
+}
+
+func TestReflect_ScorerKeepsBestRoundNotLast(t *testing.T) {
+	provider := &reflectProvider{turns: []string{"original", "good", "worse"}}
+	loop, sm := setup(provider)
+	loop.Reflect = 2
+	loop.Scorer = scoreByAnswer(map[string]float64{
+		"original": 10,
+		"good":     90,
+		"worse":    20,
+	})
+
+	got, err := loop.RunIteration(context.Background(), "s1", "q")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "good" {
+		t.Fatalf("answer = %q, want the best-scoring round %q", got, "good")
+	}
+
+	msgs, err := sm.History(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	final := msgs[len(msgs)-1]
+	if final.Role != "assistant" || final.Content != "good" {
+		t.Fatalf("persisted answer = %+v, want the kept round", final)
+	}
+}
+
+func TestReflect_ScorerRejectsRegressionAndRecritiquesBest(t *testing.T) {
+	provider := &reflectProvider{turns: []string{"original", "worse", "best"}}
+	loop, _ := setup(provider)
+	loop.Reflect = 2
+	loop.Scorer = scoreByAnswer(map[string]float64{
+		"original": 50,
+		"worse":    10,
+		"best":     99,
+	})
+
+	got, err := loop.RunIteration(context.Background(), "s1", "q")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Round 1 regressed and was discarded; round 2 beat the original.
+	if got != "best" {
+		t.Fatalf("answer = %q, want %q", got, "best")
+	}
+	// The rollback is the actual claim: round 2 must critique the
+	// incumbent, not the revision that was just thrown away. Asserting
+	// only the final answer passes even with the rollback deleted,
+	// because "best" outscores the incumbent either way.
+	provider.mu.Lock()
+	critiqued := append([]string(nil), provider.critiqued...)
+	provider.mu.Unlock()
+	if len(critiqued) != 3 {
+		t.Fatalf("want 3 provider calls (answer + 2 critiques), got %d: %q", len(critiqued), critiqued)
+	}
+	if critiqued[1] != "original" {
+		t.Fatalf("round 1 critiqued %q, want the original answer", critiqued[1])
+	}
+	if critiqued[2] != "original" {
+		t.Fatalf("round 2 critiqued %q — the rejected revision was not rolled back", critiqued[2])
+	}
+}
+
+func TestReflect_ScorerTieKeepsIncumbent(t *testing.T) {
+	provider := &reflectProvider{turns: []string{"original", "cosmetic"}}
+	loop, _ := setup(provider)
+	loop.Reflect = 1
+	loop.Scorer = scoreByAnswer(map[string]float64{"original": 42, "cosmetic": 42})
+
+	got, err := loop.RunIteration(context.Background(), "s1", "q")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "original" {
+		t.Fatalf("answer = %q — a tie must not displace the incumbent", got)
+	}
+}
+
+func TestReflect_ScorerErrorDiscardsRevision(t *testing.T) {
+	provider := &reflectProvider{turns: []string{"original", "unrankable"}}
+	loop, _ := setup(provider)
+	loop.Reflect = 1
+	loop.Scorer = ScorerFunc(func(_ context.Context, r RunResult) (float64, error) {
+		if r.Round == 0 {
+			return 5, nil
+		}
+		return 0, errors.New("judge unavailable")
+	})
+
+	got, err := loop.RunIteration(context.Background(), "s1", "q")
+	if err != nil {
+		t.Fatalf("scorer failure must not fail the turn, got %v", err)
+	}
+	if got != "original" {
+		t.Fatalf("answer = %q — an unrankable revision cannot be shown to be better", got)
+	}
+}
+
+func TestReflect_NoScorerKeepsLastWinsBehavior(t *testing.T) {
+	provider := &reflectProvider{turns: []string{"original", "second", "third"}}
+	loop, _ := setup(provider)
+	loop.Reflect = 2
+
+	got, err := loop.RunIteration(context.Background(), "s1", "q")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "third" {
+		t.Fatalf("answer = %q, want last-wins %q without a Scorer", got, "third")
+	}
+}
+
+func TestReflect_AdoptedRoundCarriesItsScore(t *testing.T) {
+	provider := &reflectProvider{turns: []string{"original", "better"}}
+	loop, _ := setup(provider)
+	loop.Reflect = 1
+	loop.Scorer = scoreByAnswer(map[string]float64{"original": 1, "better": 7})
+
+	var reflected []ReflectedEvent
+	for ev := range loop.RunText(context.Background(), "s1", "q") {
+		if p, ok := ev.Payload.(ReflectedEvent); ok {
+			reflected = append(reflected, p)
+		}
+	}
+	if len(reflected) != 1 {
+		t.Fatalf("want exactly one ReflectedEvent for the adopted round, got %d", len(reflected))
+	}
+	if reflected[0].Score == nil || *reflected[0].Score != 7 || reflected[0].Round != 1 {
+		t.Fatalf("event = %+v, want round 1 scored 7", reflected[0])
+	}
 }

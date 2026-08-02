@@ -77,6 +77,14 @@ func TestStreamEvent_RoundTripsThroughJSON(t *testing.T) {
 		Event(RegeneratedEvent{PreviousAssistantIndex: 3, TruncatedAt: 2}),
 		Event(ContinuedEvent{ContinuedFromIndex: 7}),
 		Event(TaskListEvent{Tasks: []TaskListItem{{ID: "t1", Title: "one", Status: "pending"}}}),
+		Event(ContextTraceEvent{
+			Policy:          ContextPolicyBudgetWarn,
+			Iteration:       2,
+			Changes:         []ContextRef{{Index: 1, Role: "tool", Reason: ContextChangeArgsTruncated}},
+			EstTokensBefore: 900,
+			EstTokensAfter:  120,
+		}),
+		Event(DegradedEvent{Units: []ToolDegradation{{Tool: "write_report", Reason: "index failed"}}}),
 	}
 	for _, ev := range cases {
 		data, err := json.Marshal(ev)
@@ -171,8 +179,10 @@ func (r *recordingVisitor) VisitMemoryLoaded(MemoryLoadedEvent)     { r.visited 
 func (r *recordingVisitor) VisitMemoryConsolidated(MemoryConsolidatedEvent) {
 	r.visited = "memory_consolidated"
 }
-func (r *recordingVisitor) VisitRunCost(RunCostEvent) { r.visited = "run_cost" }
-func (r *recordingVisitor) VisitUnknown(UnknownEvent) { r.visited = "unknown" }
+func (r *recordingVisitor) VisitRunCost(RunCostEvent)           { r.visited = "run_cost" }
+func (r *recordingVisitor) VisitContextTrace(ContextTraceEvent) { r.visited = "context_trace" }
+func (r *recordingVisitor) VisitDegraded(DegradedEvent)         { r.visited = "degraded" }
+func (r *recordingVisitor) VisitUnknown(UnknownEvent)           { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 	cases := []struct {
@@ -205,5 +215,57 @@ func TestVisit_DispatchesToMatchingMethod(t *testing.T) {
 		if v.visited != tc.want {
 			t.Errorf("Type=%q: visitor routed to %q, expected %q", tc.ev.Type, v.visited, tc.want)
 		}
+	}
+}
+
+func TestDegradedEvent_ErrReconstructedFromWire(t *testing.T) {
+	// Err has json:"-", so a consumer decoding an SSE frame relies on
+	// decodePayload rebuilding it — that is the whole point of the field.
+	wire := []byte(`{"type":"degraded","payload":{"units":[{"tool":"write_report","reason":"index update failed","unreliable":["search_index"]}]}}`)
+	var got StreamEvent
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	p, ok := got.Payload.(DegradedEvent)
+	if !ok {
+		t.Fatalf("expected DegradedEvent, got %T", got.Payload)
+	}
+	if len(p.Units) != 1 || p.Units[0].Tool != "write_report" {
+		t.Fatalf("units lost in transit: %+v", p.Units)
+	}
+	if !errors.Is(p.Err, ErrDegraded) {
+		t.Fatalf("Err = %v, want errors.Is(..., ErrDegraded) after decode", p.Err)
+	}
+}
+
+func TestReflectedEvent_ZeroScoreSurvivesTheWire(t *testing.T) {
+	// A 0 score is legitimate (0-100 rubric, negated latency). A bare
+	// float64 with omitempty would erase it and make a scored round
+	// indistinguishable from an unscored one.
+	zero := 0.0
+	data, err := json.Marshal(Event(ReflectedEvent{Text: "x", Round: 1, Score: &zero}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got StreamEvent
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	p := got.Payload.(ReflectedEvent)
+	if p.Score == nil {
+		t.Fatalf("zero score erased by the wire format: %s", data)
+	}
+	if *p.Score != 0 {
+		t.Fatalf("score = %v, want 0", *p.Score)
+	}
+
+	// An unscored round stays absent, so the two remain distinguishable.
+	unscored, _ := json.Marshal(Event(ReflectedEvent{Text: "x", Round: 1}))
+	var got2 StreamEvent
+	if err := json.Unmarshal(unscored, &got2); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got2.Payload.(ReflectedEvent).Score != nil {
+		t.Fatal("an unscored round must decode with a nil Score")
 	}
 }

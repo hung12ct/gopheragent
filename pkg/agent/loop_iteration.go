@@ -45,7 +45,7 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 	// *msgs stays at full fidelity so SetHistory / saveSession persist the
 	// untouched conversation — without this distinction every prune would
 	// shrink the on-disk history forever.
-	msgsForLLM := al.enforceTokenBudget(ctx, sessionKey, streamChan, *msgs)
+	msgsForLLM := al.enforceTokenBudget(ctx, sessionKey, streamChan, iteration, *msgs)
 	al.emitSoftLandingNudge(ctx, sessionKey, streamChan, iteration)
 
 	specMap := newSpeculativeMap()

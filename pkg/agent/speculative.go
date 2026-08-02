@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"sync"
+
+	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
 // speculativeExec carries the in-flight or completed result of a tool that
@@ -20,11 +22,13 @@ import (
 // after the drainer signals completion — no concurrent map access.
 type speculativeExec struct {
 	id         string
+	name       string
 	doneCh     chan struct{}
 	cancel     context.CancelFunc
 	result     string
 	structured any
 	err        error
+	degraded   *tools.Degradation
 }
 
 // newSpeculativeMap returns an initialized map keyed by tool call ID.
@@ -92,6 +96,7 @@ func (al *AgentLoop) spawnSpeculative(
 	specCtx, cancel := context.WithCancel(ctx)
 	sm := &speculativeExec{
 		id:     id,
+		name:   name,
 		doneCh: make(chan struct{}),
 		cancel: cancel,
 	}
@@ -121,20 +126,40 @@ func (al *AgentLoop) spawnSpeculative(
 		// sub-agent emitter. The wave executor owns user-visible emissions
 		// for this call when it processes the result.
 		res, err := tool.Execute(specCtx, argsJSON)
-		sm.result, sm.structured, sm.err = res.Text, res.Structured, err
+		sm.result, sm.structured, sm.err, sm.degraded = res.Text, res.Structured, err, res.Degraded
 	}()
 }
 
-// awaitSpeculative blocks until the speculative execution completes and
-// returns its (result, structured, err). Safe to call from the wave executor
-// after the LLM stream has closed; doneCh acts as the happens-before barrier.
-// structured is non-nil only when the underlying tool implemented
-// tools.StructuredResult.
-func awaitSpeculative(ctx context.Context, sm *speculativeExec) (string, any, error) {
+// reportOrphanedSpeculation files the degradation of a speculation that
+// completed but is being discarded without ever being awaited — a retry
+// reset or a stream error drops the entry, and the tool's side effects
+// are real regardless. Consumed speculations are NOT filed here; the
+// wave executor files those after OnToolResult has had its say, so the
+// two paths are mutually exclusive and cannot double-count.
+//
+// Non-blocking: a speculation still in flight has left no side effect to
+// report yet, and blocking here would stall the retry.
+func reportOrphanedSpeculation(ctx context.Context, sm *speculativeExec) {
 	select {
 	case <-sm.doneCh:
-		return sm.result, sm.structured, sm.err
+		if sm.err == nil {
+			recordDegradation(ctx, sm.name, sm.degraded)
+		}
+	default:
+	}
+}
+
+// awaitSpeculative blocks until the speculative execution completes and
+// returns its (result, structured, degraded, err). Safe to call from the wave
+// executor after the LLM stream has closed; doneCh acts as the happens-before
+// barrier. structured is non-nil only when the underlying tool implemented
+// tools.StructuredResult; degraded is non-nil only when the tool reported a
+// partial success.
+func awaitSpeculative(ctx context.Context, sm *speculativeExec) (string, any, *tools.Degradation, error) {
+	select {
+	case <-sm.doneCh:
+		return sm.result, sm.structured, sm.degraded, sm.err
 	case <-ctx.Done():
-		return "", nil, ctx.Err()
+		return "", nil, nil, ctx.Err()
 	}
 }
