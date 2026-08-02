@@ -125,6 +125,16 @@ func (al *AgentLoop) spawnSpeculative(
 		// for this call when it processes the result.
 		res, err := tool.Execute(specCtx, argsJSON)
 		sm.result, sm.structured, sm.err, sm.degraded = res.Text, res.Structured, err, res.Degraded
+		// File the degradation here rather than at await time: the tool
+		// really ran and really half-succeeded, so the state is degraded
+		// whether or not the loop ends up consuming this result. A retry
+		// reset or a stream error drops the entry without ever awaiting
+		// it, and losing the report there is exactly the double-write
+		// this feature exists to prevent. Uses ctx, not specCtx, so a
+		// cancelled speculation still reports.
+		if err == nil {
+			recordDegradation(ctx, name, res.Degraded)
+		}
 	}()
 }
 
