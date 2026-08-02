@@ -410,8 +410,11 @@ func (RunCostEvent) eventType() StreamEventType { return EventTypeRunCost }
 //
 // Emitted once per LLM call, and only when the pruner actually rewrote a
 // message: a turn whose context comfortably fits produces no events at
-// all. Changes lists every rewritten message with its reason, in index
-// order. A given Index appears at most once under the current thresholds
+// all. Changes lists every rewritten message with its reason, grouped by
+// the pass that produced it — argument truncation first, then depth
+// pruning — so Index is ascending within a group but not across the
+// whole slice. A given Index appears at most once under the current
+// thresholds
 // (argument truncation clips to well under the soft-trim threshold, and
 // only tool messages are eligible for both) — treat that as an
 // observation, not a guarantee, and do not key a map on Index.
