@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -114,3 +115,67 @@ func TestRetry_OnAttemptNilIsZeroCost(t *testing.T) {
 // Compile-time check that history is wired through; the import is used by
 // the flakyProvider receiver method.
 var _ = history.Message{}
+
+// truncatingProvider streams a partial answer and then reports it as
+// truncated — the shape every provider returns when its output cap fires.
+type truncatingProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *truncatingProvider) GenerateStream(_ context.Context, _ []history.Message, _ *tools.Registry, ch chan<- StreamEvent) (LLMResult, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	ch <- Event(ContentEvent{Text: "partial"})
+	return LLMResult{Content: "partial"}, &IncompleteResponseError{
+		Provider: "test",
+		Reason:   "max_tokens",
+		Kind:     IncompleteTruncated,
+	}
+}
+
+func TestRetry_TruncationAfterStreamedContentIsNotRetried(t *testing.T) {
+	// Retrying would replay the whole answer into a stream the consumer has
+	// already read, and pay for a second cap-sized generation to do it.
+	prov := &truncatingProvider{}
+	loop, _ := setup(prov)
+	loop.Retry = &RetryConfig{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+
+	if _, err := loop.RunIteration(context.Background(), "s1", "go"); err == nil {
+		t.Fatal("a truncated response must surface as an error")
+	}
+
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.calls != 1 {
+		t.Fatalf("provider called %d times, want 1 (no retry after streamed content)", prov.calls)
+	}
+}
+
+func TestIsRetryable_ProviderStopClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"cancelled", context.Canceled, false},
+		{"deadline", context.DeadlineExceeded, false},
+		{"generic provider error", errors.New("connection reset"), true},
+		// A length cut depends on this response, not the request, so the
+		// next attempt may well fit.
+		{"truncated", ErrLLMTruncated, true},
+		{"wrapped truncated", fmt.Errorf("gemini: %w", ErrLLMTruncated), true},
+		// A policy stop is deterministic: every retry reproduces it.
+		{"content blocked", ErrLLMContentBlocked, false},
+		{"wrapped content blocked", fmt.Errorf("gemini: %w", ErrLLMContentBlocked), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRetryable(tt.err); got != tt.want {
+				t.Fatalf("isRetryable(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
