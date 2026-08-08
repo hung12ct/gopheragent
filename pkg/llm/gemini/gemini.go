@@ -173,6 +173,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	var finalContent string
 	var pendingCalls []agent.PendingToolCall
 	var usage agent.TokenUsage
+	var finishReason genai.FinishReason
 
 	for resp, err := range iter {
 		if err != nil {
@@ -189,7 +190,16 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 				TotalTokens:      int(resp.UsageMetadata.TotalTokenCount),
 			}
 		}
-		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		if len(resp.Candidates) == 0 {
+			continue
+		}
+		// Read the reason before the Content guard below: a stream stopped
+		// by a content filter carries the reason on a candidate whose
+		// Content is nil, so skipping early would drop the only signal.
+		if r := resp.Candidates[0].FinishReason; r != "" {
+			finishReason = r
+		}
+		if resp.Candidates[0].Content == nil {
 			continue
 		}
 
@@ -209,11 +219,23 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		}
 	}
 
-	return agent.LLMResult{
+	result := agent.LLMResult{
 		Content:   finalContent,
 		ToolCalls: pendingCalls,
 		Usage:     usage,
-	}, nil
+	}
+	// A non-STOP finish reason means the accumulated text is a prefix, not
+	// an answer. Returning it as a success is what turns a truncation into
+	// a decode error several layers up, naming the caller's schema instead
+	// of the real cause. The partial rides on the result for adopters that
+	// want to show what arrived.
+	if err := finishReasonErr(finishReason); err != nil {
+		if finishReason == genai.FinishReasonMaxTokens {
+			streamChan <- agent.LimitExhaustedStreamEvent(agent.LimitKindProviderMaxTokens, 0, usage.CompletionTokens)
+		}
+		return result, err
+	}
+	return result, nil
 }
 
 // applySampling stamps the configured temperature/top_p/seed onto config.

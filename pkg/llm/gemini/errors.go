@@ -37,3 +37,39 @@ func classifyErr(err error) error {
 	}
 	return err
 }
+
+// finishReasonErr returns an *agent.IncompleteResponseError unless the
+// generation ended cleanly, mapping Gemini's finish reasons onto the
+// provider-neutral classification consumers route on. An empty reason
+// means the API never reported one (single-chunk responses on some
+// endpoints); it is treated as a clean stop so the default path keeps its
+// existing behavior exactly.
+func finishReasonErr(r genai.FinishReason) error {
+	if r == "" || r == genai.FinishReasonStop || r == genai.FinishReasonUnspecified {
+		return nil
+	}
+	return &agent.IncompleteResponseError{
+		Provider: "gemini",
+		Reason:   string(r),
+		Kind:     incompleteKind(r),
+	}
+}
+
+// incompleteKind splits Gemini's finish reasons into the length cut that
+// may pass on a different attempt and the content policy that will not.
+// Reasons that are neither (OTHER, MALFORMED_FUNCTION_CALL, …) stay
+// unclassified — the response is still partial, but nothing about the
+// reason tells a caller whether to retry.
+func incompleteKind(r genai.FinishReason) agent.IncompleteKind {
+	switch r {
+	case genai.FinishReasonMaxTokens:
+		return agent.IncompleteTruncated
+	case genai.FinishReasonSafety, genai.FinishReasonRecitation,
+		genai.FinishReasonBlocklist, genai.FinishReasonProhibitedContent,
+		genai.FinishReasonSPII, genai.FinishReasonLanguage,
+		genai.FinishReasonImageSafety, genai.FinishReasonImageProhibitedContent,
+		genai.FinishReasonImageRecitation:
+		return agent.IncompleteBlocked
+	}
+	return agent.IncompleteOther
+}

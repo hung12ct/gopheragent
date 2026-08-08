@@ -38,3 +38,28 @@ func classifyErr(err error) error {
 	}
 	return err
 }
+
+// stopReasonErr returns an *agent.IncompleteResponseError unless the
+// generation ended cleanly, mapping Anthropic's stop reasons onto the
+// provider-neutral classification consumers route on.
+//
+// "end_turn", "stop_sequence", and "tool_use" are complete responses.
+// "pause_turn" is also complete — a long-running server tool asked the
+// caller to continue the turn, and the content so far is intact. An empty
+// reason means the API never reported one, treated as a clean stop so the
+// default path is unchanged.
+func stopReasonErr(r anthropic.StopReason) error {
+	var kind agent.IncompleteKind
+	switch r {
+	case "", anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence,
+		anthropic.StopReasonToolUse, anthropic.StopReasonPauseTurn:
+		return nil
+	case anthropic.StopReasonMaxTokens:
+		kind = agent.IncompleteTruncated
+	case anthropic.StopReasonRefusal:
+		kind = agent.IncompleteBlocked
+	default:
+		kind = agent.IncompleteOther
+	}
+	return &agent.IncompleteResponseError{Provider: "anthropic", Reason: string(r), Kind: kind}
+}

@@ -14,8 +14,13 @@ import (
 // streaming (consumer has already seen partial output). Returns the
 // final content, result, and (possibly retry-exhausted) error.
 func (al *AgentLoop) callLLMWithRetry(ctx context.Context, st *iterationState, msgs []history.Message) (string, LLMResult, error) {
-	finalContent, result, _, err := al.callLLM(ctx, st, msgs)
-	if err == nil || al.Retry == nil || !isRetryable(err) {
+	finalContent, result, contentEmitted, err := al.callLLM(ctx, st, msgs)
+	// The content gate applies to the first attempt too, not just to
+	// retries: once a partial answer has reached the consumer, a retry
+	// replays the whole answer into the same stream. Truncation errors
+	// always arrive this way, so without the gate every capped response
+	// would both duplicate itself and pay for a second full generation.
+	if err == nil || al.Retry == nil || contentEmitted || !isRetryable(err) {
 		return finalContent, result, err
 	}
 	for attempt := 0; attempt < al.Retry.MaxRetries; attempt++ {

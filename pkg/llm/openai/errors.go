@@ -52,3 +52,29 @@ func classifyErr(err error) error {
 	}
 	return err
 }
+
+// finishReasonErr returns an *agent.IncompleteResponseError unless the
+// generation ended cleanly, mapping OpenAI's finish reasons onto the
+// provider-neutral classification consumers route on.
+//
+// "stop", "tool_calls", and "function_call" are complete responses; an
+// empty or "null" reason means the API never reported one, which is
+// treated as a clean stop so the default path is unchanged.
+func finishReasonErr(r openai.FinishReason) error {
+	var kind agent.IncompleteKind
+	switch r {
+	case "", openai.FinishReasonNull, openai.FinishReasonStop,
+		openai.FinishReasonToolCalls, openai.FinishReasonFunctionCall:
+		return nil
+	case openai.FinishReasonLength:
+		kind = agent.IncompleteTruncated
+	case openai.FinishReasonContentFilter:
+		kind = agent.IncompleteBlocked
+	default:
+		// Compat backends (Ollama, Groq, vLLM) invent their own reasons.
+		// Unknown means the response is not a documented clean stop, so
+		// report it as partial rather than assume it finished.
+		kind = agent.IncompleteOther
+	}
+	return &agent.IncompleteResponseError{Provider: "openai", Reason: string(r), Kind: kind}
+}
