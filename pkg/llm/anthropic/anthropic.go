@@ -275,8 +275,9 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	// Surface the per-call MaxTokens truncation as a typed cap event so
 	// adopters can render "model truncated; raise MaxTokens" instead of
 	// silently shipping half-rendered code blocks. Skipped when soft
-	// truncation already fired the same event above.
-	if !truncated && string(accumulated.StopReason) == "max_tokens" {
+	// truncation already fired the same event above. The typed error is
+	// returned after the content is extracted, below.
+	if !truncated && accumulated.StopReason == anthropic.StopReasonMaxTokens {
 		streamChan <- agent.LimitExhaustedStreamEvent(agent.LimitKindProviderMaxTokens, int(p.MaxTokens), 0)
 	}
 
@@ -319,7 +320,21 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	}
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
-	return agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}, nil
+	result := agent.LLMResult{Content: finalContent, ToolCalls: pendingCalls, Usage: usage}
+	// A capped or refused response is a prefix, not an answer. Returning it
+	// as a success is what turns a truncation into a decode error several
+	// layers up, naming the caller's schema instead of the real cause. The
+	// partial rides on the result so a host can still show what arrived.
+	// Soft truncation reports max_tokens too: the SDK could not finalize a
+	// tool_use block precisely because the cap fired mid-JSON.
+	stopReason := accumulated.StopReason
+	if truncated {
+		stopReason = anthropic.StopReasonMaxTokens
+	}
+	if err := stopReasonErr(stopReason); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // synthesizeStructuredTool builds a fake tool whose InputSchema

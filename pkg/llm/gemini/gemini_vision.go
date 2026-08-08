@@ -61,7 +61,15 @@ func (a *MediaAnalyzer) Analyze(ctx context.Context, media, prompt string) (stri
 	if err != nil {
 		return "", fmt.Errorf("gemini: media: %w", err)
 	}
-	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+	if len(resp.Candidates) == 0 {
+		return "", fmt.Errorf("gemini: media: no content returned")
+	}
+	// Same silent-prefix trap as the streaming path: a non-STOP reason
+	// means the parts below are a partial answer, not the whole one.
+	if reasonErr := finishReasonErr(resp.Candidates[0].FinishReason); reasonErr != nil {
+		return "", fmt.Errorf("gemini: media: %w", reasonErr)
+	}
+	if resp.Candidates[0].Content == nil {
 		return "", fmt.Errorf("gemini: media: no content returned")
 	}
 	var sb strings.Builder

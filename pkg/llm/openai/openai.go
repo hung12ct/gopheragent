@@ -194,6 +194,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 
 	var finalContent string
 	var usage agent.TokenUsage
+	var finishReason openai.FinishReason
 
 	// Accumulate parallel tool calls by index (OpenAI streams them split across chunks)
 	type toolCallAccum struct {
@@ -225,6 +226,11 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 
 		if len(response.Choices) == 0 {
 			continue
+		}
+		// The stop reason lands on the final chunk, whose delta is empty —
+		// read it before anything below can skip the chunk.
+		if r := response.Choices[0].FinishReason; r != "" && r != openai.FinishReasonNull {
+			finishReason = r
 		}
 		delta := response.Choices[0].Delta
 
@@ -266,11 +272,23 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		})
 	}
 
-	return agent.LLMResult{
+	result := agent.LLMResult{
 		Content:   finalContent,
 		ToolCalls: pendingCalls,
 		Usage:     usage,
-	}, nil
+	}
+	// A response cut by the token cap or stopped by a content filter is a
+	// prefix, not an answer. Returning it as a success is what turns a
+	// truncation into a decode error several layers up, naming the
+	// caller's schema instead of the real cause. The partial rides on the
+	// result so a host can still show what arrived.
+	if err := finishReasonErr(finishReason); err != nil {
+		if finishReason == openai.FinishReasonLength {
+			streamChan <- agent.LimitExhaustedStreamEvent(agent.LimitKindProviderMaxTokens, req.MaxTokens, usage.CompletionTokens)
+		}
+		return result, err
+	}
+	return result, nil
 }
 
 // applySampling stamps the configured temperature/top_p/seed onto req.
