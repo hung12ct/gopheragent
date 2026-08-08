@@ -2,6 +2,22 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.39.0] — 2026-08-08
+
+### Added
+
+- **`agent.ErrLLMTruncated` and `agent.ErrLLMContentBlocked` — a response that stopped before the model finished is now a typed, classified error instead of a silent prefix.** A generation cut short by an output-token cap, or stopped by a content filter, returned as a *successful* partial response: the accumulated text is a valid prefix of what the model intended, so nothing fails until something downstream parses it. A schema-constrained call then surfaced as `decode "{...": unexpected end of JSON input` — an error that names the caller's schema when the schema was never wrong, and that gives no basis for deciding whether to retry. Both sentinels are carried by one exported `agent.IncompleteResponseError{Provider, Reason, Kind}`: `Reason` is the vendor's own stop reason verbatim (`MAX_TOKENS`, `length`, `max_tokens`) for logs, and `Kind` — `IncompleteTruncated`, `IncompleteBlocked`, `IncompleteOther` — is what `Is` routes on. Each provider translates its own vocabulary into that one type, so an adopter writes one branch rather than one per vendor, and classification stays inside the provider subpackages so `pkg/agent` still links no vendor SDK. The split between the two sentinels is operational, matching the `ErrLLMAuth`/`ErrLLMFailure` precedent: a length cut depends on this response's length and may pass on a different attempt, while a policy stop is deterministic for a given prompt, so `isRetryable` treats it as terminal rather than spending the retry budget reproducing it. Whatever streamed before the stop still rides on the returned `agent.LLMResult` — content and usage both, because the tokens were really spent and a host may want to show what arrived. A cap additionally emits `LimitExhaustedEvent{Kind: LimitKindProviderMaxTokens}` across all three providers. Clean stops — `stop`, `end_turn`, `stop_sequence`, `tool_calls`/`tool_use`, and Anthropic's `pause_turn`, which is a complete response the caller is asked to continue — are byte-for-byte unchanged. (`pkg/agent/errors.go`, `pkg/agent/retry.go`, `pkg/llm/anthropic`, `pkg/llm/openai`, `pkg/llm/gemini`)
+
+### Changed (breaking)
+
+- **The Anthropic provider returns an error on `max_tokens` and `refusal` instead of a successful partial.** It already detected the cap, but only *emitted* `LimitExhaustedEvent` and shipped the truncated content as a success — so a host that did not watch events saw a complete answer, and a schema-constrained call still failed one layer up as a decode error. The event still fires; the turn now also fails, with the partial on the result. Soft truncation reports `max_tokens` too, since a tool_use the SDK cannot finalize was cut mid-JSON by exactly that cap. The provider default is `DefaultMaxTokens = 8192`, so long code-generation turns that previously returned a quietly truncated answer now surface as `ErrLLMTruncated` — raise the ceiling with `anthropic.WithMaxTokens` where that matters. (`pkg/llm/anthropic`)
+- **A call that already streamed content to the consumer is no longer retried.** The retry loop checked this after each retry — replaying a call whose text the consumer has read duplicates that text in the stream — but the *first* attempt's signal was discarded, so the gate had a hole nothing could fall through while truncation still returned success. With truncation now an error, every capped response would have replayed itself and paid for a second cap-sized generation to do it. Truncation remains retryable for the case where nothing streamed, such as a cap firing inside a tool call. (`pkg/agent/llm_call.go`)
+
+### Fixed
+
+- **The Gemini provider reads `FinishReason`.** It iterated the stream, returned on transport errors, accumulated `part.Text`, and never inspected the candidate's finish reason, so `MAX_TOKENS`, `SAFETY`, and `RECITATION` were indistinguishable from a clean stop. This is more visible on newer models because thinking tokens count toward the output budget. The reason is read *before* the nil-content guard: a content filter blanks the candidate's content, and skipping the chunk early discarded the only signal the response was ever stopped. The same check now guards the non-streaming media analyzer, where a filtered response previously reported the misleading `no content returned`. Vertex shares the implementation and inherits the fix. (`pkg/llm/gemini`)
+- **The OpenAI provider reads `finish_reason`.** `length` and `content_filter` returned as clean successes — the identical silent-prefix trap. The reason lands on the final chunk, whose delta is empty, so it is read before the delta is consumed. Reasons a compat backend invents are reported as partial rather than assumed complete, since only the documented clean stops can be trusted to mean the response finished. (`pkg/llm/openai`)
+
 ## [v0.38.0] — 2026-08-02
 
 ### Added
@@ -583,6 +599,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.39.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.39.0
 [v0.38.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.38.0
 [v0.37.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.37.0
 [v0.36.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.36.0
