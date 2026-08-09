@@ -2,9 +2,7 @@ package openai
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 
 	"github.com/hung12ct/gopheragent/pkg/tools"
 	"github.com/sashabaranov/go-openai"
@@ -23,21 +21,18 @@ type Embedder struct {
 
 // NewEmbedder constructs an embedder. apiKey falls back to
 // OPENAI_API_KEY. model defaults to text-embedding-3-small.
-func NewEmbedder(apiKey string, model string) (*Embedder, error) {
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, errors.New("OPENAI_API_KEY is not set in environment")
+// Pass WithBaseURL to embed against an OpenAI-compatible endpoint
+// (Ollama, vLLM, Together, a gateway) instead of api.openai.com.
+func NewEmbedder(apiKey string, model string, opts ...ClientOption) (*Embedder, error) {
+	client, err := newClientFor(apiKey, "NewEmbedder", opts)
+	if err != nil {
+		return nil, err
 	}
 	m := openai.SmallEmbedding3
 	if model != "" {
 		m = openai.EmbeddingModel(model)
 	}
-	return &Embedder{
-		client: openai.NewClient(apiKey),
-		model:  m,
-	}, nil
+	return &Embedder{client: client, model: m}, nil
 }
 
 // Embed returns one vector per input in the same order. Empty input returns

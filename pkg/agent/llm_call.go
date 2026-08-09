@@ -71,25 +71,33 @@ func (al *AgentLoop) handleFinalAnswer(ctx context.Context, st *iterationState, 
 	al.emit(ctx, st.sessionKey, st.streamChan, Event(DoneEvent{}))
 }
 
-// emitRunCostIfConfigured emits a RunCostEvent when a PriceTable is
-// configured AND the Run actually accumulated tokens. Called from the
+// emitRunCostIfConfigured emits a RunCostEvent when the Run accumulated
+// any accounting AND someone can act on it — either a PriceTable is
+// configured, or a provider reported a real charge. Called from the
 // deferred cleanup installed by installRunCostAccumulator so it fires
 // on every terminal path — final answer, MaxIters cap, fatal LLM
-// error — not just the success path. Skipped when the accumulator
-// is missing (PriceTable nil) or the total is zero.
+// error — not just the success path.
+//
+// An adopter with neither a table nor a cost-reporting provider sees no
+// event, exactly as before: usage alone is already on the wire as
+// UsageEvent, and a RunCostEvent whose USD is always zero would be
+// noise.
 func (al *AgentLoop) emitRunCostIfConfigured(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent) {
 	acc := runCostAccFromContext(ctx)
 	if acc == nil {
 		return
 	}
-	usage := acc.snapshot()
-	if usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
+	usage, usd := acc.snapshot()
+	if usage == (TokenUsage{}) {
+		return
+	}
+	if al.PriceTable == nil && usd == 0 {
 		return
 	}
 	al.emit(ctx, sessionKey, streamChan, Event(RunCostEvent{
 		Model: al.PriceModel,
 		Usage: usage,
-		USD:   al.PriceTable.Compute(al.PriceModel, usage),
+		USD:   usd,
 	}))
 }
 
@@ -141,7 +149,9 @@ func (al *AgentLoop) callLLM(ctx context.Context, st *iterationState, msgs []his
 	if content == "" {
 		content = res.Content
 	}
-	if err == nil && res.Usage.TotalTokens > 0 {
+	// A gateway can bill a call it reports no token counts for, so cost
+	// alone is enough to make the usage worth recording.
+	if err == nil && (res.Usage.TotalTokens > 0 || res.Usage.CostUSD > 0) {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(UsageEvent{Usage: res.Usage}))
 		if acc := runCostAccFromContext(ctx); acc != nil {
 			acc.add(res.Usage)

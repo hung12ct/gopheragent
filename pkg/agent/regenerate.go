@@ -101,7 +101,7 @@ func (al *AgentLoop) continueLogicLoop(ctx context.Context, sessionKey string, s
 	ctx = WithSessionKey(ctx, sessionKey)
 
 	// Mirror runLogicLoop: per-Run cost accumulator fires on every
-	// terminal exit when PriceTable is configured. Without this,
+	// terminal exit. Without this,
 	// Regenerate and Continue Runs would never emit RunCostEvent and
 	// adopters tracking billing would miss them silently.
 	var emitCost func()

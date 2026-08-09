@@ -25,6 +25,13 @@ type Provider struct {
 	seed        *int64
 }
 
+var _ agent.CapabilityProvider = (*Provider)(nil)
+
+// Capabilities reports features implemented by the Gemini adapter.
+func (*Provider) Capabilities() agent.LLMCapabilities {
+	return agent.LLMCapabilities{ImageInput: true, StructuredOutput: true}
+}
+
 // Option configures a Provider at construction.
 type Option func(*Provider)
 

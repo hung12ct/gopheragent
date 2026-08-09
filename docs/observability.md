@@ -127,6 +127,35 @@ loop.OnEvent(bt.Handler())
 http.Handle("/metrics", agentmetrics.Handler(bt))
 ```
 
+## Per-Run cost
+
+`RunCostEvent` fires once per Run — on every terminal path, not just the
+success one — with rolled-up tokens and a dollar total. There are two ways it
+gets a figure, and they compose:
+
+```go
+// Estimate from your own rates, for providers that bill silently.
+loop := agent.New(sm, reg, provider,
+    agent.WithPriceTable(agent.PriceTable{
+        "claude-sonnet-4-6": {InputPerMTokens: 3, OutputPerMTokens: 15},
+    }, "claude-sonnet-4-6"))
+```
+
+A provider that knows what it charged reports it directly instead, by setting
+`CostUSD` on the `TokenUsage` it returns from `GenerateStream`. Gateways that
+route across vendors typically do. No `PriceTable` is needed in that case — a
+static table could not price them correctly anyway, since it cannot see which
+model the gateway picked or which cache discounts applied.
+
+Dollars resolve **per call**, then sum: a call that reported `CostUSD`
+contributes that exact charge, and every other call is estimated from the
+table. A Run that mixes both bills each call the best way available. Read
+`RunCostEvent.Usage.CostUSD` to see how much of `USD` was billed rather than
+estimated — equal means the total is exact, zero means it is all estimate.
+
+With neither a table nor a reporting provider, no event fires; raw counts are
+still on the wire as `UsageEvent`.
+
 ## Notes
 
 - **Zero-cost when off:** no tracer/meter → decorators return the wrapped

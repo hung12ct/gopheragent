@@ -78,11 +78,10 @@ func degradedAccFromContext(ctx context.Context) *degradedAcc {
 // returns it alongside a sweep callback that emits any degradation no
 // terminal path has claimed yet.
 //
-// Unlike installRunCostAccumulator, which skips the ctx allocation
-// entirely when PriceTable is nil, this one always allocates: whether a
-// tool will degrade is not knowable up front and there is no config knob
-// to gate on. The cost is one small struct, one ctx value, and one
-// closure per Run — deliberate, not an oversight.
+// Like installRunCostAccumulator, this always allocates: whether a tool
+// will degrade is not knowable up front and there is no config knob to
+// gate on. The cost is one small struct, one ctx value, and one closure
+// per Run — deliberate, not an oversight.
 //
 // Caller pattern:
 //
