@@ -62,6 +62,21 @@ type ScriptedProvider struct {
 	idx int
 }
 
+var _ agent.CapabilityProvider = (*ScriptedProvider)(nil)
+
+// Capabilities reports the zero value: the scripted fake honours neither
+// image parts nor schema-enforced structured output. It replays its script
+// verbatim and never reads the incoming messages' MediaParts, so a Turn's
+// Content comes back whether or not an image was attached.
+//
+// Declaring that explicitly is the point. A multimodal consumer handed this
+// fake gets a well-formed, confident answer produced without the model ever
+// seeing an image — indistinguishable from success in a log — and this is
+// what lets it reject the provider at construction instead.
+func (*ScriptedProvider) Capabilities() agent.LLMCapabilities {
+	return agent.LLMCapabilities{}
+}
+
 // GenerateStream implements agent.LLMProvider. See Turn for the
 // dispatch rules.
 func (p *ScriptedProvider) GenerateStream(ctx context.Context, msgs []history.Message, registry *tools.Registry, stream chan<- agent.StreamEvent) (agent.LLMResult, error) {

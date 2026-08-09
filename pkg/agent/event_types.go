@@ -74,8 +74,8 @@ const (
 	EventTypeMemoryConsolidated StreamEventType = "memory_consolidated"
 	// EventTypeRunCost is emitted right before DoneEvent on Runs that
 	// produced a final answer. Carries rolled-up token usage and the
-	// computed dollar cost under the configured PriceTable. Skipped
-	// when no PriceTable is configured (zero-cost when unused).
+	// resolved dollar cost. Skipped only when neither a PriceTable is
+	// configured nor any provider reported a charge of its own.
 	EventTypeRunCost StreamEventType = "run_cost"
 	// EventTypeContextTrace records what the pruner rewrote on the way
 	// into one LLM call. Emitted only when a prune actually changed
@@ -385,15 +385,25 @@ func (MemoryConsolidatedEvent) isEventPayload()            {}
 func (MemoryConsolidatedEvent) eventType() StreamEventType { return EventTypeMemoryConsolidated }
 
 // RunCostEvent is the typed payload of EventTypeRunCost. Emitted at
-// the end of a successful Run when PriceTable is configured. Adopters
-// surface USD on the UI, push to billing telemetry, or alert on
-// per-Run cost spikes without re-aggregating UsageEvents themselves.
+// the end of a Run that produced any accounting, when a PriceTable is
+// configured or a provider reported a charge. Adopters surface USD on
+// the UI, push to billing telemetry, or alert on per-Run cost spikes
+// without re-aggregating UsageEvents themselves.
 //
-// USD is computed from the rolled-up Usage under the AgentLoop's
-// configured Model + PriceTable. When the Model isn't in the table,
-// USD is zero but Usage still reflects the true accumulated tokens —
-// useful for adopters who want to compute cost themselves with a
-// dynamic price source.
+// USD is resolved per LLM call and then summed: a call whose provider
+// reported TokenUsage.CostUSD contributes that exact charge, and any
+// other call is estimated from the AgentLoop's Model + PriceTable. So
+// a Run against a self-pricing gateway needs no table at all, and one
+// that mixes backends bills each call the best way available rather
+// than forcing the whole Run into one method.
+//
+// Usage.CostUSD carries the provider-reported portion alone. Compare
+// it against USD to see how much of the total was billed rather than
+// estimated: equal means the figure is exact, zero means it is all
+// table-derived. When the Model isn't in the table and no provider
+// priced the Run, USD is zero but Usage still reflects the true
+// accumulated tokens — useful for adopters computing cost downstream
+// from a dynamic price source.
 type RunCostEvent struct {
 	Model string     `json:"model,omitempty"`
 	Usage TokenUsage `json:"usage"`

@@ -37,51 +37,68 @@ type Provider struct {
 	temperature *float64
 	topP        *float64
 	seed        *int64
+	cfg         clientConfig
 }
 
-// Option configures a Provider at construction.
-type Option func(*Provider)
+var _ agent.CapabilityProvider = (*Provider)(nil)
 
 // WithTemperature pins the sampling temperature (0.0–2.0 for OpenAI).
 // Use 0 for maximally reproducible classification/extraction turns; unset
 // keeps the provider default. An explicit 0 is honored (the SDK's omitempty
 // would otherwise drop it and silently revert to the provider default).
 func WithTemperature(t float64) Option {
-	return func(p *Provider) { p.temperature = &t }
+	return providerOptionFunc(func(p *Provider) { p.temperature = &t })
 }
 
 // WithTopP pins nucleus sampling. OpenAI recommends adjusting either
 // temperature or top_p, not both. Unset keeps the provider default.
 func WithTopP(v float64) Option {
-	return func(p *Provider) { p.topP = &v }
+	return providerOptionFunc(func(p *Provider) { p.topP = &v })
 }
 
 // WithSeed requests best-effort deterministic sampling. Determinism is not
 // guaranteed across model versions or backend changes — pair with a pinned
 // temperature for the strongest reproducibility OpenAI offers.
 func WithSeed(n int64) Option {
-	return func(p *Provider) { p.seed = &n }
+	return providerOptionFunc(func(p *Provider) { p.seed = &n })
+}
+
+// Capabilities reports features implemented by this adapter. Compatible
+// endpoints still need model-specific discovery when their catalog varies.
+func (*Provider) Capabilities() agent.LLMCapabilities {
+	return agent.LLMCapabilities{ImageInput: true, StructuredOutput: true}
+}
+
+// resolveAPIKey falls back to OPENAI_API_KEY when apiKey is empty.
+func resolveAPIKey(apiKey string) string {
+	if apiKey == "" {
+		return os.Getenv("OPENAI_API_KEY")
+	}
+	return apiKey
 }
 
 // New creates a wrapper over OpenAI's API.
 // Auto-discovers OPENAI_API_KEY from environment if apiKey is empty.
+//
+// Pass WithBaseURL to target an OpenAI-compatible endpoint instead;
+// NewCompat is the same thing with baseURL required rather than optional.
 func New(apiKey string, model string, opts ...Option) (*Provider, error) {
+	apiKey = resolveAPIKey(apiKey)
 	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, errors.New("OPENAI_API_KEY is not set in environment")
+		return nil, errors.New("openai: New: OPENAI_API_KEY is not set in environment")
 	}
 	if model == "" {
 		model = openai.GPT4o
 	}
-	p := &Provider{
-		client: openai.NewClient(apiKey),
-		model:  model,
-	}
+	p := &Provider{model: model}
 	for _, opt := range opts {
-		opt(p)
+		opt.applyProvider(p)
 	}
+	client, err := p.cfg.newClient(apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("openai: New: %w", err)
+	}
+	p.client = client
 	return p, nil
 }
 

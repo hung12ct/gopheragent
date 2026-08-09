@@ -296,12 +296,18 @@ func WithMemoryConsolidator(c *Consolidator) Option {
 	return func(al *AgentLoop) { al.MemoryConsolidator = c }
 }
 
-// WithPriceTable enables per-Run cost rollup. The loop accumulates
-// TokenUsage across every LLM call in a Run and emits RunCostEvent
-// right before DoneEvent, with USD computed from table[model].
-// Adopters with router-style multi-model setups whose pricing varies
-// per call should leave this unset and roll cost up themselves from
-// UsageEvent. nil/empty table disables rollup at zero hot-path cost.
+// WithPriceTable supplies the rates used to estimate cost for LLM calls
+// whose provider does not report one. The loop accumulates TokenUsage
+// across every call in a Run and emits RunCostEvent right before
+// DoneEvent, with USD from table[model].
+//
+// This is only needed for providers that bill silently. A provider that
+// sets TokenUsage.CostUSD is already exact, and RunCostEvent fires for
+// it whether or not a table is configured — leave this unset in that
+// case rather than adding rates the loop will never consult. Adopters
+// with router-style multi-model setups whose pricing varies per call
+// and whose providers report nothing should still roll cost up
+// themselves from UsageEvent.
 //
 // model is the key looked up in table for cost computation — pass
 // the canonical name of the model this loop drives. Unknown keys

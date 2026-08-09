@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -30,20 +29,17 @@ type SummaryProvider struct {
 // NewSummaryProvider creates an OpenAI-backed SummaryProvider.
 // Auto-discovers OPENAI_API_KEY from environment if apiKey is empty.
 // model defaults to "gpt-4o-mini" (cheap + fast — ideal for background summarization).
-func NewSummaryProvider(apiKey, model string) (*SummaryProvider, error) {
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, errors.New("OPENAI_API_KEY is not set in environment")
+// Pass WithBaseURL to summarize against an OpenAI-compatible endpoint
+// instead of api.openai.com.
+func NewSummaryProvider(apiKey, model string, opts ...ClientOption) (*SummaryProvider, error) {
+	client, err := newClientFor(apiKey, "NewSummaryProvider", opts)
+	if err != nil {
+		return nil, err
 	}
 	if model == "" {
 		model = openai.GPT4oMini
 	}
-	return &SummaryProvider{
-		client: openai.NewClient(apiKey),
-		model:  model,
-	}, nil
+	return &SummaryProvider{client: client, model: model}, nil
 }
 
 // SummarizeBehaviors analyzes recent messages and merges new evidence into the

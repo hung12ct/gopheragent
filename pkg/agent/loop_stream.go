@@ -141,10 +141,19 @@ type PendingToolCall struct {
 
 // TokenUsage carries per-call token accounting returned by an LLM provider.
 // Providers that do not report usage leave the fields zero.
+//
+// CostUSD is the dollar amount the provider itself billed for the call, for
+// the backends that return one (gateways that route across vendors typically
+// do). Leave it zero when the provider reports no cost: the loop then falls
+// back to estimating from AgentLoop.PriceTable, and a zero here means "not
+// reported", never "free". A reported cost is the actual charge and beats any
+// table estimate — it already accounts for the model the gateway picked,
+// cache discounts, and per-vendor rates a static table cannot track.
 type TokenUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
 }
 
 // LLMResult represents the structured response from the LLM provider.
@@ -198,6 +207,40 @@ type ToolResultHook func(ctx context.Context, toolCallID, toolName, argsJSON, re
 type LLMProvider interface {
 	GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- StreamEvent) (LLMResult, error)
 }
+
+// LLMCapabilities describes what a provider adapter can put on the wire.
+// It does not promise that every model behind a compatible endpoint supports
+// the feature; dynamic model capability checks remain the caller's job.
+type LLMCapabilities struct {
+	ImageInput       bool
+	StructuredOutput bool
+}
+
+// CapabilityProvider optionally reports an adapter's transport features, so a
+// consumer that requires one (a judge that compares images, a caller that
+// depends on schema enforcement) can reject an unsuitable provider at
+// construction instead of discovering it from a confident, wrong answer.
+//
+// Three rules make the signal trustworthy; breaking any of them turns it back
+// into a guess:
+//
+//   - Absence means unknown, not false. A provider that does not implement
+//     this interface makes no claim, and callers decide how to treat that.
+//     Implement it on every adapter — including fakes that support nothing,
+//     which is exactly the case the interface exists to catch.
+//   - A decorator around a single LLMProvider must forward that provider's
+//     report, and must not implement this interface when the wrapped provider
+//     does not — pick the concrete type at construction. Otherwise wiring
+//     tracing silently erases a capability the caller checks for, or invents a
+//     claim the underlying adapter never made. A multiplexer that cannot know
+//     its target in advance (a router) cannot do that, and instead reports the
+//     intersection of everything it might dispatch to, counting an undeclared
+//     member as supporting nothing: that errs toward a loud rejection at
+//     construction rather than a silent wrong answer at run time.
+//   - The report describes the adapter, not the model. A gateway that fronts
+//     both text-only and multimodal models answers for the transport it
+//     speaks; selecting a model that honours it stays the caller's job.
+type CapabilityProvider interface{ Capabilities() LLMCapabilities }
 
 // AgentLoop orchestrates the ReAct loop.
 type AgentLoop struct {
@@ -433,12 +476,15 @@ type AgentLoop struct {
 	// configuration error caught at Consolidate time.
 	MemoryConsolidator *Consolidator
 
-	// PriceTable, when non-nil, enables per-Run cost rollup. The loop
-	// accumulates TokenUsage across every LLM call in a Run and emits
-	// a RunCostEvent right before DoneEvent with the dollars computed
-	// from PriceTable[PriceModel]. Adopters running multi-model
-	// router setups whose pricing varies per call should leave this
-	// nil and roll cost up themselves from UsageEvent.
+	// PriceTable supplies the rates used to estimate the dollar cost of
+	// LLM calls whose provider reports none. The loop accumulates
+	// TokenUsage across every call in a Run and emits a RunCostEvent
+	// right before DoneEvent. Leaving it nil does not disable the
+	// rollup: a provider that sets TokenUsage.CostUSD is already exact
+	// and reports through the same event. Adopters running multi-model
+	// router setups whose pricing varies per call, against providers
+	// that report nothing, should leave this nil and roll cost up
+	// themselves from UsageEvent.
 	PriceTable PriceTable
 
 	// PriceModel is the key looked up in PriceTable for cost
@@ -814,8 +860,8 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	// from any iteration without threading new params. The deferred
 	// emitCost fires on every terminal exit (final answer, MaxIters,
 	// MaxToolCallsPerSession, fatal LLM error) instead of only on the
-	// final-answer success path. Nil PriceTable → no-op closure +
-	// no ctx allocation.
+	// final-answer success path. Installed unconditionally so a
+	// provider that prices its own calls is recorded without a table.
 	var emitCost func()
 	ctx, emitCost = al.installRunCostAccumulator(ctx, sessionKey, streamChan)
 	defer emitCost()

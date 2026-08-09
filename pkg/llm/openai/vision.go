@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/sashabaranov/go-openai"
@@ -26,17 +25,17 @@ type VisionAnalyzer struct {
 // NewVisionAnalyzer builds an analyzer. apiKey defaults to
 // OPENAI_API_KEY; model defaults to "gpt-4o" (smallest model with
 // reliable vision support across all image tasks).
-func NewVisionAnalyzer(apiKey, model string) (*VisionAnalyzer, error) {
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("openai: OPENAI_API_KEY not set")
+// Pass WithBaseURL to analyze against an OpenAI-compatible endpoint
+// instead of api.openai.com.
+func NewVisionAnalyzer(apiKey, model string, opts ...ClientOption) (*VisionAnalyzer, error) {
+	client, err := newClientFor(apiKey, "NewVisionAnalyzer", opts)
+	if err != nil {
+		return nil, err
 	}
 	if model == "" {
 		model = "gpt-4o"
 	}
-	return &VisionAnalyzer{client: openai.NewClient(apiKey), model: model}, nil
+	return &VisionAnalyzer{client: client, model: model}, nil
 }
 
 // Analyze sends media + prompt to the vision model and returns the response.

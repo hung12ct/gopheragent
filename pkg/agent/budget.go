@@ -65,11 +65,19 @@ func (bt *BudgetTracker) Handler() EventHandler {
 			return
 		}
 		delta := p.Usage
+		// Negative charges are dropped rather than accumulated, so a
+		// buggy provider cannot refund a session's spend through the
+		// usage stream. Same clamp as runCostAcc.add.
+		cost := delta.CostUSD
+		if cost < 0 {
+			cost = 0
+		}
 		bt.mu.Lock()
 		cur := bt.usage[sessionKey]
 		cur.PromptTokens += delta.PromptTokens
 		cur.CompletionTokens += delta.CompletionTokens
 		cur.TotalTokens += delta.TotalTokens
+		cur.CostUSD += cost
 		bt.usage[sessionKey] = cur
 		bt.mu.Unlock()
 	}
@@ -144,12 +152,24 @@ func (bt *BudgetTracker) Rewind(sessionKey string, refund TokenUsage) {
 	cur.PromptTokens = subFloorZero(cur.PromptTokens, refund.PromptTokens)
 	cur.CompletionTokens = subFloorZero(cur.CompletionTokens, refund.CompletionTokens)
 	cur.TotalTokens = subFloorZero(cur.TotalTokens, refund.TotalTokens)
+	cur.CostUSD = subFloorZeroFloat(cur.CostUSD, refund.CostUSD)
 	bt.usage[sessionKey] = cur
 }
 
 // subFloorZero returns max(a-b, 0). Inlined helper so the three-field
 // Rewind body stays readable.
 func subFloorZero(a, b int) int {
+	if b >= a {
+		return 0
+	}
+	return a - b
+}
+
+// subFloorZeroFloat is subFloorZero for the dollar field. A separate
+// function rather than a generic over cmp.Ordered: the int and float
+// counters are refunded under the same rule but a shared signature would
+// invite callers to floor arbitrary numeric state through here.
+func subFloorZeroFloat(a, b float64) float64 {
 	if b >= a {
 		return 0
 	}

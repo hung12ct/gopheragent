@@ -58,7 +58,7 @@ go get github.com/hung12ct/gopheragent
   the bookkeeping did not" instead of forcing a turn into success or failure.
 - **Custom tools** — one interface, schema derived from a Go struct; a middleware
   chain for logging, timing, rate limiting, and tracing.
-- **Multi-provider** — OpenAI, Anthropic, Gemini, Vertex, and OpenAI-compatible
+- **Multi-provider** — OpenAI, Anthropic, Gemini, Vertex, OpenRouter, and OpenAI-compatible
   backends, each in its own subpackage; multi-model routing; sampling controls.
 - **Sub-agents & async** — sub-agent streaming, conversation forking, background
   workers, first-class task tracking.

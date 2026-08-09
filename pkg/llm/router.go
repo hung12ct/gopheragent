@@ -50,6 +50,38 @@ func (r *RouterProvider) AddRoute(condition RouteCondition, provider agent.LLMPr
 	return r
 }
 
+var _ agent.CapabilityProvider = (*RouterProvider)(nil)
+
+// Capabilities reports the intersection over the fallback and every route:
+// a feature holds only when every provider the router might dispatch to
+// supports it. The router cannot answer per-route, because the route is
+// chosen from the conversation and is unknown until GenerateStream runs.
+//
+// A member that does not implement agent.CapabilityProvider makes no claim,
+// and the intersection counts it as supporting nothing — one undeclared
+// member collapses the whole report to the zero value. That is deliberate:
+// under-reporting costs a caller a spurious rejection at construction, while
+// over-reporting costs it a wrong answer at run time with nothing in the log
+// to distinguish it from a working call.
+func (r *RouterProvider) Capabilities() agent.LLMCapabilities {
+	caps := providerCapabilities(r.fallback)
+	for _, rt := range r.routes {
+		c := providerCapabilities(rt.provider)
+		caps.ImageInput = caps.ImageInput && c.ImageInput
+		caps.StructuredOutput = caps.StructuredOutput && c.StructuredOutput
+	}
+	return caps
+}
+
+// providerCapabilities reports p's capabilities, or the zero value when p
+// makes no claim (including when p is nil).
+func providerCapabilities(p agent.LLMProvider) agent.LLMCapabilities {
+	if c, ok := p.(agent.CapabilityProvider); ok {
+		return c.Capabilities()
+	}
+	return agent.LLMCapabilities{}
+}
+
 // GenerateStream selects the appropriate provider and delegates.
 func (r *RouterProvider) GenerateStream(
 	ctx context.Context,

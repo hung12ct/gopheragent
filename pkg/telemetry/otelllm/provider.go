@@ -83,7 +83,26 @@ func NewProvider(next agent.LLMProvider, opts ...Option) agent.LLMProvider {
 		model:  cfg.model,
 	}
 	p.initInstruments(cfg.meter)
+	if c, ok := next.(agent.CapabilityProvider); ok {
+		return &capableProvider{instrumentedProvider: p, caps: c}
+	}
 	return p
+}
+
+// capableProvider is the variant returned when the wrapped provider reports
+// capabilities. Selecting the type at construction — rather than always
+// implementing Capabilities on instrumentedProvider — keeps "absent means
+// unknown" intact: wrapping a provider that makes no claim must not turn it
+// into a provider claiming it supports nothing.
+type capableProvider struct {
+	*instrumentedProvider
+	caps agent.CapabilityProvider
+}
+
+// Capabilities forwards the wrapped provider's report so that adding tracing
+// does not erase a capability the caller checks for.
+func (p *capableProvider) Capabilities() agent.LLMCapabilities {
+	return p.caps.Capabilities()
 }
 
 // instrumentedProvider decorates an agent.LLMProvider with OTel spans/metrics.

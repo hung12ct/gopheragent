@@ -25,6 +25,14 @@ func newForkKey(parent string) (string, error) {
 // provider adapters iterate Parts instead of (or in addition to) Content.
 // When Parts is empty, adapters fall back to the plain-text Content path —
 // so every existing caller and test continues to work unchanged.
+//
+// The fallback is only for an empty Parts. An adapter that cannot render a
+// populated Parts must fail rather than quietly answer from Content: a
+// caller that sent an image and got back a fluent, well-formed reply has no
+// way to tell that the model never saw it, and nothing in the logs
+// distinguishes that from success. Such an adapter should also report
+// ImageInput=false through agent.CapabilityProvider so consumers that need
+// vision can reject it at construction instead of mid-run.
 type Message struct {
 	Role       string      `json:"role"`
 	Content    string      `json:"content"`
