@@ -60,6 +60,9 @@ go get github.com/hung12ct/gopheragent
   chain for logging, timing, rate limiting, and tracing.
 - **Multi-provider** — OpenAI, Anthropic, Gemini, Vertex, OpenRouter, and OpenAI-compatible
   backends, each in its own subpackage; multi-model routing; sampling controls.
+- **Speech to text** — `pkg/audio` transcribes with Whisper or Gemini behind one
+  interface, ahead of the loop, so any provider can drive an audio-fed agent and
+  a long recording is uploaded once rather than re-sent every turn.
 - **Sub-agents & async** — sub-agent streaming, conversation forking, background
   workers, first-class task tracking.
 - **Cross-session memory** — a post-session consolidator distills transcripts
