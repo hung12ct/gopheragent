@@ -72,10 +72,20 @@ type Message struct {
 }
 
 // PartType enumerates the kinds of content a MediaPart can hold.
-// Video and audio are intentionally omitted for now — Anthropic does not
-// accept them in messages today, and Gemini video requires Files-API upload
-// semantics that do not fit the simple inline model. Video remains on the
-// tool path via media_analyze.
+//
+// Video and audio are intentionally omitted. Anthropic accepts neither in a
+// message, and Gemini video requires Files-API upload semantics that do not
+// fit the simple inline model. Video remains on the tool path via
+// media_analyze; audio goes through pkg/audio, whose Transcriber converts it
+// to text before it reaches a message.
+//
+// Transcribing rather than embedding is also the cheaper shape for anything
+// long. History is re-sent on every LLM call in a session, so audio carried
+// as a message part is re-uploaded on every subsequent turn — a one-hour
+// recording would be billed again on each turn of the conversation about it.
+//
+// A part whose type an adapter cannot render fails the request with
+// agent.ErrUnrenderablePart rather than being dropped.
 type PartType string
 
 const (

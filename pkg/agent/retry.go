@@ -57,13 +57,15 @@ func (r *RetryConfig) delay(attempt int) time.Duration {
 }
 
 // isRetryable returns false for errors that fail identically on every
-// attempt: context-level cancellation, and a provider content-policy stop
-// (deterministic for a given prompt — retrying only burns the budget).
+// attempt: context-level cancellation, a provider content-policy stop
+// (deterministic for a given prompt — retrying only burns the budget), and a
+// message the adapter cannot render (the same bytes fail the same way).
 func isRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
 	return !errors.Is(err, context.Canceled) &&
 		!errors.Is(err, context.DeadlineExceeded) &&
-		!errors.Is(err, ErrLLMContentBlocked)
+		!errors.Is(err, ErrLLMContentBlocked) &&
+		!errors.Is(err, ErrUnrenderablePart)
 }

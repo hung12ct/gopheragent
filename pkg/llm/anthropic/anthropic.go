@@ -105,6 +105,14 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	memory = agent.PatchDanglingToolCalls(memory)
 
 	for _, m := range memory {
+		// Only user messages render media. Parts on any other role are
+		// rejected rather than dropped: the branches below read Content
+		// alone, so passing them through would answer from media the model
+		// never received.
+		if len(m.Parts) > 0 && m.Role != "user" {
+			return agent.LLMResult{}, fmt.Errorf("anthropic: %w: %s message carries %d media parts, which this API accepts only on user messages",
+				agent.ErrUnrenderablePart, m.Role, len(m.Parts))
+		}
 		switch m.Role {
 		case "system":
 			block := anthropic.TextBlockParam{Text: m.Content}
@@ -115,7 +123,11 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		case "user":
 			var blocks []anthropic.ContentBlockParamUnion
 			if len(m.Parts) > 0 {
-				blocks = blocksFromMediaParts(m.Content, m.Parts)
+				rendered, err := blocksFromMediaParts(m.Content, m.Parts)
+				if err != nil {
+					return agent.LLMResult{}, err
+				}
+				blocks = rendered
 			} else {
 				blocks = []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)}
 			}
@@ -470,15 +482,19 @@ func stampCacheControl(block *anthropic.ContentBlockParamUnion) {
 // the image.
 //
 // Raw bytes are base64-encoded; URLs pass through as URLImageSourceParam.
-// Parts with no usable payload are silently skipped (the alternative —
-// surfacing an error — would force every caller to pre-validate, which is
-// more trouble than it's worth for a format issue).
-func blocksFromMediaParts(caption string, parts []history.MediaPart) []anthropic.ContentBlockParamUnion {
+//
+// A part this adapter cannot render fails the whole message with
+// agent.ErrUnrenderablePart. Skipping it was the earlier behavior and was
+// wrong: Anthropic accepts no audio or video block at all, so a caller who
+// sent one got back a confident answer from a model that received only the
+// caption, indistinguishable from success. See that error's doc. Empty text
+// parts remain skipped — they carry nothing to lose.
+func blocksFromMediaParts(caption string, parts []history.MediaPart) ([]anthropic.ContentBlockParamUnion, error) {
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(parts)+1)
 	if caption != "" {
 		blocks = append(blocks, anthropic.NewTextBlock(caption))
 	}
-	for _, p := range parts {
+	for i, p := range parts {
 		switch p.Type {
 		case history.PartText:
 			if p.Text == "" {
@@ -486,16 +502,24 @@ func blocksFromMediaParts(caption string, parts []history.MediaPart) []anthropic
 			}
 			blocks = append(blocks, anthropic.NewTextBlock(p.Text))
 		case history.PartImage:
-			if len(p.Data) > 0 {
+			switch {
+			case len(p.Data) > 0:
 				mime := p.MIME
 				if mime == "" {
 					mime = "image/png"
 				}
 				blocks = append(blocks, anthropic.NewImageBlockBase64(mime, base64.StdEncoding.EncodeToString(p.Data)))
-			} else if p.URL != "" {
+			case p.URL != "":
 				blocks = append(blocks, anthropic.NewImageBlock(anthropic.URLImageSourceParam{URL: p.URL}))
+			default:
+				return nil, fmt.Errorf("anthropic: %w: part %d is an image with neither URL nor Data", agent.ErrUnrenderablePart, i)
 			}
+		default:
+			return nil, fmt.Errorf("anthropic: %w: part %d has unsupported type %q", agent.ErrUnrenderablePart, i, p.Type)
 		}
 	}
-	return blocks
+	if len(blocks) == 0 {
+		return nil, fmt.Errorf("anthropic: %w: %d parts produced no renderable content", agent.ErrUnrenderablePart, len(parts))
+	}
+	return blocks, nil
 }

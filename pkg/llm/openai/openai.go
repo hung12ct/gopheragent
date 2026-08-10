@@ -114,9 +114,22 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		// Multimodal: when Parts is set we must populate MultiContent
 		// instead of Content (OpenAI rejects both being set on the same
 		// message — see ErrContentFieldsMisused in the SDK).
-		if len(m.Parts) > 0 && m.Role == "user" {
+		//
+		// Only user messages may carry media. Parts on any other role are
+		// rejected rather than dropped: OpenAI has no multimodal assistant or
+		// tool content, so silently sending the text alone would answer from
+		// media the model never received.
+		if len(m.Parts) > 0 {
+			if m.Role != "user" {
+				return agent.LLMResult{}, fmt.Errorf("openai: %w: %s message carries %d media parts, which this API accepts only on user messages",
+					agent.ErrUnrenderablePart, m.Role, len(m.Parts))
+			}
+			multi, err := partsFromMediaParts(m.Content, m.Parts)
+			if err != nil {
+				return agent.LLMResult{}, err
+			}
 			msg.Content = ""
-			msg.MultiContent = partsFromMediaParts(m.Content, m.Parts)
+			msg.MultiContent = multi
 		}
 		// tool result: needs ToolCallID
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -373,7 +386,12 @@ func reasoningEffortFor(model string, budget int) string {
 //
 // For image parts, raw Data is folded into a data: URI — OpenAI accepts both
 // https URLs and data: URIs interchangeably for image_url.
-func partsFromMediaParts(caption string, parts []history.MediaPart) []openai.ChatMessagePart {
+//
+// Any part this adapter cannot render fails the whole message with
+// agent.ErrUnrenderablePart rather than being skipped; see that error's doc
+// for why silence is the worse outcome. Empty text parts are the one
+// exception — they carry nothing to lose.
+func partsFromMediaParts(caption string, parts []history.MediaPart) ([]openai.ChatMessagePart, error) {
 	out := make([]openai.ChatMessagePart, 0, len(parts)+1)
 	if caption != "" {
 		out = append(out, openai.ChatMessagePart{
@@ -381,7 +399,7 @@ func partsFromMediaParts(caption string, parts []history.MediaPart) []openai.Cha
 			Text: caption,
 		})
 	}
-	for _, p := range parts {
+	for i, p := range parts {
 		switch p.Type {
 		case history.PartText:
 			if p.Text == "" {
@@ -401,13 +419,18 @@ func partsFromMediaParts(caption string, parts []history.MediaPart) []openai.Cha
 				url = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
 			}
 			if url == "" {
-				continue
+				return nil, fmt.Errorf("openai: %w: part %d is an image with neither URL nor Data", agent.ErrUnrenderablePart, i)
 			}
 			out = append(out, openai.ChatMessagePart{
 				Type:     openai.ChatMessagePartTypeImageURL,
 				ImageURL: &openai.ChatMessageImageURL{URL: url},
 			})
+		default:
+			return nil, fmt.Errorf("openai: %w: part %d has unsupported type %q", agent.ErrUnrenderablePart, i, p.Type)
 		}
 	}
-	return out
+	if len(out) == 0 {
+		return nil, fmt.Errorf("openai: %w: %d parts produced no renderable content", agent.ErrUnrenderablePart, len(parts))
+	}
+	return out, nil
 }

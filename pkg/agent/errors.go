@@ -93,6 +93,22 @@ var (
 	// caller must change the request or surface the block to the user.
 	ErrLLMContentBlocked = errors.New("agent: LLM stopped generating for a content policy")
 
+	// ErrUnrenderablePart is returned by a provider adapter when a message
+	// carries a history.MediaPart the adapter cannot put on the wire — an
+	// unsupported part type, or a part whose payload is missing.
+	//
+	// Failing is the point. The alternative, dropping the part and sending
+	// the rest, produces a fluent well-formed answer from a model that never
+	// received the media, and nothing distinguishes that from success: not
+	// the response, not the logs, not a schema check. A judge that cannot see
+	// the image it is judging is not a degraded judge, it is a random one.
+	//
+	// Deterministic like ErrLLMAuth, not transient like ErrLLMFailure — the
+	// same message fails identically on every retry. isRetryable treats it as
+	// terminal; the caller must re-encode the part or choose a provider that
+	// supports it.
+	ErrUnrenderablePart = errors.New("agent: message carries a media part this provider cannot render")
+
 	// ErrContextCancelled is returned when the request context is cancelled mid-loop.
 	ErrContextCancelled = errors.New("agent: operation cancelled")
 

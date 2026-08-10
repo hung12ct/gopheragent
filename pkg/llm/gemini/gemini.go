@@ -90,6 +90,14 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	var systemInstruction *genai.Content
 
 	for _, m := range memory {
+		// Only user messages render media. Parts on any other role are
+		// rejected rather than dropped: the branches below read Content
+		// alone, so passing them through would answer from media the model
+		// never received.
+		if len(m.Parts) > 0 && m.Role != "user" {
+			return agent.LLMResult{}, fmt.Errorf("gemini: %w: %s message carries %d media parts, which this API accepts only on user messages",
+				agent.ErrUnrenderablePart, m.Role, len(m.Parts))
+		}
 		if m.Role == "system" {
 			systemInstruction = &genai.Content{
 				Parts: []*genai.Part{{Text: m.Content}},
@@ -104,7 +112,11 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		case "user":
 			role = "user"
 			if len(m.Parts) > 0 {
-				parts = append(parts, partsFromMediaParts(m.Content, m.Parts)...)
+				rendered, err := partsFromMediaParts(m.Content, m.Parts)
+				if err != nil {
+					return agent.LLMResult{}, err
+				}
+				parts = append(parts, rendered...)
 			} else {
 				parts = append(parts, &genai.Part{Text: m.Content})
 			}
@@ -265,12 +277,17 @@ func (p *Provider) applySampling(config *genai.GenerateContentConfig) {
 //
 // A non-empty caption is prepended as a text part so prompts travel
 // alongside the media. MIME defaults to image/png when unspecified.
-func partsFromMediaParts(caption string, parts []history.MediaPart) []*genai.Part {
+//
+// A part this adapter cannot render fails the whole message with
+// agent.ErrUnrenderablePart rather than being skipped; see that error's doc
+// for why silence is the worse outcome. Empty text parts are the one
+// exception — they carry nothing to lose.
+func partsFromMediaParts(caption string, parts []history.MediaPart) ([]*genai.Part, error) {
 	out := make([]*genai.Part, 0, len(parts)+1)
 	if caption != "" {
 		out = append(out, &genai.Part{Text: caption})
 	}
-	for _, p := range parts {
+	for i, p := range parts {
 		switch p.Type {
 		case history.PartText:
 			if p.Text == "" {
@@ -282,18 +299,26 @@ func partsFromMediaParts(caption string, parts []history.MediaPart) []*genai.Par
 			if mime == "" {
 				mime = "image/png"
 			}
-			if len(p.Data) > 0 {
+			switch {
+			case len(p.Data) > 0:
 				out = append(out, &genai.Part{
 					InlineData: &genai.Blob{MIMEType: mime, Data: p.Data},
 				})
-			} else if p.URL != "" {
+			case p.URL != "":
 				out = append(out, &genai.Part{
 					FileData: &genai.FileData{FileURI: p.URL, MIMEType: mime},
 				})
+			default:
+				return nil, fmt.Errorf("gemini: %w: part %d is an image with neither URL nor Data", agent.ErrUnrenderablePart, i)
 			}
+		default:
+			return nil, fmt.Errorf("gemini: %w: part %d has unsupported type %q", agent.ErrUnrenderablePart, i, p.Type)
 		}
 	}
-	return out
+	if len(out) == 0 {
+		return nil, fmt.Errorf("gemini: %w: %d parts produced no renderable content", agent.ErrUnrenderablePart, len(parts))
+	}
+	return out, nil
 }
 
 // applyStructuredOutput translates the ctx-carried StructuredOutput
