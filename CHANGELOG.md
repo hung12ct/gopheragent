@@ -2,6 +2,17 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.42.0] — 2026-08-15
+
+### Added
+
+- **`openai.JSONMode` — a compatible endpoint now states which JSON mode it implements instead of being assumed into OpenAI's.** "OpenAI-compatible" describes the endpoint, the request and response shape, and the SDK; it does not promise every extension built on top of them. Structured output is where that gap bites: `api.openai.com` takes `response_format {type:"json_schema"}` with the schema inline and enforces it server-side, while several compatible endpoints publish only the older `{type:"json_object"}`, which guarantees JSON syntax and carries no schema field at all. The adapter sent `json_schema` unconditionally, so on such an endpoint every schema-constrained call was a 400 while plain chat and tool calling kept working — the failure landed exactly on the planner, extractor, and judge stages that depend on structured output, and nowhere else. `WithJSONMode` takes `JSONModeSchema`, `JSONModeObject`, or `JSONModeNone`; `WithImageInput` declares the other feature a gateway may or may not have. Under `JSONModeObject` the schema moves into the prompt as a trailing system message, appended last rather than merged into an existing system prompt because the schema is an instruction and the final message is the one models follow most closely. The rendered text always contains the literal word JSON, which is load-bearing rather than stylistic: endpoints implementing this format commonly reject a request whose messages never mention it, to stop callers switching on JSON mode and then asking for prose. What `JSONModeObject` cannot do is enforce anything — the endpoint guarantees only that the reply parses, so schema conformance degrades from a server-side constraint to a model instruction and `Strict` becomes a request rather than a rule. Callers on that path must validate the result and be ready to retry; the adapter does not retry on their behalf, because how many attempts a malformed reply is worth is policy the caller owns. (`pkg/llm/openai/json_mode.go`)
+
+### Changed (breaking)
+
+- **`openai.NewCompat` no longer claims image input or structured output on the endpoint's behalf.** `Capabilities()` was a method on the shared `*Provider` type returning a hardcoded `{ImageInput: true, StructuredOutput: true}`, and `NewCompat` returns that same type — so a provider pointed at any gateway in the ecosystem reported full support regardless of what the gateway actually implemented. That inverts the entire point of the signal. `CapabilityProvider` exists so a consumer can reject an unsuitable provider at construction instead of discovering the gap from a confident, wrong answer, and for compatible endpoints it produced precisely that: a pre-flight check that passed, followed by a failure mid-run. The report now derives from configuration — `StructuredOutput` is true whenever a JSON mode is declared — so a single source of truth governs both what is claimed and what goes on the wire, and the two cannot drift. `New` is unchanged and still reports both, since it does speak for `api.openai.com`. `NewCompat` starts from `JSONModeNone` and no image claim, in the same spirit as its already requiring an explicit model: a compatible endpoint has no sensible default, and the adapter declares nothing it cannot know. Callers using structured output through `NewCompat` must add `WithJSONMode(...)`; the alternative was to keep defaulting to `json_schema`, which preserves both the false claim and the 400.
+- **A structured-output call against `JSONModeNone` fails before the request is sent.** The error names the option that fixes it. Silently dropping the constraint was the worse option in both directions: the model returns prose, and the caller's unmarshal fails somewhere unrelated to the cause — while forwarding a `response_format` the endpoint never published produces a 400 that names neither. (`pkg/llm/openai/openai.go`, `pkg/llm/openai/openai_compat.go`)
+
 ## [v0.41.0] — 2026-08-10
 
 ### Added
@@ -635,6 +646,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.42.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.42.0
 [v0.41.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.41.0
 [v0.40.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.40.0
 [v0.39.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.39.0

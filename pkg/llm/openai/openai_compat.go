@@ -17,12 +17,30 @@ import (
 // point NewEmbedder, NewVisionAnalyzer, and NewSummaryProvider at the same
 // endpoint with WithBaseURL, or they will call api.openai.com.
 //
+// Two features default off here for the same reason the model is required:
+// a compatible endpoint implements an unknown subset of the API, so the
+// adapter declares nothing it cannot know.
+//
+//   - JSON mode is JSONModeNone. A structured-output call fails until
+//     WithJSONMode says what the endpoint implements. Endpoints publishing
+//     OpenAI's json_schema take JSONModeSchema; those publishing only the
+//     older json_object take JSONModeObject.
+//   - Image input is unclaimed until WithImageInput(true).
+//
+// Both feed Capabilities(), so a consumer that needs schema enforcement or
+// vision can reject the provider at construction instead of at the first
+// request.
+//
 // Examples:
 //
-//	Gemini:  NewCompat("GEMINI_API_KEY", "gemini-2.0-flash", "https://generativelanguage.googleapis.com/v1beta/openai")
-//	OpenRouter: NewCompat("OPENROUTER_API_KEY", "openai/gpt-4o", "https://openrouter.ai/api/v1")
-//	Ollama:  NewCompat("ollama", "llama3", "http://localhost:11434/v1")
-//	Groq:    NewCompat("GROQ_KEY", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1")
+//	Gemini:  NewCompat("GEMINI_API_KEY", "gemini-2.0-flash", "https://generativelanguage.googleapis.com/v1beta/openai",
+//	             WithJSONMode(JSONModeSchema), WithImageInput(true))
+//	OpenRouter: NewCompat("OPENROUTER_API_KEY", "openai/gpt-4o", "https://openrouter.ai/api/v1",
+//	             WithJSONMode(JSONModeSchema), WithImageInput(true))
+//	DeepSeek: NewCompat("DEEPSEEK_API_KEY", "deepseek-v4-flash", "https://api.deepseek.com/v1",
+//	             WithJSONMode(JSONModeObject))
+//	Ollama:  NewCompat("ollama", "llama3", "http://localhost:11434/v1", WithJSONMode(JSONModeObject))
+//	Groq:    NewCompat("GROQ_KEY", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", WithJSONMode(JSONModeObject))
 func NewCompat(apiKey string, model string, baseURL string, opts ...Option) (*Provider, error) {
 	if resolveAPIKey(apiKey) == "" {
 		return nil, errors.New("openai: NewCompat: API key is not set")
@@ -35,5 +53,12 @@ func NewCompat(apiKey string, model string, baseURL string, opts ...Option) (*Pr
 	if _, err := validateBaseURL(baseURL); err != nil {
 		return nil, fmt.Errorf("openai: NewCompat: %w", err)
 	}
-	return New(apiKey, model, append([]Option{WithBaseURL(baseURL)}, opts...)...)
+	// Prepended, not appended: these downgrade New's OpenAI-shaped defaults
+	// to "unknown endpoint", and a caller's own opts must still win.
+	defaults := []Option{
+		WithBaseURL(baseURL),
+		WithJSONMode(JSONModeNone),
+		WithImageInput(false),
+	}
+	return New(apiKey, model, append(defaults, opts...)...)
 }

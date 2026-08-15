@@ -27,6 +27,43 @@ Compatible base URLs must be absolute HTTP(S) URLs without embedded
 credentials, query parameters, or fragments. Use HTTPS for remote gateways;
 plain HTTP remains available for local Ollama/vLLM development.
 
+### Declare what the endpoint implements
+
+"OpenAI-compatible" covers the endpoint, the request/response shape, and the
+SDK — not every extension built on top of them. `NewCompat` therefore claims
+nothing beyond plain chat and tool calling, in the same spirit as requiring an
+explicit model: the adapter cannot infer the rest from a base URL.
+
+Two declarations matter:
+
+| Option | Effect |
+|---|---|
+| `WithJSONMode(JSONModeSchema)` | `response_format {type:"json_schema"}` with the schema inline, enforced server-side. What `api.openai.com` implements. |
+| `WithJSONMode(JSONModeObject)` | `response_format {type:"json_object"}` plus the schema appended to the prompt, for endpoints publishing only the older format. |
+| `WithImageInput(true)` | Declares that the endpoint accepts image parts on user messages. |
+
+```go
+// Endpoint publishing OpenAI's json_schema:
+p, _ := openai.NewCompat(key, "openai/gpt-4o", "https://openrouter.ai/api/v1",
+	openai.WithJSONMode(openai.JSONModeSchema), openai.WithImageInput(true))
+
+// Endpoint publishing only json_object:
+p, _ := openai.NewCompat(key, "deepseek-v4-flash", "https://api.deepseek.com/v1",
+	openai.WithJSONMode(openai.JSONModeObject))
+```
+
+Without a declaration the JSON mode is `JSONModeNone`, and a structured-output
+call fails with an error naming the option instead of sending a
+`response_format` the endpoint may reject. Check the endpoint's own docs for
+which formats it publishes — the two are not interchangeable, and sending the
+wrong one is a 400 on every structured call.
+
+`JSONModeObject` guarantees only that the reply parses as JSON. Schema
+conformance degrades from a server-side constraint to a prompt instruction, so
+validate the result and be ready to retry; `Strict` becomes a request rather
+than a rule. This is the same trade the Anthropic adapter avoids by
+synthesizing a tool — an option `json_object` endpoints do not offer.
+
 ### Point the non-chat clients at the same endpoint
 
 `NewCompat` configures the **chat provider only**. The embedder, vision
@@ -52,9 +89,10 @@ silently does nothing.
 
 `agent.CapabilityProvider` lets a consumer that requires image input or
 structured output reject an unsuitable provider at construction, instead of
-discovering the gap from a confident, wrong answer. The OpenAI, Anthropic, and
-Gemini adapters report both; `llmfake.ScriptedProvider` reports neither, since
-it replays a script without ever reading a message's media parts.
+discovering the gap from a confident, wrong answer. `openai.New`, Anthropic,
+and Gemini report both; `openai.NewCompat` reports what the caller declared
+(see above); `llmfake.ScriptedProvider` reports neither, since it replays a
+script without ever reading a message's media parts.
 
 ```go
 if c, ok := provider.(agent.CapabilityProvider); ok && !c.Capabilities().ImageInput {

@@ -10,6 +10,10 @@ import (
 //
 //   - OpenAI (gpt-4o-*, o-series): response_format: {type:"json_schema",
 //     json_schema:{name, description, schema, strict}}. Native and strict.
+//     Compatible endpoints publishing only the older {type:"json_object"}
+//     declare it with openai.WithJSONMode, which moves the schema into the
+//     prompt: still JSON, but conformance stops being enforced server-side,
+//     so validate the result.
 //   - Gemini (1.5+): response_mime_type:"application/json" +
 //     response_schema. Native; Strict is ignored (Gemini always enforces).
 //   - Anthropic Claude: no native JSON mode. Providers synthesize a single
