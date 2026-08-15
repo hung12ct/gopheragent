@@ -37,6 +37,8 @@ type Provider struct {
 	temperature *float64
 	topP        *float64
 	seed        *int64
+	jsonMode    JSONMode
+	imageInput  bool
 	cfg         clientConfig
 }
 
@@ -63,10 +65,19 @@ func WithSeed(n int64) Option {
 	return providerOptionFunc(func(p *Provider) { p.seed = &n })
 }
 
-// Capabilities reports features implemented by this adapter. Compatible
-// endpoints still need model-specific discovery when their catalog varies.
-func (*Provider) Capabilities() agent.LLMCapabilities {
-	return agent.LLMCapabilities{ImageInput: true, StructuredOutput: true}
+// Capabilities reports what this provider's endpoint accepts, as configured.
+//
+// New reports api.openai.com's features. NewCompat claims nothing until the
+// caller declares its endpoint with WithJSONMode / WithImageInput: a
+// compatible endpoint implements an unknown subset, and the whole value of
+// this signal is that a consumer can reject an unsuitable provider at
+// construction — a blanket claim on behalf of every gateway in the ecosystem
+// would hand that consumer a confident wrong answer instead.
+func (p *Provider) Capabilities() agent.LLMCapabilities {
+	return agent.LLMCapabilities{
+		ImageInput:       p.imageInput,
+		StructuredOutput: p.jsonMode != JSONModeNone,
+	}
 }
 
 // resolveAPIKey falls back to OPENAI_API_KEY when apiKey is empty.
@@ -90,7 +101,9 @@ func New(apiKey string, model string, opts ...Option) (*Provider, error) {
 	if model == "" {
 		model = openai.GPT4o
 	}
-	p := &Provider{model: model}
+	// jsonMode's zero value is JSONModeSchema, which is what api.openai.com
+	// implements; NewCompat prepends overrides for both defaults.
+	p := &Provider{model: model, imageInput: true}
 	for _, opt := range opts {
 		opt.applyProvider(p)
 	}
@@ -187,11 +200,17 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		}
 	}
 
+	respFormat, reqMessages, err := p.structuredOutputFor(ctx, reqMessages)
+	if err != nil {
+		return agent.LLMResult{}, err
+	}
+
 	req := openai.ChatCompletionRequest{
-		Model:    p.model,
-		Messages: reqMessages,
-		Tools:    openaiTools,
-		Stream:   true,
+		Model:          p.model,
+		Messages:       reqMessages,
+		Tools:          openaiTools,
+		ResponseFormat: respFormat,
+		Stream:         true,
 		StreamOptions: &openai.StreamOptions{
 			IncludeUsage: true,
 		},
@@ -200,22 +219,6 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	if effort := reasoningEffortFor(p.model, agent.ThinkingBudgetFromContext(ctx)); effort != "" {
 		req.ReasoningEffort = effort
 	}
-	if so := agent.StructuredOutputFromContext(ctx); so != nil {
-		name := so.Name
-		if name == "" {
-			name = "response"
-		}
-		req.ResponseFormat = &openai.ChatCompletionResponseFormat{
-			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
-			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
-				Name:        name,
-				Description: so.Description,
-				Schema:      jsonSchemaMarshaler(so.Schema),
-				Strict:      so.Strict,
-			},
-		}
-	}
-
 	stream, err := p.client.CreateChatCompletionStream(ctx, req)
 	if err != nil {
 		return agent.LLMResult{}, fmt.Errorf("openai streaming error: %w", classifyErr(err))

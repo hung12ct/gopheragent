@@ -46,8 +46,57 @@ func TestNewCompatSendsConfiguredHeaders(t *testing.T) {
 }
 
 func TestOpenAIReportsMultimodalStructuredTransport(t *testing.T) {
-	caps := (&Provider{}).Capabilities()
+	p, err := New("test-key", "gpt-4o")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	caps := p.Capabilities()
 	if !caps.ImageInput || !caps.StructuredOutput {
 		t.Fatalf("Capabilities = %+v, want image input and structured output", caps)
+	}
+}
+
+// A compatible endpoint implements an unknown subset, so NewCompat must not
+// claim OpenAI's features on its behalf: a consumer that checks capabilities
+// to reject an unsuitable provider gets a wrong answer at construction and
+// discovers the truth as a 400 mid-run.
+func TestNewCompatClaimsNothingUntilDeclared(t *testing.T) {
+	p, err := NewCompat("test-key", "test/model", "https://api.example.com/v1")
+	if err != nil {
+		t.Fatalf("NewCompat: %v", err)
+	}
+	if caps := p.Capabilities(); caps.ImageInput || caps.StructuredOutput {
+		t.Fatalf("Capabilities = %+v, want no claims by default", caps)
+	}
+}
+
+func TestNewCompatCapabilitiesFollowDeclaration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		want bool
+	}{
+		{"schema", []Option{WithJSONMode(JSONModeSchema)}, true},
+		{"object", []Option{WithJSONMode(JSONModeObject)}, true},
+		{"none", []Option{WithJSONMode(JSONModeNone)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := NewCompat("test-key", "test/model", "https://api.example.com/v1", tc.opts...)
+			if err != nil {
+				t.Fatalf("NewCompat: %v", err)
+			}
+			if got := p.Capabilities().StructuredOutput; got != tc.want {
+				t.Fatalf("StructuredOutput = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// Caller options must beat the defaults NewCompat prepends.
+	p, err := NewCompat("test-key", "test/model", "https://api.example.com/v1", WithImageInput(true))
+	if err != nil {
+		t.Fatalf("NewCompat: %v", err)
+	}
+	if !p.Capabilities().ImageInput {
+		t.Fatal("WithImageInput(true) must override the NewCompat default")
 	}
 }
