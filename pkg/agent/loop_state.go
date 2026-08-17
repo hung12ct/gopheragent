@@ -19,6 +19,12 @@ type iterationState struct {
 	specMap    map[string]*speculativeExec
 	specMu     *sync.Mutex
 	tracker    *loopDetector
+
+	// sentMessages records the exact list handed to the provider on the
+	// most recent attempt, for AgentLoop.checkRequestInvariant to compare
+	// against. Only populated when RequestInvariant is set. Written and
+	// read on the loop goroutine, between which no tool goroutine runs.
+	sentMessages []history.Message
 }
 
 // waveState carries the per-wave shared mutable state used by the

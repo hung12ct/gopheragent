@@ -444,6 +444,14 @@ type AgentLoop struct {
 	// and saves the session before returning.
 	MaxToolCallsPerSession int
 
+	// RequestInvariant, when set, receives a description of any broken
+	// request-path invariant: the pipeline writing through to stored
+	// history, or a request that a re-derivation cannot reproduce. Nil
+	// (default) disables the check entirely — no snapshot is taken and the
+	// cost is one nil comparison per iteration. Set it with
+	// WithRequestInvariant in development and staging.
+	RequestInvariant RequestViolationFunc
+
 	// AutoCacheSystem, when true, stamps Message.CacheHint=true on the first
 	// system message of every LLM call. On Anthropic this promotes the
 	// entire system prompt into the prompt-cache prefix, typically cutting

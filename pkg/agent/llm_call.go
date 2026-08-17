@@ -136,6 +136,9 @@ func (al *AgentLoop) callLLM(ctx context.Context, st *iterationState, msgs []his
 
 	toolsForCall := al.selectToolsForCall(ctx, st.sessionKey, st.streamChan, msgs)
 	msgsForLLM := al.buildMsgsForLLM(ctx, st.sessionKey, st.iteration, msgs)
+	if al.RequestInvariant != nil {
+		st.sentMessages = msgsForLLM
+	}
 
 	llmCtx := ctx
 	if al.ThinkingBudget > 0 {
