@@ -26,6 +26,24 @@ func newToolCallID() string {
 // short-circuit with a synthesized tool-error result. A fatal error
 // recorded by any goroutine (e.g. anti-loop detector) breaks out of
 // the wave loop.
+// defaultMaxParallelToolCalls bounds concurrent tool execution within one
+// dependency wave. Wide fan-outs are the pathological case this exists for:
+// a model asking for 40 calls at once would otherwise open 40 sockets or
+// spawn 40 subprocesses. Waves are usually smaller than this, so the cap is
+// invisible in normal operation.
+const defaultMaxParallelToolCalls = 8
+
+// toolCallSemaphore returns a buffered channel bounding wave concurrency, or
+// nil when no cap applies — an unlimited setting, or a wave already at or
+// below the cap, both skip the channel and its send/receive pair entirely.
+func (al *AgentLoop) toolCallSemaphore(waveSize int) chan struct{} {
+	n := al.MaxParallelToolCalls
+	if n <= 0 || waveSize <= n {
+		return nil
+	}
+	return make(chan struct{}, n)
+}
+
 func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, scheduled []PendingToolCall) *waveState {
 	waves, schedErr := scheduleToolCalls(scheduled)
 	if schedErr != nil {
@@ -43,11 +61,16 @@ func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, s
 			}))
 		})
 
+		sem := al.toolCallSemaphore(len(substitutedWave))
 		var wg sync.WaitGroup
 		for _, tc := range substitutedWave {
 			wg.Add(1)
 			go func(tCall PendingToolCall) {
 				defer wg.Done()
+				if sem != nil {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+				}
 				al.executeToolCall(ctx, st, ws, tCall)
 			}(tc)
 		}

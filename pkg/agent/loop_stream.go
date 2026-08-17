@@ -426,6 +426,14 @@ type AgentLoop struct {
 	// they did not execute. A "thought" event announces the truncation.
 	MaxToolCallsPerTurn int
 
+	// MaxParallelToolCalls caps how many tool calls execute concurrently
+	// within one dependency wave. Defaults to defaultMaxParallelToolCalls;
+	// 0 means unlimited. Unlike MaxToolCallsPerTurn this drops nothing — a
+	// call over the cap waits for a slot, so the wave's result set is
+	// identical either way. It bounds live resource use (sockets,
+	// subprocesses, provider rate limits) when a model emits a wide fan-out.
+	MaxParallelToolCalls int
+
 	// MaxToolCallsPerSession caps the cumulative number of tool calls
 	// scheduled across all iterations of a single Run. 0 (default) means
 	// unlimited. Distinct from MaxToolCallsPerTurn, which only bounds the
@@ -518,13 +526,14 @@ type AgentLoop struct {
 // Optional hooks run before each iteration for security/policy enforcement.
 func NewAgentLoop(sessions SessionManager, registry *tools.Registry, llm LLMProvider, hooks ...Hook) *AgentLoop {
 	return &AgentLoop{
-		Sessions:        sessions,
-		Tools:           registry,
-		LLM:             llm,
-		MaxIters:        15,
-		EmitThoughts:    true,
-		BeforeHooks:     hooks,
-		AutoCacheSystem: true,
+		Sessions:             sessions,
+		Tools:                registry,
+		LLM:                  llm,
+		MaxIters:             15,
+		EmitThoughts:         true,
+		BeforeHooks:          hooks,
+		AutoCacheSystem:      true,
+		MaxParallelToolCalls: defaultMaxParallelToolCalls,
 	}
 }
 
