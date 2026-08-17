@@ -832,7 +832,7 @@ func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit fu
 	queryCtx := ctx
 	if t.queryTimeout > 0 {
 		var cancel context.CancelFunc
-		queryCtx, cancel = context.WithTimeout(ctx, t.queryTimeout)
+		queryCtx, cancel = context.WithTimeoutCause(ctx, t.queryTimeout, tools.DeadlineCause("sql query", t.queryTimeout))
 		defer cancel()
 	}
 
@@ -842,7 +842,7 @@ func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit fu
 		return emit(SQLResult{
 			SQL:         effectiveSQL,
 			ExecutionMs: time.Since(start).Milliseconds(),
-			Error:       err.Error(),
+			Error:       queryErrText(queryCtx, err),
 		})
 	}
 	defer rows.Close()
@@ -922,11 +922,23 @@ func (t *executeSQLTool) executeRead(ctx context.Context, sqlStr string, emit fu
 // skipped — auto-injecting LIMIT into UPDATE/DELETE has dialect-specific
 // semantics (MySQL accepts it, Postgres doesn't) and silently changes
 // the meaning of the statement.
+// queryErrText renders a failed statement's error for the SQLResult the
+// model reads. A driver error caused by our own query budget arrives as a
+// bare "context deadline exceeded", which tells the model nothing it can
+// act on; naming the budget tells it to narrow the query instead of
+// retrying verbatim. An enclosing cancellation is reported as-is.
+func queryErrText(queryCtx context.Context, err error) string {
+	if tools.TimedOut(queryCtx) {
+		return fmt.Sprintf("%v (%v) — narrow the query, add a LIMIT, or filter on an indexed column", context.Cause(queryCtx), err)
+	}
+	return err.Error()
+}
+
 func (t *executeSQLTool) executeMutation(ctx context.Context, sqlStr string, emit func(SQLResult) (tools.Result, error)) (tools.Result, error) {
 	queryCtx := ctx
 	if t.queryTimeout > 0 {
 		var cancel context.CancelFunc
-		queryCtx, cancel = context.WithTimeout(ctx, t.queryTimeout)
+		queryCtx, cancel = context.WithTimeoutCause(ctx, t.queryTimeout, tools.DeadlineCause("sql statement", t.queryTimeout))
 		defer cancel()
 	}
 
@@ -934,7 +946,7 @@ func (t *executeSQLTool) executeMutation(ctx context.Context, sqlStr string, emi
 	res, err := t.db.ExecContext(queryCtx, sqlStr)
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
-		return emit(SQLResult{SQL: sqlStr, ExecutionMs: ms, Error: err.Error()})
+		return emit(SQLResult{SQL: sqlStr, ExecutionMs: ms, Error: queryErrText(queryCtx, err)})
 	}
 	// RowsAffected error is driver-specific (some return it when the
 	// statement type has no meaningful affected count); treat as zero

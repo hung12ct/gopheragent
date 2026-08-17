@@ -134,7 +134,7 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (tools
 
 	// Bound the polling loop with both the caller's context and our own
 	// timeout — whichever fires first wins.
-	pollCtx, cancel := context.WithTimeout(ctx, defaultPollTimeout)
+	pollCtx, cancel := context.WithTimeoutCause(ctx, defaultPollTimeout, tools.DeadlineCause("video polling", defaultPollTimeout))
 	defer cancel()
 
 	// Emit an initial progress tick immediately so the UI shows motion
@@ -146,8 +146,10 @@ func (t *GenerateVideoTool) Execute(ctx context.Context, argsJSON string) (tools
 	for !op.Done {
 		select {
 		case <-pollCtx.Done():
-			if pollCtx.Err() == context.DeadlineExceeded {
-				return tools.Result{}, fmt.Errorf("tools: generate_video: timed out after %v", defaultPollTimeout)
+			// Only our own poll ceiling counts as a timeout here; a cancelled
+			// turn must not be reported as the generation having run long.
+			if tools.TimedOut(pollCtx) {
+				return tools.Result{}, fmt.Errorf("tools: generate_video: %w", context.Cause(pollCtx))
 			}
 			return tools.Result{}, pollCtx.Err()
 		case <-time.After(defaultPollInterval):
