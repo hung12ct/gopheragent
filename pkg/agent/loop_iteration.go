@@ -96,6 +96,13 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 	ws := al.executeToolWaves(ctx, st, scheduled)
 	if ws.fatalErr != nil {
 		iterErr = ws.fatalErr
+		// The assistant message persisted above carries tool_calls, so the
+		// transcript is only valid once every call has a tool reply. Keep the
+		// results that completed before the abort (real work, and the looping
+		// call's own result is what the detector tripped on) and account for
+		// the rest, so the saved history needs no downstream repair.
+		synthesizeMissingToolErrors(ws.toolMsgs, result.ToolCalls, fatalAbortToolReason)
+		*msgs = appendToolResultsInOrder(*msgs, result.ToolCalls, ws.toolMsgs)
 		al.saveSession(ctx, sessionKey, *msgs)
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
 		return len(scheduled), true

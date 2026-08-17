@@ -139,3 +139,30 @@ func synthesizeDroppedToolErrors(toolMsgs map[string]history.Message, dropped []
 		}
 	}
 }
+
+// fatalAbortToolReason is the tool-result content recorded for a call the
+// loop abandoned when a wave aborted. It names the cause and tells the
+// model the call never ran, so a resumed session does not read the gap as
+// a silent success.
+const fatalAbortToolReason = "tools: not executed — the turn was aborted mid-wave after a repeated-call loop was detected; do not repeat the same call."
+
+// synthesizeMissingToolErrors fills every call in calls that has no
+// recorded result with a tool-error message naming reason, leaving
+// completed results untouched. An assistant message carrying tool_calls
+// is only a valid transcript when every call has a matching tool reply,
+// so an abort that skips calls must still account for them. Same
+// no-lock precondition as synthesizeDroppedToolErrors: every wave
+// goroutine has returned by the time this runs.
+func synthesizeMissingToolErrors(toolMsgs map[string]history.Message, calls []PendingToolCall, reason string) {
+	for _, tc := range calls {
+		if m, ok := toolMsgs[tc.ID]; ok && m.Role != "" {
+			continue
+		}
+		toolMsgs[tc.ID] = history.Message{
+			Role:       "tool",
+			Content:    reason,
+			ToolCallID: tc.ID,
+			IsError:    true,
+		}
+	}
+}
