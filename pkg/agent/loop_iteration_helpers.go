@@ -20,39 +20,59 @@ import (
 // silence. The event is suppressed when nothing changed, so a run whose
 // context always fits still emits nothing.
 func (al *AgentLoop) enforceTokenBudget(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, iteration int, msgs []history.Message) []history.Message {
-	orig := msgs
-	if al.MaxTokenBudget <= 0 {
-		pruned, changes := pruneContextMessages(msgs, defaultProtectedEnds)
-		al.emitContextTrace(ctx, sessionKey, streamChan, iteration, ContextPolicyDefault, orig, pruned, changes)
-		return pruned
+	d := deriveRequestMessages(msgs, al.MaxTokenBudget)
+	for _, notice := range d.notices {
+		al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{Message: notice}))
+	}
+	al.emitContextTrace(ctx, sessionKey, streamChan, iteration, d.policy, msgs, d.messages, d.changes)
+	return d.messages
+}
+
+// contextDerivation is one run of the budget policy over stored history:
+// the derived message list plus everything the emitting half needs to
+// report what it did.
+type contextDerivation struct {
+	messages []history.Message
+	policy   ContextPolicy
+	changes  []ContextRef
+	notices  []string
+}
+
+// deriveRequestMessages turns stored history into the message list a single
+// LLM call should carry. It is the pure half of enforceTokenBudget: same
+// input, same output, no emit, no receiver state. Purity is what lets the
+// request invariant re-run it as an independent check — see
+// AgentLoop.checkRequestInvariant.
+func deriveRequestMessages(stored []history.Message, maxTokenBudget int) contextDerivation {
+	if maxTokenBudget <= 0 {
+		pruned, changes := pruneContextMessages(stored, defaultProtectedEnds)
+		return contextDerivation{messages: pruned, policy: ContextPolicyDefault, changes: changes}
 	}
 
+	msgs := stored
 	estToks := estimateTokens(msgs)
-	thresh := int(float64(al.MaxTokenBudget) * budgetWarnRatio)
-	policy := ContextPolicyDefault
-	var changes []ContextRef
+	thresh := int(float64(maxTokenBudget) * budgetWarnRatio)
+	d := contextDerivation{policy: ContextPolicyDefault}
 
-	if estToks > thresh && estToks <= al.MaxTokenBudget {
-		al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{Message: fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh)}))
+	if estToks > thresh && estToks <= maxTokenBudget {
+		d.notices = append(d.notices, fmt.Sprintf("Token budget near threshold (~%d >= %d). Truncating tool arguments.", estToks, thresh))
 		var truncated []ContextRef
 		msgs, truncated = truncateToolArguments(msgs)
-		changes = append(changes, truncated...)
-		policy = ContextPolicyBudgetWarn
+		d.changes = append(d.changes, truncated...)
+		d.policy = ContextPolicyBudgetWarn
 	}
 
 	depth := defaultProtectedEnds
-	if postTrim := estimateTokens(msgs); postTrim > al.MaxTokenBudget {
-		al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{
-			Message: fmt.Sprintf("Token budget exceeded (~%d est. tokens). Applying emergency context pruning.", postTrim),
-		}))
+	if postTrim := estimateTokens(msgs); postTrim > maxTokenBudget {
+		d.notices = append(d.notices, fmt.Sprintf("Token budget exceeded (~%d est. tokens). Applying emergency context pruning.", postTrim))
 		depth = emergencyProtectedEnds
-		policy = ContextPolicyBudgetEmergency
+		d.policy = ContextPolicyBudgetEmergency
 	}
 
 	pruned, prunedRefs := pruneContextMessages(msgs, depth)
-	changes = append(changes, prunedRefs...)
-	al.emitContextTrace(ctx, sessionKey, streamChan, iteration, policy, orig, pruned, changes)
-	return pruned
+	d.messages = pruned
+	d.changes = append(d.changes, prunedRefs...)
+	return d
 }
 
 // emitSoftLandingNudge fires the user-visible thought event marking the

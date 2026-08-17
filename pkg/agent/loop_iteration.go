@@ -59,7 +59,9 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 		tracker:    tracker,
 	}
 
+	snap := al.snapshotRequest(*msgs)
 	finalContent, result, err := al.callLLMWithRetry(ctx, st, msgsForLLM)
+	al.checkRequestInvariant(ctx, snap, *msgs, st.sentMessages)
 	if err != nil {
 		al.saveSession(ctx, sessionKey, *msgs)
 		// A cancel that lands while the provider stream is in flight surfaces

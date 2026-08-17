@@ -262,6 +262,20 @@ func WithMaxToolCallsPerSession(n int) Option {
 	return func(al *AgentLoop) { al.MaxToolCallsPerSession = n }
 }
 
+// WithRequestInvariant enables a per-call check at the LLM boundary that
+// the request path neither wrote through to stored history nor produced a
+// request a re-derivation cannot reproduce. onViolation is called
+// synchronously on the loop goroutine with a descriptive error; the turn
+// continues either way, so a handler that fails the build (t.Fatal, panic
+// in a staging binary) is the point.
+//
+// Off by default. Enabled, it costs one copy of the message headers plus
+// one extra derivation per LLM call — cheap enough for staging, and not
+// something to leave on in a latency-sensitive production path.
+func WithRequestInvariant(onViolation RequestViolationFunc) Option {
+	return func(al *AgentLoop) { al.RequestInvariant = onViolation }
+}
+
 // WithoutAutoCacheSystem disables the auto-stamp of CacheHint=true on
 // the first system message of every LLM call. Default behavior is to
 // stamp (Anthropic prompt-cache prefix). Disable when you manage cache
