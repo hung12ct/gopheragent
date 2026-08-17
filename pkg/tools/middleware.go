@@ -156,14 +156,25 @@ func WithTiming(onDone func(toolName string, d time.Duration, err error)) Middle
 
 // WithTimeout wraps each Execute call with a per-call deadline.
 // The parent context's deadline, if shorter, still takes precedence.
+//
+// A failure caused by this middleware's own deadline is wrapped so the
+// error names the elapsed budget and satisfies errors.Is(err, ErrTimeout).
+// An outer deadline or a cancellation is left untouched: the tool did not
+// exceed *its* budget, and reporting otherwise would misattribute a turn
+// the caller cut short. The wrapped error still unwraps to whatever the
+// tool returned, so existing context.DeadlineExceeded matches keep working.
 func WithTimeout(d time.Duration) Middleware {
 	return func(next Tool) Tool {
 		return &wrappedTool{
 			Tool: next,
 			executeFn: func(ctx context.Context, argsJSON string) (Result, error) {
-				tCtx, cancel := context.WithTimeout(ctx, d)
+				tCtx, cancel := context.WithTimeoutCause(ctx, d, DeadlineCause("tool call", d))
 				defer cancel()
-				return next.Execute(tCtx, argsJSON)
+				result, err := next.Execute(tCtx, argsJSON)
+				if err != nil && TimedOut(tCtx) {
+					return result, fmt.Errorf("%w: %w", context.Cause(tCtx), err)
+				}
+				return result, err
 			},
 		}
 	}

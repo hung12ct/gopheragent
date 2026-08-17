@@ -145,7 +145,7 @@ func (t *CodeInterpreterTool) Execute(ctx context.Context, argsJSON string) (too
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, cancel := context.WithTimeoutCause(ctx, timeout, tools.DeadlineCause("code execution", timeout))
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, binary)
@@ -162,7 +162,10 @@ func (t *CodeInterpreterTool) Execute(ctx context.Context, argsJSON string) (too
 	runErr := cmd.Run()
 	elapsed := time.Since(start)
 
-	timedOut := runCtx.Err() == context.DeadlineExceeded
+	// Our own deadline, not an enclosing one: a cancelled turn also leaves
+	// runCtx.Err() == DeadlineExceeded, and reporting that as the code
+	// having timed out tells the model the wrong thing.
+	timedOut := tools.TimedOut(runCtx)
 	exitCode := 0
 	if runErr != nil {
 		if ee, ok := runErr.(*exec.ExitError); ok {
