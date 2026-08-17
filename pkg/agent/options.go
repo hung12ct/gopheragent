@@ -245,6 +245,16 @@ func WithMaxToolCallsPerTurn(n int) Option {
 	return func(al *AgentLoop) { al.MaxToolCallsPerTurn = n }
 }
 
+// WithMaxParallelToolCalls caps how many tool calls run concurrently inside
+// one dependency wave. Defaults to 8; pass 0 for unlimited. Nothing is
+// dropped — calls over the cap wait for a slot, so results are unchanged and
+// only peak resource use differs. Raise it for latency-bound tools (HTTP
+// fan-out), lower it for tools that each hold a scarce resource (database
+// connections, subprocesses).
+func WithMaxParallelToolCalls(n int) Option {
+	return func(al *AgentLoop) { al.MaxParallelToolCalls = n }
+}
+
 // WithMaxToolCallsPerSession caps cumulative tool calls across all
 // iterations of a single Run. 0 (default) means unlimited. When the cap
 // trips, the loop emits LimitExhaustedEvent and saves history.
