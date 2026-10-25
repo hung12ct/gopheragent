@@ -2,6 +2,18 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.44.0] — 2026-10-25
+
+### Added
+
+- **`AgentLoop.DeferApprovals`, `AgentLoop.Resume`, and `AgentLoop.PendingApprovals` — human approvals now survive a restart.** `ConfirmHITL` blocks the run's goroutine until it answers, which is fine when the reviewer clicks a button seconds later and fails as soon as the answer can take longer than the process lives: a deploy or crash in between lost every open approval, and nothing could resume the turn once the answer arrived. With `DeferApprovals` set, a call that needs approval does not block. The loop emits `ActionRequiredEvent` with the call's ID, finishes the other calls in that wave, saves the turn with the gated call left without a result, and ends the run with `ErrApprovalPending`. Calls in later waves wait, because they may depend on the gated call through `<output_of:...>`. Session history is the durable record, so every `SessionManager` backend supports it with no schema change. `Resume(ctx, sessionKey, decisions)` reads that turn back, from any process sharing the store: approved calls run, denied calls get the usual denial directive, calls without a decision stay pending (deferring again), and once every call has a result the run continues normally. The tool block is rebuilt in call order, so answers recorded before and after the suspension stay aligned with their calls. `PendingApprovals` lists what is still open, for asking again after a restart or for deciding whether an incoming reply belongs to `Resume` or `Run`. A decision for an ID that is not awaiting approval returns `ErrUnknownApproval` rather than being ignored, so passing `false` for the wrong ID can never let a call run that the caller believed was denied. `ConfirmFunc` is unchanged and blocking stays the default. `Resume` does not lock the session: route one session's answers through one goroutine, or an approved call can run twice. Sub-agent workers and the plan-mode gate still block. (`pkg/agent/resume.go`, `pkg/agent/hitl_gate.go`, `pkg/agent/loop_iteration.go`)
+- **`ActionRequiredEvent.ID`** carries the tool call's ID, so hosts no longer mint their own correlation ID and smuggle it through `Args`. Additive on the wire (`id`, omitted when empty). (`pkg/agent/event_types.go`)
+
+### Fixed
+
+- **Identical gated tool calls in one wave are confirmed once and executed once.** A model that emitted the same `RequiresConfirmation` call twice in one reply got two separate prompts, so the user was asked the same question twice, and an approved side effect ran twice. Calls with the same name and canonical arguments are now gated and executed once, and each duplicate's tool call ID receives a copy of the result, which keeps the transcript paired. Ungated tools and calls whose arguments differ are unaffected. (`pkg/agent/loop_execute.go`)
+- **Gemini: parallel calls of one tool no longer overwrite each other's results.** Most Gemini models return no call IDs, and the adapter used the tool name as the ID, so two calls of the same tool in one reply shared an ID. The loop keys results by ID, so the second result replaced the first and the model received one of them twice. The failure mode was worst for gated calls: a denial recorded for a duplicate replaced the approved result, and the model told the user an action had failed when it had run. The adapter now uses the API's ID when one is returned, keeps the bare name for a tool's first call (so stored sessions remain valid), and suffixes later ones (`name#2`). `FunctionResponse.Name` is resolved from the call that issued it. What goes over the wire is unchanged. (`pkg/llm/gemini/gemini.go`)
+
 ## [v0.43.0] — 2026-08-17
 
 ### Added
@@ -664,6 +676,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.44.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.44.0
 [v0.43.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.43.0
 [v0.42.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.42.0
 [v0.41.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.41.0
