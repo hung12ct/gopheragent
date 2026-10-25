@@ -44,7 +44,12 @@ func (al *AgentLoop) toolCallSemaphore(waveSize int) chan struct{} {
 	return make(chan struct{}, n)
 }
 
-func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, scheduled []PendingToolCall) *waveState {
+// ws may arrive seeded with results from an earlier run (see Resume); calls
+// that already have a result are skipped, and scheduling still sees the
+// whole turn so references to those results keep their order. A wave that
+// leaves any call awaiting a deferred approval ends execution: later waves
+// may depend on it, and Resume runs them once the approval is answered.
+func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, ws *waveState, scheduled []PendingToolCall) {
 	waves, schedErr := scheduleToolCalls(scheduled)
 	if schedErr != nil {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
@@ -53,8 +58,8 @@ func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, s
 		waves = [][]PendingToolCall{scheduled}
 	}
 
-	ws := newWaveState(len(scheduled))
 	for _, wave := range waves {
+		wave = ws.unfinished(wave)
 		substitutedWave := substituteWaveArgs(ws, wave, func(toolName string, subErr error) {
 			al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
 				Message: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", toolName, subErr),
@@ -78,11 +83,10 @@ func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, s
 		wg.Wait()
 		ws.copyDuplicateResults(dups)
 
-		if ws.fatalErr != nil {
+		if ws.fatalErr != nil || len(ws.pending) > 0 {
 			break
 		}
 	}
-	return ws
 }
 
 // gatedDuplicate is a confirmation-gated call that repeats an earlier call
@@ -213,7 +217,10 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	// RequiresConfirmation covers tools that always prompt. Allow bypasses
 	// both.
 	if (desc.RequiresConfirmation || permDecision == PermissionConfirm) && permDecision != PermissionAllow {
-		outcome := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
+		outcome := al.resolveApproval(ctx, st, ws, tCall)
+		if outcome == hitlDeferred {
+			return
+		}
 		if outcome != hitlApproved {
 			var msg string
 			switch outcome {

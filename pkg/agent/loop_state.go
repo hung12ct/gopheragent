@@ -25,6 +25,10 @@ type iterationState struct {
 	// against. Only populated when RequestInvariant is set. Written and
 	// read on the loop goroutine, between which no tool goroutine runs.
 	sentMessages []history.Message
+
+	// decisions holds approvals answered through Resume, keyed by tool
+	// call ID. Read-only once the waves start; nil outside Resume.
+	decisions map[string]bool
 }
 
 // waveState carries the per-wave shared mutable state used by the
@@ -37,6 +41,10 @@ type waveState struct {
 	fatalErr    error
 	fatalMu     sync.Mutex
 	hitlMu      sync.Mutex
+
+	// pending holds calls whose approval was deferred (DeferApprovals); they
+	// get no tool message this run. Guarded by completedMu.
+	pending []PendingToolCall
 }
 
 // newWaveState returns an initialised waveState with maps sized for the
@@ -60,6 +68,38 @@ func (ws *waveState) recordToolMsg(id string, msg history.Message, isResult bool
 		ws.resultsByID[id] = msg.Content
 	}
 	ws.completedMu.Unlock()
+}
+
+// markPending records a call whose approval was deferred to Resume.
+func (ws *waveState) markPending(tc PendingToolCall) {
+	ws.completedMu.Lock()
+	ws.pending = append(ws.pending, tc)
+	ws.completedMu.Unlock()
+}
+
+// unfinished drops calls that already have a result, which only happens
+// when ws was seeded from history by Resume. Returns wave itself when
+// nothing is dropped. Called between waves, when no goroutine writes ws.
+func (ws *waveState) unfinished(wave []PendingToolCall) []PendingToolCall {
+	if len(ws.toolMsgs) == 0 {
+		return wave
+	}
+	var out []PendingToolCall
+	for i, tc := range wave {
+		if _, done := ws.toolMsgs[tc.ID]; !done {
+			if out != nil {
+				out = append(out, tc)
+			}
+			continue
+		}
+		if out == nil {
+			out = append(make([]PendingToolCall, 0, len(wave)), wave[:i]...)
+		}
+	}
+	if out == nil {
+		return wave
+	}
+	return out
 }
 
 // setFatal records the first fatal error seen by any wave goroutine.

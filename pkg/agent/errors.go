@@ -135,6 +135,20 @@ var (
 	// the previous run ended naturally, and the caller should send a new
 	// user message instead of trying to extend it.
 	ErrNothingToContinue = errors.New("agent: session ended cleanly; nothing to continue")
+
+	// ErrApprovalPending ends a run whose tool calls are waiting on a
+	// deferred approval (AgentLoop.DeferApprovals). It is not a failure: the
+	// turn is saved, and AgentLoop.Resume picks it up once answered.
+	ErrApprovalPending = errors.New("agent: tool calls awaiting approval")
+
+	// ErrNothingToResume is returned by AgentLoop.Resume when the session's
+	// latest tool turn has no call left without a result, typically because
+	// a later Run already sealed it.
+	ErrNothingToResume = errors.New("agent: no pending tool calls to resume")
+
+	// ErrUnknownApproval is returned by AgentLoop.Resume when a decision
+	// names a call ID that is not pending in the session.
+	ErrUnknownApproval = errors.New("agent: no pending tool call with this ID")
 )
 
 // ToolNotFoundError carries the name of the missing tool.

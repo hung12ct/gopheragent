@@ -95,25 +95,43 @@ func (al *AgentLoop) runIteration(ctx context.Context, sessionKey string, stream
 		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: save history: %w", err)))
 	}
 
-	ws := al.executeToolWaves(ctx, st, scheduled)
+	ws := newWaveState(len(scheduled))
+	al.executeToolWaves(ctx, st, ws, scheduled)
+	done, iterErr := al.recordToolTurn(ctx, st, msgs, result.ToolCalls, droppedCalls, ws)
+	return len(scheduled), done
+}
+
+// recordToolTurn appends a finished tool wave's results to *msgs in call
+// order, persists them, and reports whether the run must end. It ends on a
+// fatal wave error (every unanswered call is sealed so the transcript stays
+// valid) and on deferred approvals, whose calls are left without a result
+// for Resume to answer. The returned error is for the iteration span; the
+// terminal event has already been emitted.
+func (al *AgentLoop) recordToolTurn(ctx context.Context, st *iterationState, msgs *[]history.Message, calls, dropped []PendingToolCall, ws *waveState) (bool, error) {
 	if ws.fatalErr != nil {
-		iterErr = ws.fatalErr
 		// The assistant message persisted above carries tool_calls, so the
 		// transcript is only valid once every call has a tool reply. Keep the
 		// results that completed before the abort (real work, and the looping
 		// call's own result is what the detector tripped on) and account for
 		// the rest, so the saved history needs no downstream repair.
-		synthesizeMissingToolErrors(ws.toolMsgs, result.ToolCalls, fatalAbortToolReason)
-		*msgs = appendToolResultsInOrder(*msgs, result.ToolCalls, ws.toolMsgs)
-		al.saveSession(ctx, sessionKey, *msgs)
-		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
-		return len(scheduled), true
+		synthesizeMissingToolErrors(ws.toolMsgs, calls, fatalAbortToolReason)
+		*msgs = appendToolResultsInOrder(*msgs, calls, ws.toolMsgs)
+		al.saveSession(ctx, st.sessionKey, *msgs)
+		al.emit(ctx, st.sessionKey, st.streamChan, errEvent(fmt.Errorf("%w: %w", ErrLoopDetected, ws.fatalErr)))
+		return true, ws.fatalErr
 	}
 
-	synthesizeDroppedToolErrors(ws.toolMsgs, droppedCalls, al.MaxToolCallsPerTurn)
-	*msgs = appendToolResultsInOrder(*msgs, result.ToolCalls, ws.toolMsgs)
-	if err := al.Sessions.SaveHistory(ctx, sessionKey, *msgs); err != nil {
-		al.emit(ctx, sessionKey, streamChan, errEvent(fmt.Errorf("agent: save history: %w", err)))
+	synthesizeDroppedToolErrors(ws.toolMsgs, dropped, al.MaxToolCallsPerTurn)
+	*msgs = appendToolResultsInOrder(*msgs, calls, ws.toolMsgs)
+	if len(ws.pending) > 0 {
+		// Persist even when ctx was cancelled: the saved turn is what Resume
+		// reads, possibly from another process.
+		al.saveSession(ctx, st.sessionKey, *msgs)
+		al.emit(ctx, st.sessionKey, st.streamChan, errEvent(fmt.Errorf("%w: %d call(s)", ErrApprovalPending, len(ws.pending))))
+		return true, nil
 	}
-	return len(scheduled), false
+	if err := al.Sessions.SaveHistory(ctx, st.sessionKey, *msgs); err != nil {
+		al.emit(ctx, st.sessionKey, st.streamChan, errEvent(fmt.Errorf("agent: save history: %w", err)))
+	}
+	return false, nil
 }

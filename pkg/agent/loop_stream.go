@@ -265,6 +265,16 @@ type AgentLoop struct {
 	// denial) so it can ask the user to retry rather than seek an alternative.
 	ConfirmHITLTimeout time.Duration
 
+	// DeferApprovals makes the HITL gate durable. A call that needs approval
+	// no longer blocks on ConfirmHITL: the loop emits ActionRequiredEvent
+	// with the call's ID, finishes the other calls in that wave, saves the
+	// turn with the call left without a result, and ends the run with
+	// ErrApprovalPending. Answer later, from any process sharing the
+	// SessionManager, with Resume. Use it where the answer can take longer
+	// than a process lives (chat apps, email approvals). Sub-agent workers
+	// and the plan-mode gate still block.
+	DeferApprovals bool
+
 	// Cache provides optional tool result caching with trigram similarity matching.
 	// If nil, caching is disabled. Set via cache.NewSearchCache().
 	Cache *cache.SearchCache
