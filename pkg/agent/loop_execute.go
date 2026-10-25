@@ -61,9 +61,10 @@ func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, s
 			}))
 		})
 
-		sem := al.toolCallSemaphore(len(substitutedWave))
+		dispatch, dups := al.splitGatedDuplicates(substitutedWave)
+		sem := al.toolCallSemaphore(len(dispatch))
 		var wg sync.WaitGroup
-		for _, tc := range substitutedWave {
+		for _, tc := range dispatch {
 			wg.Add(1)
 			go func(tCall PendingToolCall) {
 				defer wg.Done()
@@ -75,12 +76,80 @@ func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, s
 			}(tc)
 		}
 		wg.Wait()
+		ws.copyDuplicateResults(dups)
 
 		if ws.fatalErr != nil {
 			break
 		}
 	}
 	return ws
+}
+
+// gatedDuplicate is a confirmation-gated call that repeats an earlier call
+// in the same wave with identical arguments; it reuses the leader's result.
+type gatedDuplicate struct {
+	call     PendingToolCall
+	leaderID string
+}
+
+// splitGatedDuplicates removes calls to RequiresConfirmation tools that
+// repeat an earlier call in the wave with the same name and canonical args.
+// Models occasionally emit the same gated call twice in one turn; gating
+// each one asks the user the same question twice and, once approved, runs
+// the side effect twice. Ungated tools are left alone so read-only fan-out
+// keeps its existing behavior.
+func (al *AgentLoop) splitGatedDuplicates(wave []PendingToolCall) ([]PendingToolCall, []gatedDuplicate) {
+	if len(wave) < 2 {
+		return wave, nil
+	}
+	var seen map[string]string
+	var dups []gatedDuplicate
+	var out []PendingToolCall
+	for i, tc := range wave {
+		tool, ok := al.Tools.Get(tc.Name)
+		if !ok || !tool.Descriptor().RequiresConfirmation {
+			if dups != nil {
+				out = append(out, tc)
+			}
+			continue
+		}
+		key := toolCacheKey(tc.Name, tc.ArgsJSON)
+		if leaderID, dup := seen[key]; dup {
+			if dups == nil {
+				out = append(make([]PendingToolCall, 0, len(wave)), wave[:i]...)
+			}
+			dups = append(dups, gatedDuplicate{call: tc, leaderID: leaderID})
+			continue
+		}
+		if seen == nil {
+			seen = make(map[string]string, 2)
+		}
+		seen[key] = tc.ID
+		if dups != nil {
+			out = append(out, tc)
+		}
+	}
+	if dups == nil {
+		return wave, nil
+	}
+	return out, dups
+}
+
+// copyDuplicateResults records each duplicate's reply as a copy of its
+// leader's, so every ToolCallID still gets a matching tool message. A
+// leader with no recorded result (wave aborted) is skipped and left to
+// synthesizeMissingToolErrors. Runs after wg.Wait, so no goroutine writes
+// concurrently.
+func (ws *waveState) copyDuplicateResults(dups []gatedDuplicate) {
+	for _, d := range dups {
+		msg, ok := ws.toolMsgs[d.leaderID]
+		if !ok {
+			continue
+		}
+		msg.ToolCallID = d.call.ID
+		_, isResult := ws.resultsByID[d.leaderID]
+		ws.recordToolMsg(d.call.ID, msg, isResult)
+	}
 }
 
 // executeToolCall is the per-tool goroutine body. The caller spawns it
