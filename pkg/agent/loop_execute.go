@@ -44,7 +44,12 @@ func (al *AgentLoop) toolCallSemaphore(waveSize int) chan struct{} {
 	return make(chan struct{}, n)
 }
 
-func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, scheduled []PendingToolCall) *waveState {
+// ws may arrive seeded with results from an earlier run (see Resume); calls
+// that already have a result are skipped, and scheduling still sees the
+// whole turn so references to those results keep their order. A wave that
+// leaves any call awaiting a deferred approval ends execution: later waves
+// may depend on it, and Resume runs them once the approval is answered.
+func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, ws *waveState, scheduled []PendingToolCall) {
 	waves, schedErr := scheduleToolCalls(scheduled)
 	if schedErr != nil {
 		al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
@@ -53,17 +58,18 @@ func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, s
 		waves = [][]PendingToolCall{scheduled}
 	}
 
-	ws := newWaveState(len(scheduled))
 	for _, wave := range waves {
+		wave = ws.unfinished(wave)
 		substitutedWave := substituteWaveArgs(ws, wave, func(toolName string, subErr error) {
 			al.emit(ctx, st.sessionKey, st.streamChan, Event(ThoughtEvent{
 				Message: fmt.Sprintf("Tool scheduler: substitution for %q failed: %v — skipping execution.", toolName, subErr),
 			}))
 		})
 
-		sem := al.toolCallSemaphore(len(substitutedWave))
+		dispatch, dups := al.splitGatedDuplicates(substitutedWave)
+		sem := al.toolCallSemaphore(len(dispatch))
 		var wg sync.WaitGroup
-		for _, tc := range substitutedWave {
+		for _, tc := range dispatch {
 			wg.Add(1)
 			go func(tCall PendingToolCall) {
 				defer wg.Done()
@@ -75,12 +81,79 @@ func (al *AgentLoop) executeToolWaves(ctx context.Context, st *iterationState, s
 			}(tc)
 		}
 		wg.Wait()
+		ws.copyDuplicateResults(dups)
 
-		if ws.fatalErr != nil {
+		if ws.fatalErr != nil || len(ws.pending) > 0 {
 			break
 		}
 	}
-	return ws
+}
+
+// gatedDuplicate is a confirmation-gated call that repeats an earlier call
+// in the same wave with identical arguments; it reuses the leader's result.
+type gatedDuplicate struct {
+	call     PendingToolCall
+	leaderID string
+}
+
+// splitGatedDuplicates removes calls to RequiresConfirmation tools that
+// repeat an earlier call in the wave with the same name and canonical args.
+// Models occasionally emit the same gated call twice in one turn; gating
+// each one asks the user the same question twice and, once approved, runs
+// the side effect twice. Ungated tools are left alone so read-only fan-out
+// keeps its existing behavior.
+func (al *AgentLoop) splitGatedDuplicates(wave []PendingToolCall) ([]PendingToolCall, []gatedDuplicate) {
+	if len(wave) < 2 {
+		return wave, nil
+	}
+	var seen map[string]string
+	var dups []gatedDuplicate
+	var out []PendingToolCall
+	for i, tc := range wave {
+		tool, ok := al.Tools.Get(tc.Name)
+		if !ok || !tool.Descriptor().RequiresConfirmation {
+			if dups != nil {
+				out = append(out, tc)
+			}
+			continue
+		}
+		key := toolCacheKey(tc.Name, tc.ArgsJSON)
+		if leaderID, dup := seen[key]; dup {
+			if dups == nil {
+				out = append(make([]PendingToolCall, 0, len(wave)), wave[:i]...)
+			}
+			dups = append(dups, gatedDuplicate{call: tc, leaderID: leaderID})
+			continue
+		}
+		if seen == nil {
+			seen = make(map[string]string, 2)
+		}
+		seen[key] = tc.ID
+		if dups != nil {
+			out = append(out, tc)
+		}
+	}
+	if dups == nil {
+		return wave, nil
+	}
+	return out, dups
+}
+
+// copyDuplicateResults records each duplicate's reply as a copy of its
+// leader's, so every ToolCallID still gets a matching tool message. A
+// leader with no recorded result (wave aborted) is skipped and left to
+// synthesizeMissingToolErrors. Runs after wg.Wait, so no goroutine writes
+// concurrently.
+func (ws *waveState) copyDuplicateResults(dups []gatedDuplicate) {
+	for _, d := range dups {
+		msg, ok := ws.toolMsgs[d.leaderID]
+		if !ok {
+			continue
+		}
+		msg.ToolCallID = d.call.ID
+		_, isResult := ws.resultsByID[d.leaderID]
+		ws.recordToolMsg(d.call.ID, msg, isResult)
+	}
 }
 
 // executeToolCall is the per-tool goroutine body. The caller spawns it
@@ -144,7 +217,10 @@ func (al *AgentLoop) executeToolCall(ctx context.Context, st *iterationState, ws
 	// RequiresConfirmation covers tools that always prompt. Allow bypasses
 	// both.
 	if (desc.RequiresConfirmation || permDecision == PermissionConfirm) && permDecision != PermissionAllow {
-		outcome := al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tCall)
+		outcome := al.resolveApproval(ctx, st, ws, tCall)
+		if outcome == hitlDeferred {
+			return
+		}
 		if outcome != hitlApproved {
 			var msg string
 			switch outcome {

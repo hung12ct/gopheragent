@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -88,6 +89,7 @@ func New(apiKey string, model string, opts ...Option) (*Provider, error) {
 func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message, availableTools *tools.Registry, streamChan chan<- agent.StreamEvent) (agent.LLMResult, error) {
 	var contents []*genai.Content
 	var systemInstruction *genai.Content
+	var callNames map[string]string // call ID -> tool name, for FunctionResponse.Name
 
 	for _, m := range memory {
 		// Only user messages render media. Parts on any other role are
@@ -126,6 +128,10 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 				parts = append(parts, &genai.Part{Text: m.Content})
 			}
 			for _, tc := range m.ToolCalls {
+				if callNames == nil {
+					callNames = make(map[string]string, len(m.ToolCalls))
+				}
+				callNames[tc.ID] = tc.Name
 				var argsMap map[string]any
 				if tc.Arguments != "" {
 					_ = json.Unmarshal([]byte(tc.Arguments), &argsMap)
@@ -146,7 +152,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 			}
 			parts = append(parts, &genai.Part{
 				FunctionResponse: &genai.FunctionResponse{
-					Name:     m.ToolCallID, // For gemini we need to match the func name here. We rely on ToolCallID housing the function name in this simple mapping or use a default.
+					Name:     functionResponseName(callNames, m.ToolCallID),
 					Response: resultObj,
 				},
 			})
@@ -230,7 +236,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 			if part.FunctionCall != nil {
 				argsBytes, _ := json.Marshal(part.FunctionCall.Args)
 				pendingCalls = append(pendingCalls, agent.PendingToolCall{
-					ID:       part.FunctionCall.Name, // Gemini doesn't use explicit call IDs, using name as ID is a common fallback
+					ID:       pendingCallID(part.FunctionCall, pendingCalls),
 					Name:     part.FunctionCall.Name,
 					ArgsJSON: string(argsBytes),
 				})
@@ -258,6 +264,39 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 }
 
 // applySampling stamps the configured temperature/top_p/seed onto config.
+// pendingCallID returns a call ID unique within one response. Most Gemini
+// models return no ID, and the loop keys tool results by ID, so parallel
+// calls of one tool sharing the bare name would overwrite each other's
+// results. The first call of a tool keeps the bare name, which is what
+// sessions recorded before this scheme carry.
+func pendingCallID(fc *genai.FunctionCall, prior []agent.PendingToolCall) string {
+	if fc.ID != "" {
+		return fc.ID
+	}
+	n := 0
+	for _, c := range prior {
+		if c.Name == fc.Name {
+			n++
+		}
+	}
+	if n == 0 {
+		return fc.Name
+	}
+	return fc.Name + "#" + strconv.Itoa(n+1)
+}
+
+// functionResponseName returns the tool name a reply answers. Gemini pairs
+// a FunctionResponse with its call by name, while tool messages carry only
+// the call ID, so the name comes from the assistant turn that issued the
+// call. An ID with no recorded call is returned as is: older sessions used
+// the tool name as the ID.
+func functionResponseName(callNames map[string]string, callID string) string {
+	if name, ok := callNames[callID]; ok {
+		return name
+	}
+	return callID
+}
+
 func (p *Provider) applySampling(config *genai.GenerateContentConfig) {
 	if p.temperature != nil {
 		config.Temperature = genai.Ptr(float32(*p.temperature))

@@ -18,7 +18,29 @@ const (
 	hitlDenied
 	hitlTimedOut
 	hitlUnconfigured
+	// hitlDeferred leaves the call pending for Resume; it gets no tool
+	// message this run.
+	hitlDeferred
 )
+
+// resolveApproval decides a gated call. A decision handed to Resume wins;
+// otherwise DeferApprovals parks the call for a later Resume, and the
+// default asks ConfirmHITL and blocks until it answers.
+func (al *AgentLoop) resolveApproval(ctx context.Context, st *iterationState, ws *waveState, tc PendingToolCall) hitlOutcome {
+	if approved, ok := st.decisions[tc.ID]; ok {
+		if approved {
+			return hitlApproved
+		}
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(HITLDeniedEvent{Tool: tc.Name, Args: tc.ArgsJSON}))
+		return hitlDenied
+	}
+	if al.DeferApprovals {
+		ws.markPending(tc)
+		al.emit(ctx, st.sessionKey, st.streamChan, Event(ActionRequiredEvent{ID: tc.ID, Tool: tc.Name, Args: tc.ArgsJSON}))
+		return hitlDeferred
+	}
+	return al.runHITLGate(ctx, st.sessionKey, st.streamChan, ws, tc)
+}
 
 // runHITLGate emits the human-confirmation prompt under hitlMu and returns
 // a hitlOutcome describing how the gate resolved. The caller selects the
@@ -44,7 +66,7 @@ func (al *AgentLoop) runHITLGate(ctx context.Context, sessionKey string, streamC
 
 	if al.ConfirmHITL == nil {
 		al.warnMissingConfirmHITLOnce()
-		al.emit(ctx, sessionKey, streamChan, Event(ActionRequiredEvent{Tool: tc.Name, Args: tc.ArgsJSON}))
+		al.emit(ctx, sessionKey, streamChan, Event(ActionRequiredEvent{ID: tc.ID, Tool: tc.Name, Args: tc.ArgsJSON}))
 		return hitlUnconfigured
 	}
 

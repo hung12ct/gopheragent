@@ -51,8 +51,9 @@ go get github.com/hung12ct/gopheragent
   load only when a skill is used.
 - **Deterministic ReAct loop** — dependency-aware parallel tool scheduling with
   `<output_of:ID>` refs, anti-loop detection, token-budget-aware pruning.
-- **Streaming & HITL** — SSE streaming, human approvals, plan mode, and
-  self-critique that keeps the best-scoring pass instead of the last one.
+- **Streaming & HITL** — SSE streaming, human approvals (durable across
+  restarts with `DeferApprovals` + `Resume`), plan mode, and self-critique
+  that keeps the best-scoring pass instead of the last one.
 - **Honest terminals** — a `context_trace` event says exactly which messages
   pruning rewrote and why; a `degraded` terminal reports "the artifact landed,
   the bookkeeping did not" instead of forcing a turn into success or failure.

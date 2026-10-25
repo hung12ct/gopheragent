@@ -200,7 +200,11 @@ func (ToolProgressEvent) eventType() StreamEventType { return EventTypeToolProgr
 // Adopters typically gate this through an out-of-band channel (UI prompt,
 // Slack message, webhook) and resume the loop only after the operator
 // responds via the configured ConfirmHITL callback.
+//
+// ID is the tool call's ID. With AgentLoop.DeferApprovals it is the key to
+// answer the approval with in AgentLoop.Resume.
 type ActionRequiredEvent struct {
+	ID   string `json:"id,omitempty"`
 	Tool string `json:"tool"`
 	Args string `json:"args,omitempty"`
 }
