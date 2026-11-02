@@ -2,6 +2,26 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.45.0] — 2026-11-02
+
+### Added
+
+- **`agent.WithHistoryWindow` — a long-lived session no longer sends its whole history on every call.** Payload pruning and `MaxTokenBudget` shrink oversized messages but keep every message, so a chat that lives for months grew its request, latency, and cost with every turn. With a window of `n`, each request carries the leading system messages plus about the last `n` messages. The cut always starts at a user message, so a tool call is never separated from its result and a single turn longer than the window is kept whole. It advances in steps of `n/2` rather than one message per turn, so the request prefix stays byte-identical across many turns and provider prompt caches keep hitting; the request holds between `n/2` and `n` messages. The cut is request-only: `Sessions.History` keeps every message, and the memory consolidator still reads the full transcript. It runs before the token-budget passes, so they only process what is sent. (`pkg/agent/history_window.go`, `pkg/agent/options.go`)
+- **`agent.WithCompactor` and `agent.Compactor` — dropped turns are folded into a running summary instead of being forgotten.** At the start of a Run whose conversation has outgrown the window, one tool-less LLM call merges the previous summary with every message except the last `n/2`, and the result is inserted into history as a compaction record: a system message with the new `history.Message.Compaction` field set, placed right before the first kept message. Later requests carry the summary inside the head system message in place of everything before the record. A record is located by position, not by index, so trimming history from the front or truncating it cannot make it point at the wrong place; the summarized messages stay in history at full fidelity. Each call's input is bounded — the previous summary plus about `n/2` messages, each clipped to 2,000 characters, with a ~100k-character cap that keeps the newest messages when a long session predating the compactor is compacted for the first time — and the summary is capped by `MaxSummaryRunes` (default 6,000). The summary is framed as a record of what was said rather than instructions and cannot close its own frame, since it is distilled from user text but rides at system level. A failed or empty summary never fails the turn: no record is written, the plain window still bounds the request, and the next Run retries. Without `WithHistoryWindow`, a window of 100 messages applies. A session with no record pays nothing: building the request allocates no extra memory. (`pkg/agent/compaction.go`, `pkg/history/types.go`)
+- **`CompactedEvent` (`EventTypeCompacted`)** reports each compaction: the record's stored index, how many messages were summarized or omitted, the summary length, the error on failure, and the summarizer's token usage, which runs on the compactor's own LLM and is not part of the turn's usage events. (`pkg/agent/event_types.go`)
+- **`ContextTraceEvent.WindowStart`, `WindowDropped`, and `SummaryIndex`** describe what the window and compaction left out of a request. `ContextRef.Index` now always indexes stored history, so a trace stays joinable to `Sessions.History` after a cut. (`pkg/agent/event_types.go`, `pkg/agent/context_trace.go`)
+- **`pkg/audio` accepts AAC and AMR clips** (`audio/aac`, `audio/x-aac`, `audio/amr`). Voice notes from chat platforms commonly arrive as ADTS AAC and were rejected with `ErrUnsupportedFormat` before reaching a backend that decodes them. The OpenAI transcriber still rejects both, before upload, because its endpoint does not list them. (`pkg/audio/audio.go`, `pkg/llm/openai/transcriber.go`)
+- **`docs/context.md`** covers payload pruning, the token budget, the history window, and compaction for long conversations.
+
+### Changed (breaking)
+
+- **`EventVisitor` gains `VisitCompacted(CompactedEvent)`.** Implementations must add the method.
+- **Gemini constructors default to `gemini-3.8-flash`.** `gemini-2.5-flash` returns 404 for API keys created after its retirement, so a fresh signup failed on its first call while older keys kept passing. `New`, `NewVertex`, `NewTranscriber`, and `NewMediaAnalyzer` now share one default. Callers that pass a model explicitly are unaffected. (`pkg/llm/gemini/gemini.go`)
+
+### Fixed
+
+- **Gemini: every system message now reaches the system instruction.** The adapter replaced the system instruction with each system message it met, so only the last one survived. The loop's soft-landing hint is appended as a trailing system message, so near the iteration cap it replaced the entire system prompt. Each system message now becomes its own part of the single system instruction, in order. (`pkg/llm/gemini/gemini.go`)
+
 ## [v0.44.0] — 2026-10-25
 
 ### Added
@@ -676,6 +696,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.45.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.45.0
 [v0.44.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.44.0
 [v0.43.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.43.0
 [v0.42.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.42.0
