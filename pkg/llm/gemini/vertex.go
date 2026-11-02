@@ -17,7 +17,7 @@ import (
 //
 // Empty projectID / location fall back to GOOGLE_CLOUD_PROJECT and
 // GOOGLE_CLOUD_LOCATION respectively. Empty model defaults to
-// "gemini-2.5-flash".
+// "gemini-3.8-flash".
 //
 // The returned *Provider reuses the same GenerateStream implementation
 // as the public-API backend — only the transport differs.
@@ -35,7 +35,7 @@ func NewVertex(projectID, location, model string, opts ...Option) (*Provider, er
 		location = "us-central1"
 	}
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = defaultModel
 	}
 
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
