@@ -106,10 +106,14 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 			return agent.LLMResult{}, fmt.Errorf("gemini: %w: %s message carries %d media parts, which this API accepts only on user messages",
 				agent.ErrUnrenderablePart, m.Role, len(m.Parts))
 		}
+		// Gemini takes a single system instruction, so every system
+		// message joins it as its own part, in order. Keeping only the
+		// last one would let a trailing hint replace the system prompt.
 		if m.Role == "system" {
-			systemInstruction = &genai.Content{
-				Parts: []*genai.Part{{Text: m.Content}},
+			if systemInstruction == nil {
+				systemInstruction = &genai.Content{}
 			}
+			systemInstruction.Parts = append(systemInstruction.Parts, &genai.Part{Text: m.Content})
 			continue
 		}
 
