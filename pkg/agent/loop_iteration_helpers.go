@@ -20,11 +20,11 @@ import (
 // silence. The event is suppressed when nothing changed, so a run whose
 // context always fits still emits nothing.
 func (al *AgentLoop) enforceTokenBudget(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, iteration int, msgs []history.Message) []history.Message {
-	d := deriveRequestMessages(msgs, al.MaxTokenBudget)
+	d := deriveRequestMessages(msgs, al.requestPolicy())
 	for _, notice := range d.notices {
 		al.emit(ctx, sessionKey, streamChan, Event(ThoughtEvent{Message: notice}))
 	}
-	al.emitContextTrace(ctx, sessionKey, streamChan, iteration, d.policy, msgs, d.messages, d.changes)
+	al.emitContextTrace(ctx, sessionKey, streamChan, iteration, msgs, d)
 	return d.messages
 }
 
@@ -36,6 +36,12 @@ type contextDerivation struct {
 	policy   ContextPolicy
 	changes  []ContextRef
 	notices  []string
+
+	// windowStart / windowDropped describe the HistoryWindow cut: the
+	// stored index the kept conversation starts at, and how many messages
+	// before it were left out. windowDropped is 0 when nothing was cut.
+	windowStart   int
+	windowDropped int
 }
 
 // deriveRequestMessages turns stored history into the message list a single
@@ -43,7 +49,21 @@ type contextDerivation struct {
 // input, same output, no emit, no receiver state. Purity is what lets the
 // request invariant re-run it as an independent check — see
 // AgentLoop.checkRequestInvariant.
-func deriveRequestMessages(stored []history.Message, maxTokenBudget int) contextDerivation {
+//
+// The history window runs first, so the budget passes only see — and only
+// pay for — the turns that will actually be sent. ContextRef indexes are
+// rebased onto stored history afterwards.
+func deriveRequestMessages(stored []history.Message, p requestPolicy) contextDerivation {
+	start, sys := historyWindowStart(stored, p.historyWindow)
+	d := applyTokenBudget(applyHistoryWindow(stored, start, sys), p.tokenBudget)
+	rebaseRefs(d.changes, start, sys)
+	d.windowStart, d.windowDropped = start, start-sys
+	return d
+}
+
+// applyTokenBudget runs the depth prune, plus argument truncation and the
+// emergency prune when maxTokenBudget is set and the estimate crosses it.
+func applyTokenBudget(stored []history.Message, maxTokenBudget int) contextDerivation {
 	if maxTokenBudget <= 0 {
 		pruned, changes := pruneContextMessages(stored, defaultProtectedEnds)
 		return contextDerivation{messages: pruned, policy: ContextPolicyDefault, changes: changes}

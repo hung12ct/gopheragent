@@ -42,12 +42,13 @@ const (
 )
 
 // ContextRef identifies one message the pruner rewrote for a single LLM
-// call. Index is the position in the pre-prune slice; because no pruning
-// path reorders or removes messages, it also indexes the post-prune
-// slice — and, since the loop prunes a transient copy and persists the
-// conversation at full fidelity, the same position in the slice returned
-// by Sessions.History. That is what makes a trace joinable back to the
-// stored transcript.
+// call. Index is the position in stored history: since the loop prunes a
+// transient copy and persists the conversation at full fidelity, it is the
+// same position in the slice returned by Sessions.History. That is what
+// makes a trace joinable back to the stored transcript. Pruning never
+// reorders messages, but a HistoryWindow cut leaves a prefix out of the
+// request, so Index indexes the request itself only when
+// ContextTraceEvent.WindowDropped is zero.
 //
 // ToolCallID and CorrelationID are the stable handles for naming a tool
 // result across events — CorrelationID is the agent-generated ID also
@@ -83,27 +84,30 @@ func contextRefFor(i int, msg history.Message, reason ContextChangeReason, estBe
 }
 
 // emitContextTrace fires a ContextTraceEvent describing what the pruner
-// changed on the way into one LLM call. No-op when nothing was rewritten,
-// which is the common case — a turn whose messages all fit emits nothing,
-// and the two estimateTokens sweeps only run when there is something to
-// report.
+// and the history window changed on the way into one LLM call. No-op when
+// nothing was rewritten or dropped, which is the common case — a turn whose
+// messages all fit emits nothing, and the two estimateTokens sweeps only
+// run when there is something to report.
 func (al *AgentLoop) emitContextTrace(
 	ctx context.Context,
 	sessionKey string,
 	streamChan chan<- StreamEvent,
 	iteration int,
-	policy ContextPolicy,
-	before, after []history.Message,
-	changes []ContextRef,
+	before []history.Message,
+	d contextDerivation,
 ) {
-	if len(changes) == 0 {
+	if len(d.changes) == 0 && d.windowDropped == 0 {
 		return
 	}
-	al.emit(ctx, sessionKey, streamChan, Event(ContextTraceEvent{
-		Policy:          policy,
+	ev := ContextTraceEvent{
+		Policy:          d.policy,
 		Iteration:       iteration,
-		Changes:         changes,
+		Changes:         d.changes,
 		EstTokensBefore: estimateTokens(before),
-		EstTokensAfter:  estimateTokens(after),
-	}))
+		EstTokensAfter:  estimateTokens(d.messages),
+	}
+	if d.windowDropped > 0 {
+		ev.WindowStart, ev.WindowDropped = d.windowStart, d.windowDropped
+	}
+	al.emit(ctx, sessionKey, streamChan, Event(ev))
 }

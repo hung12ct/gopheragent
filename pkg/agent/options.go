@@ -147,6 +147,26 @@ func WithMaxTokenBudget(n int) Option {
 	return func(al *AgentLoop) { al.MaxTokenBudget = n }
 }
 
+// WithHistoryWindow bounds a long-lived session's request size: each LLM
+// call carries the leading system messages plus roughly the last n
+// messages of stored history, so cost and latency stop growing with
+// conversation age. 0 (default) sends the whole history.
+//
+// The cut is request-only. Sessions.History keeps every message, and the
+// memory consolidator still reads the full transcript, so durable facts
+// from dropped turns survive through WithMemoryConsolidator. It always
+// starts at a user message, so tool calls stay paired with their results,
+// and it advances in steps of n/2 to keep the request prefix stable for
+// provider prompt caching; the request holds about n/2 to n messages, more
+// when a single turn is longer than n. Each cut is reported on
+// ContextTraceEvent (WindowStart, WindowDropped).
+//
+// It composes with WithMaxTokenBudget: the window runs first, then the
+// budget passes trim payloads inside it.
+func WithHistoryWindow(n int) Option {
+	return func(al *AgentLoop) { al.HistoryWindow = n }
+}
+
 // WithRetry configures exponential-backoff retry for transient LLM errors.
 // nil disables retries (default). DefaultRetryConfig() gives a reasonable
 // 3-retry start. Retries are skipped once content has started streaming.

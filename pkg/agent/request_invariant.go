@@ -66,7 +66,7 @@ func (al *AgentLoop) checkRequestInvariant(ctx context.Context, snap *requestSna
 	if err := storedUnchanged(snap.stored, stored); err != nil {
 		al.RequestInvariant(ctx, fmt.Errorf("agent: request path wrote through to stored history: %w", err))
 	}
-	if err := derivationReproduces(snap.stored, al.MaxTokenBudget, sent); err != nil {
+	if err := derivationReproduces(snap.stored, al.requestPolicy(), sent); err != nil {
 		al.RequestInvariant(ctx, fmt.Errorf("agent: request diverges from a re-derivation of stored history: %w", err))
 	}
 }
@@ -96,8 +96,8 @@ func storedUnchanged(before, after []history.Message) error {
 // carry the dynamic-context injection, which is admitted by its sentinel;
 // anything else appearing in conversation position is content reaching the
 // model that no re-derivation can account for.
-func derivationReproduces(snapshot []history.Message, maxTokenBudget int, sent []history.Message) error {
-	want := conversationOf(deriveRequestMessages(snapshot, maxTokenBudget).messages)
+func derivationReproduces(snapshot []history.Message, p requestPolicy, sent []history.Message) error {
+	want := conversationOf(deriveRequestMessages(snapshot, p).messages)
 	got := conversationOf(sent)
 
 	next := 0

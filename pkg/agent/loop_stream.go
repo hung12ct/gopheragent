@@ -285,6 +285,10 @@ type AgentLoop struct {
 	// call. Estimation uses a 4-chars/token heuristic (~±20% accuracy for English).
 	MaxTokenBudget int
 
+	// HistoryWindow caps how many non-system messages of stored history
+	// each LLM call carries. 0 disables it. See WithHistoryWindow.
+	HistoryWindow int
+
 	// EventHandlers is called for every StreamEvent emitted during the loop.
 	// Multiple handlers can be registered; all fire in order for each event.
 	// Register handlers via OnEvent for a fluent API.

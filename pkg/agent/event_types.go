@@ -424,7 +424,8 @@ func (RunCostEvent) eventType() StreamEventType { return EventTypeRunCost }
 //
 // Emitted once per LLM call, and only when the pruner actually rewrote a
 // message: a turn whose context comfortably fits produces no events at
-// all. Changes lists every rewritten message with its reason, grouped by
+// all. A HistoryWindow cut alone is enough to emit one (see WindowDropped).
+// Changes lists every rewritten message with its reason, grouped by
 // the pass that produced it — argument truncation first, then depth
 // pruning — so Index is ascending within a group but not across the
 // whole slice. A given Index appears at most once under the current
@@ -451,6 +452,14 @@ type ContextTraceEvent struct {
 	Changes         []ContextRef  `json:"changes"`
 	EstTokensBefore int           `json:"est_tokens_before"`
 	EstTokensAfter  int           `json:"est_tokens_after"`
+
+	// WindowStart and WindowDropped report a HistoryWindow cut: the
+	// request left out stored messages [WindowStart-WindowDropped,
+	// WindowStart), keeping the leading system messages and everything from
+	// WindowStart on. Both are zero when the window dropped nothing. The
+	// cut is request-only — those messages are still in Sessions.History.
+	WindowStart   int `json:"window_start,omitempty"`
+	WindowDropped int `json:"window_dropped,omitempty"`
 }
 
 func (ContextTraceEvent) isEventPayload()            {}
