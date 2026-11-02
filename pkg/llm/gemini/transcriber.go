@@ -47,7 +47,7 @@ type Transcriber struct {
 var _ audio.Transcriber = (*Transcriber)(nil)
 
 // NewTranscriber builds a transcriber. apiKey defaults to GEMINI_API_KEY;
-// model defaults to "gemini-2.5-flash".
+// model defaults to "gemini-3.8-flash".
 func NewTranscriber(apiKey, model string) (*Transcriber, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("GEMINI_API_KEY")
@@ -56,7 +56,7 @@ func NewTranscriber(apiKey, model string) (*Transcriber, error) {
 		return nil, fmt.Errorf("gemini: NewTranscriber: GEMINI_API_KEY not set")
 	}
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = defaultModel
 	}
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{APIKey: apiKey})
 	if err != nil {

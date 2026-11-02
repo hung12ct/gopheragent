@@ -151,6 +151,8 @@ func TestTranscribeRejectsInvalidClip(t *testing.T) {
 	}{
 		{"empty", audio.Clip{MIME: "audio/wav"}, audio.ErrNoAudio},
 		{"unsupported", audio.Clip{MIME: "application/pdf", Data: []byte("x")}, audio.ErrUnsupportedFormat},
+		{"aac not accepted by endpoint", audio.Clip{MIME: "audio/aac", Data: []byte("x")}, audio.ErrUnsupportedFormat},
+		{"amr not accepted by endpoint", audio.Clip{MIME: "audio/amr", Data: []byte("x")}, audio.ErrUnsupportedFormat},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := tr.Transcribe(context.Background(), tc.clip, audio.Options{}); !errors.Is(err, tc.want) {

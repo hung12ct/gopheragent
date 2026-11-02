@@ -56,7 +56,13 @@ func WithSeed(n int64) Option {
 	return func(p *Provider) { p.seed = &n }
 }
 
-// New creates a wrapper over Google Gemini's API.
+// defaultModel is the model every constructor in this package uses when
+// given "". gemini-2.5-flash is rejected with a 404 for API keys created after
+// its retirement, so a fresh signup would fail on its first call.
+const defaultModel = "gemini-3.8-flash"
+
+// New creates a wrapper over Google Gemini's API. Empty model defaults to
+// "gemini-3.8-flash".
 func New(apiKey string, model string, opts ...Option) (*Provider, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("GEMINI_API_KEY")
@@ -65,7 +71,7 @@ func New(apiKey string, model string, opts ...Option) (*Provider, error) {
 		return nil, errors.New("GEMINI_API_KEY is not set in environment")
 	}
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = defaultModel
 	}
 
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{

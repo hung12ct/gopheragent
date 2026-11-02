@@ -140,6 +140,9 @@ var extByMIME = map[string]string{
 	"audio/opus":      "ogg",
 	"audio/flac":      "flac",
 	"audio/x-flac":    "flac",
+	"audio/aac":       "aac",
+	"audio/x-aac":     "aac",
+	"audio/amr":       "amr",
 }
 
 // Ext returns the file extension for a media type, or "" when the type is not

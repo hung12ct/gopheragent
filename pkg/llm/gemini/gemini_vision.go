@@ -20,7 +20,7 @@ type MediaAnalyzer struct {
 }
 
 // NewMediaAnalyzer builds an analyzer. apiKey defaults to GEMINI_API_KEY;
-// model defaults to "gemini-2.5-flash".
+// model defaults to "gemini-3.8-flash".
 func NewMediaAnalyzer(apiKey, model string) (*MediaAnalyzer, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("GEMINI_API_KEY")
@@ -29,7 +29,7 @@ func NewMediaAnalyzer(apiKey, model string) (*MediaAnalyzer, error) {
 		return nil, fmt.Errorf("gemini: GEMINI_API_KEY not set")
 	}
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = defaultModel
 	}
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey: apiKey,

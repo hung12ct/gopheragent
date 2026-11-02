@@ -7,7 +7,7 @@ not statically link the other vendors' SDKs:
 |---|---|---|---|
 | OpenAI | `pkg/llm/openai` | `openai.New(key, model)` | gpt-4o, gpt-4o-mini, o1, ... |
 | Anthropic | `pkg/llm/anthropic` | `anthropic.New(key, model)` | claude-sonnet, claude-opus, ... |
-| Google Gemini | `pkg/llm/gemini` | `gemini.New(key, model)` | gemini-2.5-flash, gemini-2.5-pro, ... |
+| Google Gemini | `pkg/llm/gemini` | `gemini.New(key, model)` | gemini-3.8-flash (default), gemini-2.5-pro, ... |
 | Vertex AI (Gemini) | `pkg/llm/gemini` | `gemini.NewVertex(project, location, model)` | Vertex-hosted Gemini via ADC |
 | OpenAI-compatible | `pkg/llm/openai` | `openai.NewCompat(key, model, baseURL)` | OpenRouter, Ollama, Groq, vLLM, Together, ... |
 
