@@ -20,6 +20,9 @@ func TestExtStripsParametersAndCase(t *testing.T) {
 		{"audio/x-m4a", "m4a"},
 		{"audio/flac", "flac"},
 		{"audio/opus", "ogg"},
+		{"audio/aac", "aac"},
+		{"audio/x-aac", "aac"},
+		{"audio/amr", "amr"},
 		{"text/plain", ""},
 		{"", ""},
 	} {

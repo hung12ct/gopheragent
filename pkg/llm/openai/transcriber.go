@@ -16,6 +16,11 @@ import (
 // instead of after transferring the payload.
 const maxClipBytes = 25 << 20
 
+// unsupportedExts are containers pkg/audio accepts (Gemini decodes them) but
+// the OpenAI audio endpoint does not list. Rejecting them here fails fast with
+// ErrUnsupportedFormat instead of after a full upload.
+var unsupportedExts = map[string]bool{"aac": true, "amr": true}
+
 // Transcriber implements audio.Transcriber against OpenAI's audio
 // transcription endpoint.
 //
@@ -51,6 +56,10 @@ func NewTranscriber(apiKey string, model string, opts ...ClientOption) (*Transcr
 func (t *Transcriber) Transcribe(ctx context.Context, clip audio.Clip, opts audio.Options) (audio.Transcript, error) {
 	if err := clip.Validate(); err != nil {
 		return audio.Transcript{}, fmt.Errorf("openai: Transcriber: %w", err)
+	}
+	if ext := audio.Ext(clip.MIME); unsupportedExts[ext] {
+		return audio.Transcript{}, fmt.Errorf("openai: Transcriber: %w: %s is not accepted by the OpenAI audio endpoint",
+			audio.ErrUnsupportedFormat, ext)
 	}
 	if len(clip.Data) > maxClipBytes {
 		return audio.Transcript{}, fmt.Errorf("openai: Transcriber: %w: %d bytes exceeds %d",
