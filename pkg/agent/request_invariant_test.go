@@ -131,12 +131,12 @@ func TestDerivationReproduces(t *testing.T) {
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi"},
 	}
-	derived := deriveRequestMessages(stored, 0).messages
+	derived := deriveRequestMessages(stored, requestPolicy{}).messages
 
 	t.Run("system framing may be reshaped", func(t *testing.T) {
 		sent := append([]history.Message{{Role: "system", Content: "plan mode"}}, derived...)
 		sent[1].Content = "sys + memory notes"
-		if err := derivationReproduces(stored, 0, sent); err != nil {
+		if err := derivationReproduces(stored, requestPolicy{}, sent); err != nil {
 			t.Fatalf("system reshaping reported a violation: %v", err)
 		}
 	})
@@ -144,7 +144,7 @@ func TestDerivationReproduces(t *testing.T) {
 	t.Run("declared dynamic context is admitted", func(t *testing.T) {
 		sent := append(append([]history.Message(nil), derived...),
 			history.Message{Role: "user", Content: dynamicContextSentinel + "\nextra"})
-		if err := derivationReproduces(stored, 0, sent); err != nil {
+		if err := derivationReproduces(stored, requestPolicy{}, sent); err != nil {
 			t.Fatalf("declared injection reported a violation: %v", err)
 		}
 	})
@@ -152,7 +152,7 @@ func TestDerivationReproduces(t *testing.T) {
 	t.Run("undeclared injection is caught", func(t *testing.T) {
 		sent := append(append([]history.Message(nil), derived...),
 			history.Message{Role: "user", Content: "smuggled instruction"})
-		if err := derivationReproduces(stored, 0, sent); err == nil {
+		if err := derivationReproduces(stored, requestPolicy{}, sent); err == nil {
 			t.Fatal("an unlogged user message reported no violation")
 		}
 	})
@@ -164,13 +164,13 @@ func TestDerivationReproduces(t *testing.T) {
 				sent[i].Content = "tampered"
 			}
 		}
-		if err := derivationReproduces(stored, 0, sent); err == nil {
+		if err := derivationReproduces(stored, requestPolicy{}, sent); err == nil {
 			t.Fatal("a rewritten user message reported no violation")
 		}
 	})
 
 	t.Run("dropped conversation is caught", func(t *testing.T) {
-		if err := derivationReproduces(stored, 0, derived[:1]); err == nil {
+		if err := derivationReproduces(stored, requestPolicy{}, derived[:1]); err == nil {
 			t.Fatal("a dropped message reported no violation")
 		}
 	})
@@ -191,8 +191,8 @@ func TestDeriveRequestMessages_IsPure(t *testing.T) {
 	copy(before, stored)
 
 	for _, budget := range []int{0, 1, 50, 1_000_000} {
-		first := deriveRequestMessages(stored, budget)
-		second := deriveRequestMessages(stored, budget)
+		first := deriveRequestMessages(stored, requestPolicy{tokenBudget: budget})
+		second := deriveRequestMessages(stored, requestPolicy{tokenBudget: budget})
 
 		if err := storedUnchanged(before, stored); err != nil {
 			t.Fatalf("budget %d: derivation mutated its input: %v", budget, err)

@@ -72,6 +72,10 @@ const (
 	// outcome. Carries Before/After counts and any error so adopters
 	// can wire a compliance log without polling the store.
 	EventTypeMemoryConsolidated StreamEventType = "memory_consolidated"
+	// EventTypeCompacted is emitted at the start of a Run when the
+	// configured Compactor condensed older turns into a summary, or tried
+	// to and failed.
+	EventTypeCompacted StreamEventType = "compacted"
 	// EventTypeRunCost is emitted right before DoneEvent on Runs that
 	// produced a final answer. Carries rolled-up token usage and the
 	// resolved dollar cost. Skipped only when neither a PriceTable is
@@ -388,6 +392,32 @@ type MemoryConsolidatedEvent struct {
 func (MemoryConsolidatedEvent) isEventPayload()            {}
 func (MemoryConsolidatedEvent) eventType() StreamEventType { return EventTypeMemoryConsolidated }
 
+// CompactedEvent is the typed payload of EventTypeCompacted. Emitted once
+// at the start of a Run whose conversation outgrew the history window with
+// a Compactor configured, before the first LLM call, so a UI can show that
+// the agent condensed the conversation.
+//
+// Index is the stored index of the inserted compaction record (0 on
+// failure). Summarized is how many messages the summarizer read; Omitted
+// is how many older ones were left out to bound its input, which only
+// happens on the first compaction of a long pre-existing session. Usage
+// is the summarizer call's token usage, reported here because it runs on
+// the Compactor's own LLM and is not part of the turn's usage events.
+//
+// On failure Error is set and no record is written: the turn proceeds on
+// the previous summary plus the plain window, and the next Run retries.
+type CompactedEvent struct {
+	Index        int        `json:"index,omitempty"`
+	Summarized   int        `json:"summarized"`
+	Omitted      int        `json:"omitted,omitempty"`
+	SummaryRunes int        `json:"summary_runes,omitempty"`
+	Usage        TokenUsage `json:"usage"`
+	Error        string     `json:"error,omitempty"`
+}
+
+func (CompactedEvent) isEventPayload()            {}
+func (CompactedEvent) eventType() StreamEventType { return EventTypeCompacted }
+
 // RunCostEvent is the typed payload of EventTypeRunCost. Emitted at
 // the end of a Run that produced any accounting, when a PriceTable is
 // configured or a provider reported a charge. Adopters surface USD on
@@ -424,7 +454,8 @@ func (RunCostEvent) eventType() StreamEventType { return EventTypeRunCost }
 //
 // Emitted once per LLM call, and only when the pruner actually rewrote a
 // message: a turn whose context comfortably fits produces no events at
-// all. Changes lists every rewritten message with its reason, grouped by
+// all. A HistoryWindow cut alone is enough to emit one (see WindowDropped).
+// Changes lists every rewritten message with its reason, grouped by
 // the pass that produced it — argument truncation first, then depth
 // pruning — so Index is ascending within a group but not across the
 // whole slice. A given Index appears at most once under the current
@@ -451,6 +482,22 @@ type ContextTraceEvent struct {
 	Changes         []ContextRef  `json:"changes"`
 	EstTokensBefore int           `json:"est_tokens_before"`
 	EstTokensAfter  int           `json:"est_tokens_after"`
+
+	// WindowStart and WindowDropped report a HistoryWindow cut: the
+	// request left out stored messages [WindowStart-WindowDropped,
+	// WindowStart), keeping the leading system messages and everything from
+	// WindowStart on. Both are zero when the window dropped nothing. The
+	// cut is request-only — those messages are still in Sessions.History.
+	WindowStart   int `json:"window_start,omitempty"`
+	WindowDropped int `json:"window_dropped,omitempty"`
+
+	// SummaryIndex is the stored index of the compaction record whose
+	// summary the request carried in place of every message before it (see
+	// WithCompactor), 0 when there was none. It annotates a trace emitted
+	// for another reason; a summary alone does not emit one, since every
+	// request of a compacted session carries it and CompactedEvent already
+	// reported the change.
+	SummaryIndex int `json:"summary_index,omitempty"`
 }
 
 func (ContextTraceEvent) isEventPayload()            {}
@@ -622,6 +669,10 @@ func decodePayload(t StreamEventType, raw []byte) EventPayload {
 		var p MemoryConsolidatedEvent
 		_ = json.Unmarshal(raw, &p)
 		return p
+	case EventTypeCompacted:
+		var p CompactedEvent
+		_ = json.Unmarshal(raw, &p)
+		return p
 	case EventTypeRunCost:
 		var p RunCostEvent
 		_ = json.Unmarshal(raw, &p)
@@ -670,6 +721,7 @@ type EventVisitor interface {
 	VisitContinued(ContinuedEvent)
 	VisitMemoryLoaded(MemoryLoadedEvent)
 	VisitMemoryConsolidated(MemoryConsolidatedEvent)
+	VisitCompacted(CompactedEvent)
 	VisitRunCost(RunCostEvent)
 	VisitContextTrace(ContextTraceEvent)
 	VisitDegraded(DegradedEvent)
@@ -720,6 +772,8 @@ func (ev StreamEvent) Visit(v EventVisitor) {
 		v.VisitMemoryLoaded(p)
 	case MemoryConsolidatedEvent:
 		v.VisitMemoryConsolidated(p)
+	case CompactedEvent:
+		v.VisitCompacted(p)
 	case RunCostEvent:
 		v.VisitRunCost(p)
 	case ContextTraceEvent:

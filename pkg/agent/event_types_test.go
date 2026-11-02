@@ -85,6 +85,7 @@ func TestStreamEvent_RoundTripsThroughJSON(t *testing.T) {
 			EstTokensAfter:  120,
 		}),
 		Event(DegradedEvent{Units: []ToolDegradation{{Tool: "write_report", Reason: "index failed"}}}),
+		Event(CompactedEvent{Index: 12, Summarized: 8, SummaryRunes: 420, Usage: TokenUsage{PromptTokens: 900, CompletionTokens: 120, TotalTokens: 1020}}),
 	}
 	for _, ev := range cases {
 		data, err := json.Marshal(ev)
@@ -182,6 +183,7 @@ func (r *recordingVisitor) VisitMemoryConsolidated(MemoryConsolidatedEvent) {
 func (r *recordingVisitor) VisitRunCost(RunCostEvent)           { r.visited = "run_cost" }
 func (r *recordingVisitor) VisitContextTrace(ContextTraceEvent) { r.visited = "context_trace" }
 func (r *recordingVisitor) VisitDegraded(DegradedEvent)         { r.visited = "degraded" }
+func (r *recordingVisitor) VisitCompacted(CompactedEvent)       { r.visited = "compacted" }
 func (r *recordingVisitor) VisitUnknown(UnknownEvent)           { r.visited = "unknown" }
 
 func TestVisit_DispatchesToMatchingMethod(t *testing.T) {

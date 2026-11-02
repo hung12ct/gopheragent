@@ -147,6 +147,44 @@ func WithMaxTokenBudget(n int) Option {
 	return func(al *AgentLoop) { al.MaxTokenBudget = n }
 }
 
+// WithHistoryWindow bounds a long-lived session's request size: each LLM
+// call carries the leading system messages plus roughly the last n
+// messages of stored history, so cost and latency stop growing with
+// conversation age. 0 (default) sends the whole history.
+//
+// The cut is request-only. Sessions.History keeps every message, and the
+// memory consolidator still reads the full transcript, so durable facts
+// from dropped turns survive through WithMemoryConsolidator. It always
+// starts at a user message, so tool calls stay paired with their results,
+// and it advances in steps of n/2 to keep the request prefix stable for
+// provider prompt caching; the request holds about n/2 to n messages, more
+// when a single turn is longer than n. Each cut is reported on
+// ContextTraceEvent (WindowStart, WindowDropped).
+//
+// It composes with WithMaxTokenBudget: the window runs first, then the
+// budget passes trim payloads inside it.
+func WithHistoryWindow(n int) Option {
+	return func(al *AgentLoop) { al.HistoryWindow = n }
+}
+
+// WithCompactor keeps the thread of a long conversation when the history
+// window drops old turns. At the start of a Run whose conversation has
+// outgrown the window, the Compactor folds everything but the last ~n/2
+// messages into a running summary, extending the previous one, and
+// inserts it into history as a compaction record (a system message with
+// history.Message.Compaction set) right before the first kept message.
+// Requests then carry the summary in the system prompt in place of
+// everything before the record; the summarized messages stay in history.
+//
+// It costs one LLM call per ~n/2 messages, made before the turn's first
+// LLM call and reported on CompactedEvent. A failed call never fails the
+// turn: the request falls back to the previous summary plus the plain
+// window, and the next Run retries. Without WithHistoryWindow a window of
+// 100 messages applies.
+func WithCompactor(c *Compactor) Option {
+	return func(al *AgentLoop) { al.Compactor = c }
+}
+
 // WithRetry configures exponential-backoff retry for transient LLM errors.
 // nil disables retries (default). DefaultRetryConfig() gives a reasonable
 // 3-retry start. Retries are skipped once content has started streaming.

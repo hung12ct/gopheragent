@@ -50,7 +50,10 @@ go get github.com/hung12ct/gopheragent
   loader over any `io/fs.FS`; descriptions sit in the prompt, full instructions
   load only when a skill is used.
 - **Deterministic ReAct loop** — dependency-aware parallel tool scheduling with
-  `<output_of:ID>` refs, anti-loop detection, token-budget-aware pruning.
+  `<output_of:ID>` refs, anti-loop detection, token-budget-aware pruning, and a
+  prompt-cache-friendly history window with incremental compaction
+  (`WithHistoryWindow` + `WithCompactor`) that keeps months-long sessions at a
+  flat request size without losing the thread.
 - **Streaming & HITL** — SSE streaming, human approvals (durable across
   restarts with `DeferApprovals` + `Resume`), plan mode, and self-critique
   that keeps the best-scoring pass instead of the last one.
