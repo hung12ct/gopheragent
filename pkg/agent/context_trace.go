@@ -46,9 +46,9 @@ const (
 // transient copy and persists the conversation at full fidelity, it is the
 // same position in the slice returned by Sessions.History. That is what
 // makes a trace joinable back to the stored transcript. Pruning never
-// reorders messages, but a HistoryWindow cut leaves a prefix out of the
-// request, so Index indexes the request itself only when
-// ContextTraceEvent.WindowDropped is zero.
+// reorders messages, but a history-window cut or a compaction summary
+// leaves messages out of the request, so Index indexes the request itself
+// only when ContextTraceEvent.WindowDropped and SummaryIndex are both zero.
 //
 // ToolCallID and CorrelationID are the stable handles for naming a tool
 // result across events — CorrelationID is the agent-generated ID also
@@ -106,8 +106,7 @@ func (al *AgentLoop) emitContextTrace(
 		EstTokensBefore: estimateTokens(before),
 		EstTokensAfter:  estimateTokens(d.messages),
 	}
-	if d.windowDropped > 0 {
-		ev.WindowStart, ev.WindowDropped = d.windowStart, d.windowDropped
-	}
+	ev.WindowStart, ev.WindowDropped = d.windowStart, d.windowDropped
+	ev.SummaryIndex = d.summaryIndex
 	al.emit(ctx, sessionKey, streamChan, Event(ev))
 }

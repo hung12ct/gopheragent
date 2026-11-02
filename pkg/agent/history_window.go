@@ -11,7 +11,7 @@ type requestPolicy struct {
 }
 
 func (al *AgentLoop) requestPolicy() requestPolicy {
-	return requestPolicy{tokenBudget: al.MaxTokenBudget, historyWindow: al.HistoryWindow}
+	return requestPolicy{tokenBudget: al.MaxTokenBudget, historyWindow: al.historyWindow()}
 }
 
 // historyWindowStart returns the stored index where the windowed
@@ -30,9 +30,7 @@ func (al *AgentLoop) requestPolicy() requestPolicy {
 // than window is kept whole. When no user message lies in range the
 // window drops nothing.
 func historyWindowStart(stored []history.Message, window int) (start, sys int) {
-	for sys < len(stored) && stored[sys].Role == "system" {
-		sys++
-	}
+	sys = leadingSystem(stored)
 	if window <= 0 || len(stored)-sys <= window {
 		return sys, sys
 	}
@@ -62,15 +60,14 @@ func applyHistoryWindow(stored []history.Message, start, sys int) []history.Mess
 	return append(out, stored[start:]...)
 }
 
-// rebaseRefs shifts ContextRef indexes computed on a windowed slice back to
+// rebaseRefs maps ContextRef indexes computed on the windowed view back to
 // positions in stored history, so a trace stays joinable to Sessions.History.
-func rebaseRefs(refs []ContextRef, start, sys int) {
-	if start == sys {
-		return
-	}
+func rebaseRefs(refs []ContextRef, v requestView, start, sys int) {
 	for i := range refs {
-		if refs[i].Index >= sys {
-			refs[i].Index += start - sys
+		idx := refs[i].Index
+		if idx >= sys {
+			idx += start - sys
 		}
+		refs[i].Index = v.storedIndex(idx)
 	}
 }

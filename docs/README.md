@@ -6,6 +6,7 @@ Start with the guide that matches what you are trying to do:
 |---|---|
 | [Getting started](getting-started.md) | Install, the YAML builder, and persistent sessions |
 | [Tools](tools.md) | Built-in tools, writing custom tools, and middleware |
+| [Long conversations](context.md) | Pruning, token budget, history window, and compaction for months-long sessions |
 | [Permissions & HITL](permissions.md) | Confirmation gates, the permission DSL, autonomous approvals |
 | [Providers](providers.md) | OpenAI / Anthropic / Gemini / Vertex / compatible, routing, sampling, multimodal |
 | [Observability](observability.md) | OpenTelemetry traces & metrics, running a collector, debugging a reported conversation |

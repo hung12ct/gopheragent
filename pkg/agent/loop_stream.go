@@ -289,6 +289,11 @@ type AgentLoop struct {
 	// each LLM call carries. 0 disables it. See WithHistoryWindow.
 	HistoryWindow int
 
+	// Compactor condenses the turns the history window drops into a
+	// running summary. nil drops them without one. With a Compactor and no
+	// HistoryWindow, a window of 100 messages applies. See WithCompactor.
+	Compactor *Compactor
+
 	// EventHandlers is called for every StreamEvent emitted during the loop.
 	// Multiple handlers can be registered; all fire in order for each event.
 	// Register handlers via OnEvent for a fluent API.
@@ -935,6 +940,7 @@ func (al *AgentLoop) runLogicLoop(ctx context.Context, sessionKey string, userMs
 	if isFreshSessionHistory(existing) {
 		al.emit(ctx, sessionKey, streamChan, Event(SessionCreatedEvent{SessionKey: sessionKey}))
 	}
+	existing = al.compactHistory(ctx, sessionKey, streamChan, existing)
 	msgs := append(existing, userMsg)
 	msgs = patchDanglingToolCalls(msgs)
 	if err := al.Sessions.SaveHistory(ctx, sessionKey, msgs); err != nil {

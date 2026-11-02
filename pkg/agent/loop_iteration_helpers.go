@@ -42,6 +42,11 @@ type contextDerivation struct {
 	// before it were left out. windowDropped is 0 when nothing was cut.
 	windowStart   int
 	windowDropped int
+
+	// summaryIndex is the stored index of the compaction record applied,
+	// 0 when the request carries no summary (a record is never at 0: it
+	// always follows at least one conversation message).
+	summaryIndex int
 }
 
 // deriveRequestMessages turns stored history into the message list a single
@@ -50,14 +55,22 @@ type contextDerivation struct {
 // request invariant re-run it as an independent check — see
 // AgentLoop.checkRequestInvariant.
 //
-// The history window runs first, so the budget passes only see — and only
-// pay for — the turns that will actually be sent. ContextRef indexes are
-// rebased onto stored history afterwards.
+// The newest compaction record applies first (its summary joins the
+// system prompt, the messages it covers leave the request), then the
+// history window, so the budget passes only see — and only pay for — the
+// turns that will actually be sent. ContextRef indexes are mapped back
+// onto stored history afterwards.
 func deriveRequestMessages(stored []history.Message, p requestPolicy) contextDerivation {
-	start, sys := historyWindowStart(stored, p.historyWindow)
-	d := applyTokenBudget(applyHistoryWindow(stored, start, sys), p.tokenBudget)
-	rebaseRefs(d.changes, start, sys)
-	d.windowStart, d.windowDropped = start, start-sys
+	v := compactedView(stored)
+	start, sys := historyWindowStart(v.msgs, p.historyWindow)
+	d := applyTokenBudget(applyHistoryWindow(v.msgs, start, sys), p.tokenBudget)
+	rebaseRefs(d.changes, v, start, sys)
+	if start > sys {
+		d.windowStart, d.windowDropped = v.storedIndex(start), start-sys
+	}
+	if v.record >= 0 {
+		d.summaryIndex = v.record
+	}
 	return d
 }
 

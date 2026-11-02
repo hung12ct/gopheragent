@@ -69,6 +69,25 @@ type Message struct {
 	// Providers without a prompt-cache API (OpenAI/Gemini auto-cache server-side)
 	// ignore this flag — it is always safe to set.
 	CacheHint bool `json:"cache_hint,omitempty"`
+
+	// Compaction is set on a compaction record: a role:"system" message the
+	// agent loop inserts when it condenses older turns. A record stands in
+	// for every conversation message before it: Content is their summary,
+	// folding in any earlier record. Those messages stay in history at
+	// full fidelity; the loop only leaves them out of the requests it
+	// builds. Because a record is located by position rather than by
+	// index, trimming history from the front or truncating it after the
+	// record cannot make it point at the wrong place. Render layers can
+	// show it as a "conversation condensed" divider or skip it with the
+	// other system rows.
+	Compaction *Compaction `json:"compaction,omitempty"`
+}
+
+// Compaction is the payload of a compaction record (see Message.Compaction).
+type Compaction struct {
+	// Summarized is how many messages this record folded into the summary
+	// on top of the previous record's. Informational.
+	Summarized int `json:"summarized"`
 }
 
 // PartType enumerates the kinds of content a MediaPart can hold.

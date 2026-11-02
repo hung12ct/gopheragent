@@ -167,6 +167,24 @@ func WithHistoryWindow(n int) Option {
 	return func(al *AgentLoop) { al.HistoryWindow = n }
 }
 
+// WithCompactor keeps the thread of a long conversation when the history
+// window drops old turns. At the start of a Run whose conversation has
+// outgrown the window, the Compactor folds everything but the last ~n/2
+// messages into a running summary, extending the previous one, and
+// inserts it into history as a compaction record (a system message with
+// history.Message.Compaction set) right before the first kept message.
+// Requests then carry the summary in the system prompt in place of
+// everything before the record; the summarized messages stay in history.
+//
+// It costs one LLM call per ~n/2 messages, made before the turn's first
+// LLM call and reported on CompactedEvent. A failed call never fails the
+// turn: the request falls back to the previous summary plus the plain
+// window, and the next Run retries. Without WithHistoryWindow a window of
+// 100 messages applies.
+func WithCompactor(c *Compactor) Option {
+	return func(al *AgentLoop) { al.Compactor = c }
+}
+
 // WithRetry configures exponential-backoff retry for transient LLM errors.
 // nil disables retries (default). DefaultRetryConfig() gives a reasonable
 // 3-retry start. Retries are skipped once content has started streaming.
