@@ -73,6 +73,9 @@ go get github.com/hung12ct/gopheragent
   into notes the loader prepends to future sessions.
 - **Observability** — OpenTelemetry traces + metrics (one trace per turn, nested
   LLM/tool spans, GenAI-convention token metrics), zero-cost when off.
+- **Audit log** — `pkg/auditlog` ships who-did-what records (tool runs,
+  approvals, policy verdicts, data changes) over OTLP logs; synchronous,
+  validated, optionally fail-closed.
 - **Evaluation** — grade trajectory + answer + HITL with `pkg/eval` and a
   CI-ready `gopherevals` CLI.
 
@@ -86,6 +89,7 @@ go get github.com/hung12ct/gopheragent
 | [Permissions & HITL](docs/permissions.md) | Confirmation gates, permission DSL, autonomous approvals |
 | [Providers](docs/providers.md) | Providers, multi-model routing, sampling, multimodal |
 | [Observability](docs/observability.md) | OpenTelemetry traces & metrics, collectors, debugging a conversation |
+| [Audit log](docs/auditlog.md) | Who-did-what audit events over OTLP: setup, agent integration, event schema |
 | [Evaluation](docs/evaluation.md) | Grade an agent with `pkg/eval` + `gopherevals` |
 
 Full API reference: [pkg.go.dev](https://pkg.go.dev/github.com/hung12ct/gopheragent).
