@@ -95,6 +95,10 @@ func NewProvider(next agent.LLMProvider, opts ...Option) agent.LLMProvider {
 	if cfg.tracer == nil && cfg.meter == nil {
 		return next
 	}
+	switch next.(type) {
+	case *instrumentedProvider, *capableProvider:
+		return next // already instrumented: wrapping again would double every span
+	}
 	capture := semconv.CaptureContentFromEnv()
 	if cfg.capture != nil {
 		capture = *cfg.capture
@@ -237,7 +241,11 @@ func (p *instrumentedProvider) startSpan(ctx context.Context) (context.Context, 
 	if p.tracer == nil {
 		return ctx, nil
 	}
-	return p.tracer.Start(ctx, "chat "+p.model,
+	name := semconv.OperationChat
+	if p.model != "" {
+		name += " " + p.model
+	}
+	return p.tracer.Start(ctx, name,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(p.spanAttrs...),
 	)

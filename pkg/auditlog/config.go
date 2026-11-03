@@ -46,6 +46,11 @@ type Config struct {
 	// MaxAttempts bounds retries of a transient export failure; default 3.
 	MaxAttempts int
 
+	// DefaultTenantID attributes records made by Instrument when the ctx
+	// carries no Actor tenant — what a single-tenant app sets instead of
+	// calling WithActor per request.
+	DefaultTenantID string
+
 	// HMACKey (at least 16 bytes) enables keyed argument fingerprints
 	// (ToolInvocation.ArgsHMAC) and a signature on every record, which Verify
 	// checks. Keep it out of the audit store: whoever holds it can forge

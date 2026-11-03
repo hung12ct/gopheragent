@@ -23,8 +23,13 @@ func TestResolveSignal(t *testing.T) {
 	}{
 		{name: "no endpoint stays off", want: signalPlan{}},
 		{
-			name: "generic endpoint defaults to grpc",
+			name: "scheme-less env endpoint is passed explicitly",
 			env:  map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "localhost:4317"},
+			want: signalPlan{enabled: true, protocol: ProtocolGRPC, endpoint: "localhost:4317"},
+		},
+		{
+			name: "URL env endpoint is left to the exporter",
+			env:  map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317"},
 			want: signalPlan{enabled: true, protocol: ProtocolGRPC},
 		},
 		{
@@ -40,7 +45,7 @@ func TestResolveSignal(t *testing.T) {
 			name: "config overrides env protocol",
 			cfg:  Config{Endpoint: "localhost:4318", Protocol: ProtocolHTTP},
 			env:  map[string]string{"OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"},
-			want: signalPlan{enabled: true, protocol: ProtocolHTTP},
+			want: signalPlan{enabled: true, protocol: ProtocolHTTP, endpoint: "localhost:4318"},
 		},
 		{
 			name: "sdk disabled wins over endpoint",

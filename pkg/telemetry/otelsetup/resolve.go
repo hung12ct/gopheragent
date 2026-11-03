@@ -25,6 +25,10 @@ const (
 type signalPlan struct {
 	enabled  bool
 	protocol string
+	// endpoint is a host:port passed to the exporter explicitly: Config.Endpoint,
+	// or an env endpoint written without a scheme. Empty: the exporter reads
+	// its (URL-form) env var itself.
+	endpoint string
 }
 
 // resolveSignal decides, once at Setup time, whether a signal exports and over
@@ -59,7 +63,7 @@ func resolveSignal(cfg Config, getenv func(string) string, kind signalKind) (sig
 		return signalPlan{}, fmt.Errorf("otelsetup: unsupported OTLP protocol %q for %s (want %s or %s)",
 			proto, strings.ToLower(string(kind)), ProtocolGRPC, ProtocolHTTP)
 	}
-	return signalPlan{enabled: true, protocol: proto}, nil
+	return signalPlan{enabled: true, protocol: proto, endpoint: explicitEndpoint(cfg, getenv, kind)}, nil
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -69,4 +73,21 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// explicitEndpoint returns the endpoint to pass as host:port. The OTLP
+// exporters parse OTEL_EXPORTER_OTLP_[<SIGNAL>_]ENDPOINT only as a URL, so
+// the common "localhost:4317" (no scheme) would parse "localhost" as the
+// scheme and fail every export with an empty host. A scheme-less value is
+// therefore passed through explicitly, like Config.Endpoint; a URL is left to
+// the exporter, which also derives the per-signal path from it.
+func explicitEndpoint(cfg Config, getenv func(string) string, kind signalKind) string {
+	if cfg.Endpoint != "" {
+		return cfg.Endpoint
+	}
+	v := firstNonEmpty(getenv("OTEL_EXPORTER_OTLP_"+string(kind)+"_ENDPOINT"), getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if strings.Contains(v, "://") {
+		return ""
+	}
+	return v
 }

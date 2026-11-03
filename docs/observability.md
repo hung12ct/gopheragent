@@ -59,6 +59,29 @@ if err != nil { /* ... */ }
 defer shutdown(context.Background())
 ```
 
+### The short way: one call
+
+```go
+tel, shutdown, err := otelsetup.Setup(ctx, otelsetup.Config{ServiceName: "my-agent"})
+if err != nil { /* invalid OTEL_* configuration */ }
+defer shutdown(context.Background())
+
+tel.Instrument(loop, otelllm.WithSystem("anthropic"), otelllm.WithModel(model))
+```
+
+`Instrument` wires the loop (run/iteration spans, run metrics), its LLM (chat
+spans, token metrics), and every registered tool (execute_tool spans) — for a
+loop from `agent.New` or the YAML builder alike. Call it after the tools are
+registered (tools registered later are named in a log warning on the loop's
+first event); calling it twice is harmless. With no endpoint configured it does
+nothing, so call it unconditionally and enable telemetry purely with env:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317   # host:port or http://host:4317
+```
+
+The sections below show the same wiring piece by piece, for finer control.
+
 ### Loops built with `agent.New`
 
 ```go
