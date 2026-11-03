@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+
+	"github.com/hung12ct/gopheragent/internal/latewire"
 	"github.com/hung12ct/gopheragent/pkg/agent"
 )
 
@@ -15,6 +18,7 @@ import (
 // it unset, auditing is off.
 const (
 	EnvEndpoint    = "GOPHERAGENT_AUDIT_ENDPOINT"     // host:port — set it to turn auditing on
+	EnvRequired    = "GOPHERAGENT_AUDIT_REQUIRED"     // true: a missing endpoint is an error, not "off"
 	EnvProtocol    = "GOPHERAGENT_AUDIT_PROTOCOL"     // grpc (default) | http/protobuf
 	EnvInsecure    = "GOPHERAGENT_AUDIT_INSECURE"     // true: plaintext, local collectors only
 	EnvServiceName = "GOPHERAGENT_AUDIT_SERVICE_NAME" // default: OTEL_SERVICE_NAME, then "gopheragent"
@@ -30,7 +34,13 @@ const (
 // FromEnv builds a Client from GOPHERAGENT_AUDIT_* environment variables.
 // With GOPHERAGENT_AUDIT_ENDPOINT unset it returns a nil *Client and no
 // error — a disabled client whose methods do nothing — so the same code runs
-// with auditing on or off:
+// with auditing on or off. Where auditing is mandatory, set
+// GOPHERAGENT_AUDIT_REQUIRED=true so a missing or misspelled endpoint fails
+// startup instead of silently disabling the trail.
+//
+// The client's self-health metrics go to the global OTel MeterProvider, so
+// with telemetry enabled (otelsetup.Setup, before or after) failed and dropped
+// records are visible without extra wiring:
 //
 //	audit, err := auditlog.FromEnv(ctx)
 //	if err != nil { ... }          // set but invalid configuration
@@ -41,12 +51,22 @@ func FromEnv(ctx context.Context) (*Client, error) {
 	if err != nil || !ok {
 		return nil, err
 	}
+	cfg.Meter = otel.GetMeterProvider().Meter(scopeName)
 	return New(ctx, cfg)
 }
 
 func configFromEnv(getenv func(string) string) (Config, bool, error) {
 	cfg := Config{Endpoint: strings.TrimSpace(getenv(EnvEndpoint))}
 	if cfg.Endpoint == "" {
+		if v := getenv(EnvRequired); v != "" {
+			required, err := strconv.ParseBool(v)
+			if err != nil {
+				return cfg, false, fmt.Errorf("auditlog: %s=%q: %w", EnvRequired, v, err)
+			}
+			if required {
+				return cfg, false, fmt.Errorf("auditlog: %s is set but %s is empty", EnvRequired, EnvEndpoint)
+			}
+		}
 		return cfg, false, nil
 	}
 	cfg.Protocol = strings.TrimSpace(getenv(EnvProtocol))
@@ -116,7 +136,8 @@ func firstSet(vals ...string) string {
 // back to Config.DefaultTenantID when the ctx carries no Actor.
 //
 // Call it last — after ConfirmHITL, Permissions, and the tools are set; ones
-// set afterwards are not audited. Tools are never double-wrapped, but the
+// set afterwards are not audited (a warning names them on the loop's first
+// event). Tools are never double-wrapped, but the
 // callback, policy, and event handler are, so call it once per loop. A nil
 // client changes nothing. Returns loop for chaining.
 func (c *Client) Instrument(loop *agent.AgentLoop, opts ...Option) *agent.AgentLoop {
@@ -126,6 +147,7 @@ func (c *Client) Instrument(loop *agent.AgentLoop, opts ...Option) *agent.AgentL
 	if c.cfg.DefaultTenantID != "" {
 		opts = append([]Option{WithDefaultTenant(c.cfg.DefaultTenantID)}, opts...) // caller's options win
 	}
+	latewire.Watch(loop, "auditlog", true)
 	if loop.Tools != nil {
 		loop.Tools.Use(ToolMiddleware(c, opts...))
 	}

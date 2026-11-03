@@ -72,7 +72,8 @@ tel.Instrument(loop, otelllm.WithSystem("anthropic"), otelllm.WithModel(model))
 `Instrument` wires the loop (run/iteration spans, run metrics), its LLM (chat
 spans, token metrics), and every registered tool (execute_tool spans) — for a
 loop from `agent.New` or the YAML builder alike. Call it after the tools are
-registered; calling it twice is harmless. With no endpoint configured it does
+registered (tools registered later are named in a log warning on the loop's
+first event); calling it twice is harmless. With no endpoint configured it does
 nothing, so call it unconditionally and enable telemetry purely with env:
 
 ```bash

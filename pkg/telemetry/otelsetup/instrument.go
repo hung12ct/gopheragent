@@ -1,6 +1,7 @@
 package otelsetup
 
 import (
+	"github.com/hung12ct/gopheragent/internal/latewire"
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/telemetry/otelllm"
 	"github.com/hung12ct/gopheragent/pkg/telemetry/oteltools"
@@ -14,7 +15,8 @@ import (
 //	tel.Instrument(loop, otelllm.WithSystem("anthropic"), otelllm.WithModel(model))
 //
 // Call it once the loop is configured and its tools are registered; tools
-// registered later are not instrumented. Calling it twice is harmless. When
+// registered later are not instrumented (a warning names them on the loop's
+// first event). Calling it twice is harmless. When
 // telemetry is disabled (no endpoint configured) it changes nothing, so it is
 // safe to call unconditionally. Returns loop for chaining.
 //
@@ -25,6 +27,7 @@ func (p *Providers) Instrument(loop *agent.AgentLoop, llmOpts ...otelllm.Option)
 	if p == nil || !p.Enabled || loop == nil {
 		return loop
 	}
+	latewire.Watch(loop, "otelsetup", false)
 	loop.Configure(agent.WithTracer(p.Tracer), agent.WithMeter(p.Meter))
 	if loop.LLM != nil {
 		opts := append([]otelllm.Option{otelllm.WithTracer(p.Tracer), otelllm.WithMeter(p.Meter)}, llmOpts...)

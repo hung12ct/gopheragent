@@ -34,7 +34,10 @@ export GOPHERAGENT_AUDIT_HMAC_KEY=...            # optional: signed records, key
 
 A nil `*Client` is a valid, disabled client — every method is a no-op — so
 the same code runs with auditing on or off. Call `Instrument` last, after
-`ConfirmHITL`, `Permissions`, and the tools are set, and once per loop.
+`ConfirmHITL`, `Permissions`, and the tools are set, and once per loop;
+anything attached later is named in a log warning on the loop's first event.
+The client's health metrics (`gopheragent.audit.records{result=failed|dropped}`)
+go to the global OTel meter, so with telemetry enabled they need no wiring.
 Records fall back to `GOPHERAGENT_AUDIT_TENANT_ID` (default `"default"`)
 when the request ctx carries no `Actor`; multi-tenant apps set the actor per
 request with `auditlog.WithActor`.
@@ -42,6 +45,7 @@ request with `auditlog.WithActor`.
 | Variable | Meaning |
 |---|---|
 | `GOPHERAGENT_AUDIT_ENDPOINT` | `host:port` — set it to turn auditing on |
+| `GOPHERAGENT_AUDIT_REQUIRED` | `true`: a missing (or misspelled) endpoint fails `FromEnv` instead of turning auditing off — set it wherever audit is mandatory |
 | `GOPHERAGENT_AUDIT_PROTOCOL` | `grpc` (default) or `http/protobuf` |
 | `GOPHERAGENT_AUDIT_INSECURE` | `true` for plaintext |
 | `GOPHERAGENT_AUDIT_SERVICE_NAME` | default `OTEL_SERVICE_NAME`, then `gopheragent` |

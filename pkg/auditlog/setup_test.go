@@ -3,8 +3,13 @@ package auditlog
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/history"
@@ -34,10 +39,16 @@ func TestConfigFromEnv(t *testing.T) {
 		{EnvEndpoint: "c:1", EnvInsecure: "maybe"},
 		{EnvEndpoint: "c:1", EnvMode: "async"},
 		{EnvEndpoint: "c:1", EnvHeaders: "novalue"},
+		{EnvRequired: "true"},                                   // mandatory audit with no endpoint
+		{EnvRequired: "yes please"},                             // unparseable
+		{EnvRequired: "1", "GOPHERAGENT_AUDIT_ENDPIONT": "c:1"}, // the typo REQUIRED exists to catch
 	} {
 		if _, _, err := configFromEnv(env(bad)); err == nil {
 			t.Fatalf("invalid env %v accepted", bad)
 		}
+	}
+	if _, ok, err := configFromEnv(env(map[string]string{EnvRequired: "false"})); ok || err != nil {
+		t.Fatalf("REQUIRED=false without endpoint must just be off: ok=%v err=%v", ok, err)
 	}
 	if cfg, _, _ := configFromEnv(env(map[string]string{EnvEndpoint: "c:1"})); cfg.ServiceName != "gopheragent" || cfg.DefaultTenantID != "default" {
 		t.Fatalf("defaults: service=%q tenant=%q", cfg.ServiceName, cfg.DefaultTenantID)
@@ -133,5 +144,53 @@ func TestInstrument_SingleTenantNeedsNoActor(t *testing.T) {
 	}
 	if !strings.Contains(r.records()[0].GetBody().GetStringValue(), `"tenant_id":"default"`) {
 		t.Fatal("record not attributed to the default tenant")
+	}
+}
+
+// TestFromEnv_HealthMetricsUseGlobalMeter: with OTel enabled globally, the
+// env-built client reports its own health with no extra wiring.
+func TestFromEnv_HealthMetricsUseGlobalMeter(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
+
+	t.Setenv(EnvEndpoint, startGRPCReceiver(t, &logsReceiver{}))
+	t.Setenv(EnvInsecure, "true")
+	c, err := FromEnv(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(context.Background())
+	if err := c.Send(context.Background(), sampleEvent); err != nil {
+		t.Fatal(err)
+	}
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "gopheragent.audit.records" {
+				return
+			}
+		}
+	}
+	t.Fatal("FromEnv client recorded no health metrics on the global meter")
+}
+
+func TestInstrument_WarnsAboutToolsRegisteredAfterIt(t *testing.T) {
+	var buf strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	c := newTestClient(t, Config{Endpoint: startGRPCReceiver(t, &logsReceiver{}), Insecure: true, DefaultTenantID: "d"})
+	loop := agent.New(history.NewInMemSessionManager("sys"), tools.NewRegistry(), &scriptLLM{})
+	c.Instrument(loop)
+	loop.Tools.Register(&stubTool{name: "refund"})
+	_, _ = loop.RunIteration(context.Background(), "s", "q")
+	if !strings.Contains(buf.String(), "auditlog: [tool refund] attached after Instrument") {
+		t.Fatalf("no late-registration warning: %q", buf.String())
 	}
 }
