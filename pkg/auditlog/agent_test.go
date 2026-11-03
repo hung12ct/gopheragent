@@ -21,6 +21,22 @@ type fakeEmitter struct {
 	events  []Event
 	ctxErrs []error
 	err     error
+	key     []byte
+	syncs   int // SendSync calls
+}
+
+func (f *fakeEmitter) Fingerprint(v string) string {
+	if f.key == nil {
+		return ""
+	}
+	return Hash(f.key, v)
+}
+
+func (f *fakeEmitter) SendSync(ctx context.Context, evs ...Event) error {
+	f.mu.Lock()
+	f.syncs++
+	f.mu.Unlock()
+	return f.Send(ctx, evs...)
 }
 
 func (f *fakeEmitter) Send(ctx context.Context, evs ...Event) error {
@@ -64,30 +80,44 @@ func actorCtx() context.Context {
 }
 
 func TestToolMiddleware_RecordsOutcome(t *testing.T) {
-	f := &fakeEmitter{}
+	f := &fakeEmitter{key: []byte("0123456789abcdef")}
 	ok := tools.Chain(&stubTool{name: "refund"}, ToolMiddleware(f))
-	bad := tools.Chain(&stubTool{name: "refund", err: errors.New("bank down")}, ToolMiddleware(f, WithArgs()))
+	bad := tools.Chain(&stubTool{name: "refund", err: errors.New("bank down")}, ToolMiddleware(f, WithLevel(LevelRequest)))
 
 	_, _ = ok.Execute(actorCtx(), `{"order":"o-7"}`)
 	_, _ = bad.Execute(actorCtx(), `{"order":"o-8"}`)
 
 	a, b := f.events[0].(ToolInvocation), f.events[1].(ToolInvocation)
-	if a.Outcome != OutcomeSuccess || a.TenantID != "acme" || a.ActorID != "u-42" || len(a.ArgsSHA256) != 64 || a.Args != "" {
-		t.Fatalf("success record = %+v (args must not be captured by default)", a)
+	if a.Outcome != OutcomeSuccess || a.TenantID != "acme" || a.ActorID != "u-42" || a.Args != "" || a.Result != "" {
+		t.Fatalf("metadata record = %+v (no args/result at LevelMetadata)", a)
 	}
-	if b.Outcome != OutcomeFailure || b.Error != "bank down" || b.Args != `{"order":"o-8"}` {
-		t.Fatalf("failure record = %+v", b)
+	if a.ArgsHMAC != Hash(f.key, `{"order":"o-7"}`) {
+		t.Fatalf("ArgsHMAC = %q, want the keyed fingerprint", a.ArgsHMAC)
 	}
-	if a.ArgsSHA256 == b.ArgsSHA256 {
-		t.Fatal("different args must fingerprint differently")
+	if b.Outcome != OutcomeFailure || b.Error != "bank down" || b.Args != `{"order":"o-8"}` || b.Result != "" {
+		t.Fatalf("request-level record = %+v", b)
 	}
 }
 
-func TestToolMiddleware_FilterLeavesToolUnwrapped(t *testing.T) {
+func TestToolMiddleware_Levels(t *testing.T) {
 	raw := &stubTool{name: "search"}
-	wrapped := ToolMiddleware(&fakeEmitter{}, WithFilter(func(d tools.ToolDescriptor) bool { return d.RequiresConfirmation }))(raw)
-	if wrapped != tools.Tool(raw) {
-		t.Fatal("a filtered-out tool must be returned unwrapped")
+	if ToolMiddleware(&fakeEmitter{}, WithLevel(LevelNone))(raw) != tools.Tool(raw) {
+		t.Fatal("LevelNone must leave the tool unwrapped")
+	}
+	f := &fakeEmitter{}
+	policy := WithPolicy(func(d tools.ToolDescriptor) Level {
+		if d.RequiresConfirmation {
+			return LevelRequestResponse
+		}
+		return LevelMetadata
+	})
+	_, _ = tools.Chain(&stubTool{name: "wire", confirm: true}, ToolMiddleware(f, policy)).Execute(actorCtx(), `{"amt":5}`)
+	inv := f.events[0].(ToolInvocation)
+	if inv.Args != `{"amt":5}` || inv.Result != "ok" {
+		t.Fatalf("RequestResponse record = %+v", inv)
+	}
+	if inv.ArgsHMAC != "" {
+		t.Fatal("no key configured: no fingerprint (a plain hash would leak low-entropy args)")
 	}
 }
 
@@ -101,6 +131,9 @@ func TestToolMiddleware_FailClosed(t *testing.T) {
 
 	up := &fakeEmitter{}
 	_, _ = tools.Chain(tool, ToolMiddleware(up, WithFailClosed())).Execute(actorCtx(), "{}")
+	if up.syncs != 1 {
+		t.Fatalf("started record must go through SendSync (got %d sync sends)", up.syncs)
+	}
 	if len(up.events) != 2 || up.events[0].(ToolInvocation).Outcome != OutcomeStarted || up.events[1].(ToolInvocation).Outcome != OutcomeSuccess {
 		t.Fatalf("fail-closed should write started then success: %+v", up.events)
 	}

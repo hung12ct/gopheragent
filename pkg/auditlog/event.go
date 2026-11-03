@@ -26,8 +26,9 @@ const (
 
 // Common is embedded in every event: who acted, for which tenant, and when.
 type Common struct {
-	// Time of the action; zero means "now" at send time.
-	Time time.Time `json:"time"`
+	// Time of the action; zero means "now" at send time. Encoded once, as the
+	// envelope's "time" field.
+	Time time.Time `json:"-"`
 	// TenantID owns the data the action touched. Required.
 	TenantID string `json:"tenant_id"`
 	// ActorID is the user (or service principal) that initiated the action.
@@ -74,11 +75,15 @@ type ToolInvocation struct {
 	Outcome  Outcome       `json:"outcome"`
 	Error    string        `json:"error,omitempty"`
 	Duration time.Duration `json:"duration_ns,omitempty"`
-	// ArgsSHA256 fingerprints the arguments without recording them, so a
-	// record can be matched to a known request without storing PII.
-	ArgsSHA256 string `json:"args_sha256,omitempty"`
-	// Args is the raw argument JSON; set only when argument capture is on.
+	// ArgsHMAC is a keyed fingerprint of the arguments ("hmac-sha256:<hex>",
+	// see Hash): it matches a record to a known request without storing the
+	// arguments, and without the key it can't be brute-forced back to them.
+	// Empty when the client has no HMACKey.
+	ArgsHMAC string `json:"args_hmac,omitempty"`
+	// Args is the raw argument JSON (LevelRequest and above).
 	Args string `json:"args,omitempty"`
+	// Result is the tool's model-facing text (LevelRequestResponse).
+	Result string `json:"result,omitempty"`
 }
 
 // Decision is a human or policy verdict.
@@ -186,6 +191,7 @@ func (e ToolInvocation) Validate() error {
 	v.oneOf("outcome", string(e.Outcome), OutcomeStarted, OutcomeSuccess, OutcomeFailure)
 	v.max("error", e.Error, maxTextLen)
 	v.max("args", e.Args, maxTextLen)
+	v.max("result", e.Result, maxTextLen)
 	return v.err()
 }
 

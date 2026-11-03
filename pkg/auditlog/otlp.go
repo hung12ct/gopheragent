@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -30,6 +31,10 @@ func strKV(k, v string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}}
 }
 
+func intKV(k string, v uint64) *commonpb.KeyValue {
+	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(v)}}}
+}
+
 // buildResource maps the service identity onto the OTLP Resource.
 func buildResource(cfg Config) *resourcepb.Resource {
 	res := &resourcepb.Resource{Attributes: []*commonpb.KeyValue{strKV("service.name", cfg.ServiceName)}}
@@ -45,14 +50,48 @@ func buildResource(cfg Config) *resourcepb.Resource {
 	return res
 }
 
-// encodeRecord turns a validated event into an OTLP LogRecord: the JSON event
-// as the body, identity as attributes, and the ctx span as trace correlation.
-func encodeRecord(ctx context.Context, e Event, now time.Time) (*logspb.LogRecord, error) {
-	at := e.common().Time
+// item is one queued event with the span context of the Send that produced
+// it, so trace correlation survives batch mode's background encoding.
+type item struct {
+	ev Event
+	sc trace.SpanContext
+}
+
+func itemsFor(ctx context.Context, events []Event) []item {
+	sc := trace.SpanContextFromContext(ctx)
+	items := make([]item, len(events))
+	for i, e := range events {
+		items[i] = item{ev: e, sc: sc}
+	}
+	return items
+}
+
+// encoder numbers and signs records. Each client is one stream: a random
+// stream ID plus a monotonic sequence, so Verify can find deleted records.
+type encoder struct {
+	stream string
+	seq    atomic.Uint64
+	key    []byte // nil: records are numbered but unsigned
+}
+
+func newEncoder(key []byte) (*encoder, error) {
+	id, err := newEventID()
+	if err != nil {
+		return nil, err
+	}
+	return &encoder{stream: id, key: key}, nil
+}
+
+// record turns a validated event into an OTLP LogRecord: the JSON event as
+// the body, identity and integrity fields as attributes, and the event's span
+// as trace correlation. The event ID and sequence are fixed here, before any
+// retry, so a retried delivery is recognizably the same record.
+func (enc *encoder) record(it item, now time.Time) (*logspb.LogRecord, error) {
+	at := it.ev.common().Time
 	if at.IsZero() {
 		at = now
 	}
-	body, err := eventJSON(e, at)
+	body, err := eventJSON(it.ev, at)
 	if err != nil {
 		return nil, err
 	}
@@ -60,52 +99,61 @@ func encodeRecord(ctx context.Context, e Event, now time.Time) (*logspb.LogRecor
 	if err != nil {
 		return nil, err
 	}
-	name := EventName(e)
+	r := Record{Stream: enc.stream, Sequence: enc.seq.Add(1), EventID: id, EventName: EventName(it.ev), Body: string(body)}
+	attrs := make([]*commonpb.KeyValue, 0, 7)
+	attrs = append(attrs,
+		strKV(attrEventName, r.EventName),
+		strKV(attrEventID, r.EventID),
+		strKV(attrEventType, r.EventName),
+		strKV(attrTenantID, it.ev.common().TenantID),
+		strKV(attrStream, r.Stream),
+		intKV(attrSequence, r.Sequence),
+	)
+	if enc.key != nil {
+		attrs = append(attrs, strKV(attrSignature, sign(enc.key, r)))
+	}
 	rec := &logspb.LogRecord{
 		TimeUnixNano:         uint64(at.UnixNano()),
 		ObservedTimeUnixNano: uint64(now.UnixNano()),
 		SeverityNumber:       logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
 		SeverityText:         "INFO",
-		Body:                 &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: string(body)}},
-		Attributes: []*commonpb.KeyValue{
-			strKV(attrEventName, name),
-			strKV(attrEventID, id),
-			strKV(attrEventType, name),
-			strKV(attrTenantID, e.common().TenantID),
-		},
+		Body:                 &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: r.Body}},
+		Attributes:           attrs,
 	}
-	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
-		tid, sid := sc.TraceID(), sc.SpanID()
+	if it.sc.IsValid() {
+		tid, sid := it.sc.TraceID(), it.sc.SpanID()
 		rec.TraceId, rec.SpanId = tid[:], sid[:]
-		rec.Flags = uint32(sc.TraceFlags())
+		rec.Flags = uint32(it.sc.TraceFlags())
 	}
 	return rec, nil
 }
 
-// eventJSON marshals e with its kind, schema version, and resolved time.
+// eventJSON marshals e once and prefixes the envelope fields onto the raw
+// object — no intermediate map, and a stable field order.
 func eventJSON(e Event, at time.Time) ([]byte, error) {
 	raw, err := json.Marshal(e)
 	if err != nil {
 		return nil, fmt.Errorf("auditlog: encoding %s: %w", e.Kind(), err)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("auditlog: encoding %s: %w", e.Kind(), err)
+	buf := make([]byte, 0, len(raw)+96)
+	buf = append(buf, `{"kind":"`...)
+	buf = append(buf, e.Kind()...)
+	buf = append(buf, `","schema_version":"`+SchemaVersion+`","time":"`...)
+	buf = at.UTC().AppendFormat(buf, time.RFC3339Nano)
+	buf = append(buf, '"')
+	if len(raw) > 2 { // raw is a JSON object: splice its fields after ours
+		buf = append(buf, ',')
+		buf = append(buf, raw[1:]...)
+	} else {
+		buf = append(buf, '}')
 	}
-	m["time"] = at.UTC().Format(time.RFC3339Nano)
-	m["kind"] = e.Kind()
-	m["schema_version"] = SchemaVersion
-	out, err := json.Marshal(m)
-	if err != nil {
-		return nil, fmt.Errorf("auditlog: encoding %s: %w", e.Kind(), err)
-	}
-	return out, nil
+	return buf, nil
 }
 
 func newEventID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("auditlog: event id: %w", err)
+		return "", fmt.Errorf("auditlog: random id: %w", err)
 	}
 	return hex.EncodeToString(b[:]), nil
 }

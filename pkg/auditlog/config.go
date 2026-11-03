@@ -1,6 +1,7 @@
 package auditlog
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/metric"
 )
 
 // OTLP transport protocols.
@@ -42,6 +45,26 @@ type Config struct {
 	Timeout time.Duration
 	// MaxAttempts bounds retries of a transient export failure; default 3.
 	MaxAttempts int
+
+	// HMACKey (at least 16 bytes) enables keyed argument fingerprints
+	// (ToolInvocation.ArgsHMAC) and a signature on every record, which Verify
+	// checks. Keep it out of the audit store: whoever holds it can forge
+	// records. Nil: no fingerprints, records numbered but unsigned.
+	HMACKey []byte
+
+	// Mode is ModeBlocking (default) or ModeBatch. See Mode.
+	Mode Mode
+	// Batch tunes ModeBatch; ignored otherwise.
+	Batch BatchConfig
+	// OnError receives export failures in ModeBatch, where no caller is
+	// waiting for them. Default: log.
+	OnError func(ctx context.Context, err error)
+
+	// Meter, when set, records the client's own health:
+	// gopheragent.audit.records{kind, result=sent|failed|invalid|dropped} and
+	// gopheragent.audit.export.duration. Alert on failed and dropped — a
+	// broken audit pipeline is otherwise silent.
+	Meter metric.Meter
 
 	// ServiceName (required), ServiceNamespace, ServiceInstanceID, and
 	// Environment identify the sender on the OTLP Resource. Restricted to
@@ -101,6 +124,13 @@ func (cfg *Config) validate() error {
 			bad("%s %q must match %s", name, v, resourceValueRE)
 		}
 	}
+	if len(cfg.HMACKey) > 0 && len(cfg.HMACKey) < minKeyLen {
+		bad("HMACKey must be at least %d bytes", minKeyLen)
+	}
+	if cfg.Mode != ModeBlocking && cfg.Mode != ModeBatch {
+		bad("Mode %d unknown", cfg.Mode)
+	}
+	cfg.Batch.applyDefaults()
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 10 * time.Second
 	}

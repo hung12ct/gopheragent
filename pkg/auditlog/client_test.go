@@ -39,9 +39,13 @@ type logsReceiver struct {
 	failFirst int32
 	failCode  codes.Code
 	partial   int64
+	gate      chan struct{} // when set, each Export waits for a token
 }
 
 func (r *logsReceiver) Export(ctx context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+	if r.gate != nil {
+		<-r.gate
+	}
 	n := r.calls.Add(1)
 	if n <= r.failFirst {
 		return nil, status.Error(r.failCode, "injected")
