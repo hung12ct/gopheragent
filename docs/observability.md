@@ -118,6 +118,31 @@ per-step latency. For exact message content (prompts, completions, tool
 arguments/results) read the session history — spans intentionally carry
 metadata, not payloads, to keep PII and cost out of the telemetry backend.
 
+## Request-scoped attributes (tenant, user, …)
+
+Set attributes once at the request boundary and every span of the turn —
+run, iteration, chat, execute_tool, and sub-agent runs — carries them:
+
+```go
+ctx = spanattr.With(ctx,
+    attribute.String("tenant.id", tenantID),
+    attribute.String("enduser.id", userID))
+for ev := range loop.RunText(ctx, sessionKey, input) { /* ... */ }
+```
+
+The span processor `otelsetup` installs does the stamping. Rules:
+
+- **Spans only, never metrics** — per-tenant metric labels make series
+  cardinality unbounded. Filter traces by tenant; aggregate metrics without it.
+- **In-process only** — unlike W3C Baggage, `spanattr` values are never written
+  to outbound headers.
+- **Precedence** (lowest → highest): allowlisted baggage, `spanattr`, then the
+  instrumentation's own attributes (a `spanattr` value can't spoof
+  `gen_ai.tool.name`).
+- **Inbound baggage is allowlisted** — set `otelsetup.Config{BaggageKeys:
+  []string{"tenant.id"}}` to copy members an upstream service sent; other
+  members are ignored, since baggage is caller-controlled.
+
 ## GenAI semantic conventions and the schema knob
 
 The run span carries the GenAI `invoke_agent` attributes —
