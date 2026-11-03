@@ -12,7 +12,9 @@ package semconv
 
 import (
 	"os"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -48,6 +50,55 @@ const (
 	// GenAIToolCallID is the loop-generated correlation ID for a tool dispatch.
 	GenAIToolCallID = attribute.Key("gen_ai.tool.call.id")
 )
+
+// GenAI content attribute keys. Recorded only when content capture is enabled
+// (CaptureContentFromEnv or the per-package WithContentCapture option), since
+// they carry prompts, completions, and tool payloads.
+const (
+	// GenAISystemInstructions is the JSON array of system-prompt parts.
+	GenAISystemInstructions = attribute.Key("gen_ai.system_instructions")
+	// GenAIInputMessages is the JSON array of messages sent to the model.
+	GenAIInputMessages = attribute.Key("gen_ai.input.messages")
+	// GenAIOutputMessages is the JSON array of messages the model returned.
+	GenAIOutputMessages = attribute.Key("gen_ai.output.messages")
+	// GenAIToolCallArguments is the raw JSON arguments of a tool call.
+	GenAIToolCallArguments = attribute.Key("gen_ai.tool.call.arguments")
+	// GenAIToolCallResult is the model-facing text a tool returned.
+	GenAIToolCallResult = attribute.Key("gen_ai.tool.call.result")
+)
+
+// EnvCaptureContent is the OpenTelemetry GenAI opt-in for recording message
+// content. "true", "span_only", or "span_and_event" (case-insensitive) enable
+// span capture; anything else, including unset, leaves it off.
+const EnvCaptureContent = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+
+// DefaultContentMaxBytes caps each captured text field. Content is truncated
+// per field, before serialization, so captured JSON stays valid.
+const DefaultContentMaxBytes = 8 << 10
+
+// CaptureContentFromEnv reports whether EnvCaptureContent enables span content
+// capture. Resolve it at construction time, never per span.
+func CaptureContentFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvCaptureContent))) {
+	case "true", "span_only", "span_and_event":
+		return true
+	}
+	return false
+}
+
+// Truncate shortens s to at most maxBytes, cutting on a UTF-8 boundary and
+// appending a marker with the number of bytes dropped. maxBytes <= 0 disables
+// truncation.
+func Truncate(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…[truncated " + strconv.Itoa(len(s)-cut) + " bytes]"
+}
 
 // gopheragent-specific attribute keys.
 const (

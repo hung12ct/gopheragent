@@ -361,7 +361,7 @@ func clearOTelEnv(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-		semconv.EnvStabilityOptIn,
+		semconv.EnvStabilityOptIn, semconv.EnvCaptureContent,
 	} {
 		t.Setenv(k, "")
 	}
@@ -386,6 +386,9 @@ func TestE2E_ExportsFullTreeOverRealOTLP(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearOTelEnv(t)
 			t.Setenv(semconv.EnvStabilityOptIn, tc.optIn)
+			if tc.optIn != "" {
+				t.Setenv(semconv.EnvCaptureContent, "true") // latest variant also exercises content capture
+			}
 			prevTP, prevMP, prevProp := otel.GetTracerProvider(), otel.GetMeterProvider(), otel.GetTextMapPropagator()
 			t.Cleanup(func() {
 				otel.SetTracerProvider(prevTP)
@@ -410,6 +413,15 @@ func TestE2E_ExportsFullTreeOverRealOTLP(t *testing.T) {
 				if hasAttr(chat.GetAttributes(), string(semconv.GenAISystem)) {
 					t.Fatalf("latest schema chat span still carries gen_ai.system")
 				}
+				if !strings.Contains(strAttr(chat.GetAttributes(), string(semconv.GenAIInputMessages)), "task") {
+					t.Fatalf("content capture: chat span lacks gen_ai.input.messages")
+				}
+				echo := spanByName(t, r.spans, "execute_tool echo", "")
+				if strAttr(echo.GetAttributes(), string(semconv.GenAIToolCallResult)) != "hi" {
+					t.Fatalf("content capture: echo span lacks gen_ai.tool.call.result")
+				}
+			} else if hasAttr(spanByName(t, r.spans, "chat m", "").GetAttributes(), string(semconv.GenAIInputMessages)) {
+				t.Fatalf("content captured without opt-in")
 			}
 		})
 	}

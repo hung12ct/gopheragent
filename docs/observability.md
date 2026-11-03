@@ -114,9 +114,33 @@ Jaeger:            Tags → gopheragent.session.key=<session-key>
 ```
 
 Open the trace to see the full `run → iteration → chat → tool` tree with
-per-step latency. For exact message content (prompts, completions, tool
-arguments/results) read the session history — spans intentionally carry
-metadata, not payloads, to keep PII and cost out of the telemetry backend.
+per-step latency. By default spans carry metadata, not payloads, to keep PII
+and cost out of the telemetry backend — read the session history for exact
+content, or opt in to content capture below.
+
+## Content capture (opt-in)
+
+To see *why* the model did something, record prompts, completions, and tool
+payloads on the spans:
+
+```bash
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true   # or span_only
+```
+
+or per component: `otelllm.WithContentCapture(true)` /
+`oteltools.WithContentCapture(true)` (an explicit option overrides the env).
+
+| Span | Attributes (GenAI semconv JSON) |
+|---|---|
+| `chat <model>` | `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages` |
+| `execute_tool <name>` | `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` |
+
+Guardrails: each text field is truncated (default 8 KiB,
+`WithContentMaxBytes`) *before* serialization so the JSON stays valid; the
+input payload keeps the newest messages within a fixed budget; media bytes are
+never recorded (only the part type and MIME); and nothing is serialized unless
+the span is sampled. Treat a backend receiving captured content as holding user
+data.
 
 ## Request-scoped attributes (tenant, user, …)
 
