@@ -10,15 +10,29 @@
 // the SDK, so importing it is free for a library consumer.
 package semconv
 
-import "go.opentelemetry.io/otel/attribute"
+import (
+	"os"
+	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
+)
 
 // GenAI span/metric attribute keys (OpenTelemetry GenAI semantic conventions).
 const (
 	// GenAISystem identifies the model vendor, e.g. "anthropic", "openai", "gemini".
+	// Deprecated upstream in favor of GenAIProviderName; emitted only under
+	// SchemaLegacy.
 	GenAISystem = attribute.Key("gen_ai.system")
+	// GenAIProviderName is the current semconv name for the model vendor.
+	GenAIProviderName = attribute.Key("gen_ai.provider.name")
+	// GenAIAgentName is the human-readable agent name on an invoke_agent span.
+	GenAIAgentName = attribute.Key("gen_ai.agent.name")
+	// GenAIConversationID identifies the conversation; gopheragent sets it to
+	// the session key.
+	GenAIConversationID = attribute.Key("gen_ai.conversation.id")
 	// GenAIRequestModel is the requested model name, e.g. "claude-opus-4-8".
 	GenAIRequestModel = attribute.Key("gen_ai.request.model")
-	// GenAIOperationName names the operation; gopheragent uses OperationChat.
+	// GenAIOperationName names the operation (OperationChat, OperationInvokeAgent).
 	GenAIOperationName = attribute.Key("gen_ai.operation.name")
 	// GenAIUsageInputTokens is the prompt token count reported by the provider.
 	GenAIUsageInputTokens = attribute.Key("gen_ai.usage.input_tokens")
@@ -45,7 +59,44 @@ const (
 const (
 	// OperationChat is the gen_ai.operation.name value for a chat completion.
 	OperationChat = "chat"
+	// OperationInvokeAgent is the gen_ai.operation.name value for an agent run.
+	OperationInvokeAgent = "invoke_agent"
 )
+
+// Schema selects which revision of the GenAI semantic conventions the
+// instrumentation emits. GenAI semconv is still experimental and renames
+// attributes and span names between releases; the schema lets dashboards
+// migrate on their own schedule instead of breaking on a library upgrade.
+type Schema uint8
+
+const (
+	// SchemaLegacy (the default) keeps the historical span names (agent.run)
+	// and metric labels (gen_ai.system), and additionally stamps the current
+	// semconv attributes on spans so GenAI-aware backends recognize them.
+	SchemaLegacy Schema = iota
+	// SchemaLatest emits only the current semconv: "invoke_agent <name>" span
+	// names and gen_ai.provider.name in place of gen_ai.system.
+	SchemaLatest
+)
+
+// EnvStabilityOptIn is the standard OpenTelemetry opt-in variable; listing
+// OptInGenAILatest in it (comma-separated) selects SchemaLatest.
+const (
+	EnvStabilityOptIn = "OTEL_SEMCONV_STABILITY_OPT_IN"
+	OptInGenAILatest  = "gen_ai_latest_experimental"
+)
+
+// SchemaFromEnv resolves the schema from OTEL_SEMCONV_STABILITY_OPT_IN. Call it
+// at construction time, never per span: instrumentation resolves it once and
+// keeps the result.
+func SchemaFromEnv() Schema {
+	for _, v := range strings.Split(os.Getenv(EnvStabilityOptIn), ",") {
+		if strings.TrimSpace(v) == OptInGenAILatest {
+			return SchemaLatest
+		}
+	}
+	return SchemaLegacy
+}
 
 // Token-type values for the GenAITokenType label.
 const (

@@ -4,7 +4,7 @@ GopherAgent emits OpenTelemetry **traces** and **metrics** for the whole agent
 run. One conversation turn is a single trace:
 
 ```
-agent.run                    ← per turn, tagged gopheragent.session.key
+agent.run                    ← per turn (invoke_agent); tagged gopheragent.session.key
 └── agent.iteration          ← per ReAct step
     ├── chat <model>         ← LLM call: latency + input/output token attrs
     └── execute_tool <name>  ← each tool: latency
@@ -108,6 +108,28 @@ per-step latency. For exact message content (prompts, completions, tool
 arguments/results) read the session history — spans intentionally carry
 metadata, not payloads, to keep PII and cost out of the telemetry backend.
 
+## GenAI semantic conventions and the schema knob
+
+The run span carries the GenAI `invoke_agent` attributes —
+`gen_ai.operation.name=invoke_agent`, `gen_ai.conversation.id` (the session
+key), and `gen_ai.agent.name` (set by `agent.WithAgentName`; the YAML builder
+fills it from the agent's `name`) — so GenAI-aware backends recognize agent
+runs. Sub-agents nest as their own run span under the parent's
+`execute_tool` span.
+
+GenAI semconv is still experimental and renames things between releases, so the
+emitted shape is selected by the standard `OTEL_SEMCONV_STABILITY_OPT_IN`
+variable, resolved once at construction:
+
+| | Default (legacy) | `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` |
+|---|---|---|
+| Run span name | `agent.run` | `invoke_agent <agent name>` |
+| Vendor on `chat` spans | `gen_ai.system` **and** `gen_ai.provider.name` | `gen_ai.provider.name` |
+| Vendor metric label | `gen_ai.system` | `gen_ai.provider.name` |
+
+The default never renames an existing span or splits a metric series, so
+dashboards survive the upgrade; opt in when you migrate them.
+
 ## Metrics
 
 Recorded on the meter; via the OTLP→Prometheus bridge the names gain the
@@ -115,7 +137,7 @@ conventional `_seconds` / `_total` suffixes:
 
 | Instrument | Prometheus name | Labels |
 |---|---|---|
-| LLM call latency | `gen_ai_client_operation_duration_seconds` | `gen_ai.system`, `gen_ai.request.model` |
+| LLM call latency | `gen_ai_client_operation_duration_seconds` | `gen_ai.system` (legacy) or `gen_ai.provider.name` (latest), `gen_ai.request.model` |
 | LLM token usage | `gen_ai_client_token_usage_total` | `gen_ai.token.type` = input\|output |
 | Tool latency | `gopheragent_tool_execution_duration_seconds` | `gen_ai.tool.name` |
 | Tool errors | `gopheragent_tool_errors_total` | `gen_ai.tool.name` |

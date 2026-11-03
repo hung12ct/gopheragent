@@ -190,3 +190,51 @@ func TestStartIterationSpan_ZeroAllocWhenDisabled(t *testing.T) {
 		t.Fatalf("expected 0 allocations when telemetry disabled, got %v", allocs)
 	}
 }
+
+// runSpanFor drives one turn and returns the recorded run root span.
+func runSpanFor(t *testing.T, opts ...Option) sdktrace.ReadOnlySpan {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	opts = append(opts, WithTracer(tp.Tracer("test")))
+	loop := New(history.NewInMemSessionManager("sys"), tools.NewRegistry(), &childSpanProvider{tracer: tp.Tracer("test")}, opts...)
+	if _, err := loop.RunIteration(context.Background(), "s1", "hi"); err != nil {
+		t.Fatalf("RunIteration: %v", err)
+	}
+	for _, s := range sr.Ended() {
+		if !s.Parent().IsValid() {
+			return s
+		}
+	}
+	t.Fatal("no root span recorded")
+	return nil
+}
+
+func TestRunSpan_LegacyNameCarriesInvokeAgentAttrs(t *testing.T) {
+	t.Setenv(semconv.EnvStabilityOptIn, "")
+	run := runSpanFor(t, WithAgentName("researcher"))
+	if run.Name() != "agent.run" {
+		t.Fatalf("legacy run span name = %q, want agent.run", run.Name())
+	}
+	attrs := run.Attributes()
+	for k, want := range map[attribute.Key]string{
+		semconv.GenAIOperationName:  semconv.OperationInvokeAgent,
+		semconv.GenAIConversationID: "s1",
+		semconv.GenAIAgentName:      "researcher",
+		semconv.SessionKey:          "s1",
+	} {
+		if !hasStrAttr(attrs, k, want) {
+			t.Fatalf("run span missing %s=%q: %v", k, want, attrs)
+		}
+	}
+}
+
+func TestRunSpan_LatestSchemaUsesInvokeAgentName(t *testing.T) {
+	t.Setenv(semconv.EnvStabilityOptIn, semconv.OptInGenAILatest)
+	if got := runSpanFor(t, WithAgentName("researcher")).Name(); got != "invoke_agent researcher" {
+		t.Fatalf("latest run span name = %q, want %q", got, "invoke_agent researcher")
+	}
+	if got := runSpanFor(t).Name(); got != "invoke_agent" {
+		t.Fatalf("unnamed latest run span = %q, want invoke_agent", got)
+	}
+}

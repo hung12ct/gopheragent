@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -20,30 +21,63 @@ var noopEndSpan = func(error) {}
 // disabled — one shared value keeps the disabled path allocation-free.
 var noopRunEnd = func() {}
 
-// startRunSpan opens the conversation-turn root span "agent.run" and returns the
-// child ctx plus its end function. Every iteration (and, through them, the LLM
-// and tool spans) nests under it, so a single turn is one trace with one trace
-// ID, filterable in the backend by the gopheragent.session.key attribute. When
-// the caller's ctx already carries a span, agent.run nests under it instead of
-// starting a new trace, preserving an outer request/conversation trace. Returns
+// startRunSpan opens the conversation-turn root span and returns the child ctx
+// plus its end function. Every iteration (and, through them, the LLM and tool
+// spans) nests under it, so a single turn is one trace with one trace ID,
+// filterable in the backend by gopheragent.session.key (or the semconv
+// gen_ai.conversation.id). When the caller's ctx already carries a span — an
+// inbound request, or a parent agent's execute_tool span for a sub-agent — the
+// run nests under it instead of starting a new trace. The span is named
+// "agent.run" under semconv.SchemaLegacy and "invoke_agent <name>" under
+// semconv.SchemaLatest; both carry the GenAI invoke_agent attributes. Returns
 // the original ctx and a shared no-op when tracing is disabled (zero cost).
 func (al *AgentLoop) startRunSpan(ctx context.Context, sessionKey string) (context.Context, func()) {
 	if al.tracer == nil {
 		return ctx, noopRunEnd
 	}
-	ctx, span := al.tracer.Start(ctx, "agent.run",
-		trace.WithAttributes(semconv.SessionKey.String(sessionKey)),
+	attrs := make([]attribute.KeyValue, 0, 4)
+	attrs = append(attrs,
+		semconv.GenAIOperationName.String(semconv.OperationInvokeAgent),
+		semconv.GenAIConversationID.String(sessionKey),
+		semconv.SessionKey.String(sessionKey),
 	)
+	if al.agentName != "" {
+		attrs = append(attrs, semconv.GenAIAgentName.String(al.agentName))
+	}
+	ctx, span := al.tracer.Start(ctx, al.runSpanName(), trace.WithAttributes(attrs...))
 	return ctx, func() { span.End() }
 }
 
-// WithTracer enables OpenTelemetry tracing of the ReAct loop. Each iteration
-// opens an "agent.iteration" span; because that span rides on the ctx threaded
-// into the LLM call and tool execution, spans produced by the otelllm decorator
-// and the oteltools middleware nest as its children. nil (the default) disables
-// tracing at zero hot-path cost — no span is created and ctx is untouched.
+// runSpanName picks the run span name for the configured semconv schema.
+func (al *AgentLoop) runSpanName() string {
+	if al.semconvSchema != semconv.SchemaLatest {
+		return "agent.run"
+	}
+	if al.agentName == "" {
+		return semconv.OperationInvokeAgent
+	}
+	return semconv.OperationInvokeAgent + " " + al.agentName
+}
+
+// WithTracer enables OpenTelemetry tracing of the ReAct loop. Each turn opens a
+// run span and each iteration an "agent.iteration" span; because they ride on
+// the ctx threaded into the LLM call and tool execution, spans produced by the
+// otelllm decorator and the oteltools middleware nest as their children. The
+// semconv schema is resolved here, once, from OTEL_SEMCONV_STABILITY_OPT_IN.
+// nil (the default) disables tracing at zero hot-path cost — no span is created
+// and ctx is untouched.
 func WithTracer(t trace.Tracer) Option {
-	return func(al *AgentLoop) { al.tracer = t }
+	return func(al *AgentLoop) {
+		al.tracer = t
+		al.semconvSchema = semconv.SchemaFromEnv()
+	}
+}
+
+// WithAgentName sets gen_ai.agent.name on the run span (and, under
+// semconv.SchemaLatest, the span name "invoke_agent <name>"). The YAML builder
+// sets it from the agent's name, so sub-agents are distinguishable in a trace.
+func WithAgentName(name string) Option {
+	return func(al *AgentLoop) { al.agentName = name }
 }
 
 // WithMeter enables OpenTelemetry metrics for the loop. It records a

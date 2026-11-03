@@ -43,7 +43,8 @@ type config struct {
 	model  string
 }
 
-// WithSystem sets the gen_ai.system attribute (model vendor), e.g. "anthropic".
+// WithSystem sets the model vendor, e.g. "anthropic". It is emitted as
+// gen_ai.provider.name (and gen_ai.system under semconv.SchemaLegacy).
 func WithSystem(system string) Option {
 	return func(c *config) { c.system = system }
 }
@@ -79,9 +80,9 @@ func NewProvider(next agent.LLMProvider, opts ...Option) agent.LLMProvider {
 	p := &instrumentedProvider{
 		next:   next,
 		tracer: cfg.tracer,
-		system: cfg.system,
 		model:  cfg.model,
 	}
+	p.initAttributes(cfg.system, semconv.SchemaFromEnv())
 	p.initInstruments(cfg.meter)
 	if c, ok := next.(agent.CapabilityProvider); ok {
 		return &capableProvider{instrumentedProvider: p, caps: c}
@@ -109,11 +110,47 @@ func (p *capableProvider) Capabilities() agent.LLMCapabilities {
 type instrumentedProvider struct {
 	next   agent.LLMProvider
 	tracer trace.Tracer
-	system string
 	model  string
+
+	// Attribute sets are fixed per provider, so they are built once in
+	// initAttributes instead of per call: the metric options carry
+	// pre-sorted attribute.Sets, keeping recording allocation-free.
+	spanAttrs    []attribute.KeyValue
+	durationOpt  metric.MeasurementOption
+	inputTokOpt  metric.MeasurementOption
+	outputTokOpt metric.MeasurementOption
 
 	duration metric.Float64Histogram
 	tokens   metric.Int64Counter
+}
+
+// initAttributes precomputes span attributes and metric attribute sets for the
+// semconv schema. Legacy keeps gen_ai.system as the metric label (so existing
+// series do not split) and stamps both vendor keys on spans; Latest uses only
+// gen_ai.provider.name.
+func (p *instrumentedProvider) initAttributes(system string, schema semconv.Schema) {
+	vendor := semconv.GenAIProviderName.String(system)
+	if schema == semconv.SchemaLegacy {
+		vendor = semconv.GenAISystem.String(system)
+	}
+	model := semconv.GenAIRequestModel.String(p.model)
+
+	p.spanAttrs = []attribute.KeyValue{
+		semconv.GenAIOperationName.String(semconv.OperationChat),
+		semconv.GenAIProviderName.String(system),
+		model,
+	}
+	if schema == semconv.SchemaLegacy {
+		p.spanAttrs = append(p.spanAttrs, semconv.GenAISystem.String(system))
+	}
+
+	metricSet := func(extra ...attribute.KeyValue) metric.MeasurementOption {
+		kvs := append([]attribute.KeyValue{vendor, model}, extra...)
+		return metric.WithAttributeSet(attribute.NewSet(kvs...))
+	}
+	p.durationOpt = metricSet()
+	p.inputTokOpt = metricSet(semconv.GenAITokenType.String(semconv.TokenTypeInput))
+	p.outputTokOpt = metricSet(semconv.GenAITokenType.String(semconv.TokenTypeOutput))
 }
 
 // initInstruments builds the metric instruments once. If meter is nil or an
@@ -168,11 +205,7 @@ func (p *instrumentedProvider) startSpan(ctx context.Context) (context.Context, 
 	}
 	return p.tracer.Start(ctx, "chat "+p.model,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			semconv.GenAIOperationName.String(semconv.OperationChat),
-			semconv.GenAISystem.String(p.system),
-			semconv.GenAIRequestModel.String(p.model),
-		),
+		trace.WithAttributes(p.spanAttrs...),
 	)
 }
 
@@ -180,10 +213,7 @@ func (p *instrumentedProvider) recordDuration(ctx context.Context, d time.Durati
 	if p.duration == nil {
 		return
 	}
-	p.duration.Record(ctx, d.Seconds(), metric.WithAttributes(
-		semconv.GenAISystem.String(p.system),
-		semconv.GenAIRequestModel.String(p.model),
-	))
+	p.duration.Record(ctx, d.Seconds(), p.durationOpt)
 }
 
 // recordResult sets usage attributes on the span and emits token counters, then
@@ -202,19 +232,11 @@ func (p *instrumentedProvider) recordResult(ctx context.Context, span trace.Span
 		}
 	}
 	if p.tokens != nil {
-		// len == cap == 2, so each append below reallocates a fresh backing
-		// array — the two token-type attribute sets never alias.
-		base := []attribute.KeyValue{
-			semconv.GenAISystem.String(p.system),
-			semconv.GenAIRequestModel.String(p.model),
-		}
 		if res.Usage.PromptTokens > 0 {
-			p.tokens.Add(ctx, int64(res.Usage.PromptTokens),
-				metric.WithAttributes(append(base, semconv.GenAITokenType.String(semconv.TokenTypeInput))...))
+			p.tokens.Add(ctx, int64(res.Usage.PromptTokens), p.inputTokOpt)
 		}
 		if res.Usage.CompletionTokens > 0 {
-			p.tokens.Add(ctx, int64(res.Usage.CompletionTokens),
-				metric.WithAttributes(append(base, semconv.GenAITokenType.String(semconv.TokenTypeOutput))...))
+			p.tokens.Add(ctx, int64(res.Usage.CompletionTokens), p.outputTokOpt)
 		}
 	}
 }

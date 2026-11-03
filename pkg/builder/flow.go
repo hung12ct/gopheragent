@@ -400,6 +400,7 @@ func buildFromConfig(ctx context.Context, config AgentConfig, baseDir string, so
 	if config.Agent.EmitThoughts != nil {
 		loop.EmitThoughts = *config.Agent.EmitThoughts
 	}
+	loop.Configure(agent.WithAgentName(config.Agent.Name))
 
 	return loop, sm, config, nil
 }

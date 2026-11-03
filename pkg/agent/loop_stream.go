@@ -17,6 +17,7 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/cache"
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/memory"
+	"github.com/hung12ct/gopheragent/pkg/telemetry/semconv"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 )
 
@@ -547,6 +548,10 @@ type AgentLoop struct {
 	// cost on the hot path (see telemetry.go).
 	tracer   trace.Tracer
 	iterHist metric.Float64Histogram
+	// agentName (WithAgentName) labels the run span; semconvSchema is
+	// resolved once by WithTracer so the hot path never reads the env.
+	agentName     string
+	semconvSchema semconv.Schema
 }
 
 // NewAgentLoop creates a new agent with the given session manager, tool registry, and LLM provider.
