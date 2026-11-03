@@ -72,7 +72,8 @@ go get github.com/hung12ct/gopheragent
 - **Cross-session memory** — a post-session consolidator distills transcripts
   into notes the loader prepends to future sessions.
 - **Observability** — OpenTelemetry traces + metrics (one trace per turn, nested
-  LLM/tool spans, GenAI-convention token metrics), zero-cost when off.
+  LLM/tool spans, GenAI-convention token metrics, W3C trace propagation),
+  zero-cost and export-off until an endpoint is configured.
 - **Audit log** *(experimental)* — `pkg/auditlog` ships who-did-what records (tool runs,
   approvals, policy verdicts, data changes) over OTLP logs — validated,
   HMAC-signed and sequenced for tamper detection, blocking or batched,

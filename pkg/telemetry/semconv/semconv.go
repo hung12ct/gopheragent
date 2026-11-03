@@ -10,15 +10,34 @@
 // the SDK, so importing it is free for a library consumer.
 package semconv
 
-import "go.opentelemetry.io/otel/attribute"
+import (
+	"os"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+
+	"go.opentelemetry.io/otel/attribute"
+)
+
+// ScopeName is the instrumentation scope reported on all gopheragent telemetry.
+const ScopeName = "github.com/hung12ct/gopheragent"
 
 // GenAI span/metric attribute keys (OpenTelemetry GenAI semantic conventions).
 const (
 	// GenAISystem identifies the model vendor, e.g. "anthropic", "openai", "gemini".
+	// Deprecated upstream in favor of GenAIProviderName; emitted only under
+	// SchemaLegacy.
 	GenAISystem = attribute.Key("gen_ai.system")
+	// GenAIProviderName is the current semconv name for the model vendor.
+	GenAIProviderName = attribute.Key("gen_ai.provider.name")
+	// GenAIAgentName is the human-readable agent name on an invoke_agent span.
+	GenAIAgentName = attribute.Key("gen_ai.agent.name")
+	// GenAIConversationID identifies the conversation; gopheragent sets it to
+	// the session key.
+	GenAIConversationID = attribute.Key("gen_ai.conversation.id")
 	// GenAIRequestModel is the requested model name, e.g. "claude-opus-4-8".
 	GenAIRequestModel = attribute.Key("gen_ai.request.model")
-	// GenAIOperationName names the operation; gopheragent uses OperationChat.
+	// GenAIOperationName names the operation (OperationChat, OperationInvokeAgent).
 	GenAIOperationName = attribute.Key("gen_ai.operation.name")
 	// GenAIUsageInputTokens is the prompt token count reported by the provider.
 	GenAIUsageInputTokens = attribute.Key("gen_ai.usage.input_tokens")
@@ -32,6 +51,55 @@ const (
 	GenAIToolCallID = attribute.Key("gen_ai.tool.call.id")
 )
 
+// GenAI content attribute keys. Recorded only when content capture is enabled
+// (CaptureContentFromEnv or the per-package WithContentCapture option), since
+// they carry prompts, completions, and tool payloads.
+const (
+	// GenAISystemInstructions is the JSON array of system-prompt parts.
+	GenAISystemInstructions = attribute.Key("gen_ai.system_instructions")
+	// GenAIInputMessages is the JSON array of messages sent to the model.
+	GenAIInputMessages = attribute.Key("gen_ai.input.messages")
+	// GenAIOutputMessages is the JSON array of messages the model returned.
+	GenAIOutputMessages = attribute.Key("gen_ai.output.messages")
+	// GenAIToolCallArguments is the raw JSON arguments of a tool call.
+	GenAIToolCallArguments = attribute.Key("gen_ai.tool.call.arguments")
+	// GenAIToolCallResult is the model-facing text a tool returned.
+	GenAIToolCallResult = attribute.Key("gen_ai.tool.call.result")
+)
+
+// EnvCaptureContent is the OpenTelemetry GenAI opt-in for recording message
+// content. "true", "span_only", or "span_and_event" (case-insensitive) enable
+// span capture; anything else, including unset, leaves it off.
+const EnvCaptureContent = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+
+// DefaultContentMaxBytes caps each captured text field. Content is truncated
+// per field, before serialization, so captured JSON stays valid.
+const DefaultContentMaxBytes = 8 << 10
+
+// CaptureContentFromEnv reports whether EnvCaptureContent enables span content
+// capture. Resolve it at construction time, never per span.
+func CaptureContentFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvCaptureContent))) {
+	case "true", "span_only", "span_and_event":
+		return true
+	}
+	return false
+}
+
+// Truncate shortens s to at most maxBytes, cutting on a UTF-8 boundary and
+// appending a marker with the number of bytes dropped. maxBytes <= 0 disables
+// truncation.
+func Truncate(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…[truncated " + strconv.Itoa(len(s)-cut) + " bytes]"
+}
+
 // gopheragent-specific attribute keys.
 const (
 	// SessionKey is the agent session identifier carried on the run and
@@ -39,13 +107,70 @@ const (
 	SessionKey = attribute.Key("gopheragent.session.key")
 	// Iteration is the zero-based ReAct iteration index on an iteration span.
 	Iteration = attribute.Key("gopheragent.iteration")
+	// RunOutcome is the closed-enum terminal outcome of a run (RunOutcome*
+	// values), on the run span and the gopheragent.agent.runs counter.
+	RunOutcome = attribute.Key("gopheragent.run.outcome")
+	// HITLDecision is the human-approval result on a hitl.await_approval span:
+	// "approved", "denied", "timed_out", or "cancelled" (run stopped mid-wait).
+	HITLDecision = attribute.Key("gopheragent.hitl.decision")
+)
+
+// RunOutcome values. A closed set keeps the runs counter low-cardinality.
+const (
+	RunOutcomeDone            = "done"
+	RunOutcomeMaxIterations   = "max_iterations"
+	RunOutcomeToolCallCap     = "tool_call_cap"
+	RunOutcomeLoopDetected    = "loop_detected"
+	RunOutcomeCancelled       = "cancelled"
+	RunOutcomeHookRejected    = "hook_rejected"
+	RunOutcomeApprovalPending = "approval_pending"
+	RunOutcomeLLMError        = "llm_error"
+	RunOutcomeError           = "error"
+	RunOutcomeUnknown         = "unknown"
 )
 
 // GenAI operation values.
 const (
 	// OperationChat is the gen_ai.operation.name value for a chat completion.
 	OperationChat = "chat"
+	// OperationInvokeAgent is the gen_ai.operation.name value for an agent run.
+	OperationInvokeAgent = "invoke_agent"
 )
+
+// Schema selects which revision of the GenAI semantic conventions the
+// instrumentation emits. GenAI semconv is still experimental and renames
+// attributes and span names between releases; the schema lets dashboards
+// migrate on their own schedule instead of breaking on a library upgrade.
+type Schema uint8
+
+const (
+	// SchemaLegacy (the default) keeps the historical span names (agent.run)
+	// and metric labels (gen_ai.system), and additionally stamps the current
+	// semconv attributes on spans so GenAI-aware backends recognize them.
+	SchemaLegacy Schema = iota
+	// SchemaLatest emits only the current semconv: "invoke_agent <name>" span
+	// names and gen_ai.provider.name in place of gen_ai.system.
+	SchemaLatest
+)
+
+// EnvStabilityOptIn is the standard OpenTelemetry opt-in variable; listing
+// OptInGenAILatest in it (comma-separated) selects SchemaLatest.
+const (
+	EnvStabilityOptIn = "OTEL_SEMCONV_STABILITY_OPT_IN"
+	OptInGenAILatest  = "gen_ai_latest_experimental"
+)
+
+// SchemaFromEnv resolves the schema from OTEL_SEMCONV_STABILITY_OPT_IN. Call it
+// at construction time, never per span: instrumentation resolves it once and
+// keeps the result.
+func SchemaFromEnv() Schema {
+	for _, v := range strings.Split(os.Getenv(EnvStabilityOptIn), ",") {
+		if strings.TrimSpace(v) == OptInGenAILatest {
+			return SchemaLatest
+		}
+	}
+	return SchemaLegacy
+}
 
 // Token-type values for the GenAITokenType label.
 const (
@@ -80,4 +205,8 @@ const (
 	MetricToolErrors = "gopheragent.tool.errors"
 	// MetricIterationDuration is the ReAct iteration latency histogram (seconds).
 	MetricIterationDuration = "gopheragent.agent.iteration.duration"
+	// MetricAgentRuns counts finished runs by RunOutcome and gen_ai.agent.name.
+	MetricAgentRuns = "gopheragent.agent.runs"
+	// MetricAgentCost sums run cost in USD by gen_ai.agent.name.
+	MetricAgentCost = "gopheragent.agent.cost"
 )

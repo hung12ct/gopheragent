@@ -35,6 +35,9 @@ func NewCallSubAgentTool(sessions agent.SessionManager, registry *tools.Registry
 }
 
 const callSubAgentName = "call_sub_agent"
+
+// subAgentTelemetryName is the bounded gen_ai.agent.name for every worker run.
+const subAgentTelemetryName = "sub_agent"
 const callSubAgentDescription = "Delegates a complex reasoning or multi-step task to a specialized worker sub-agent. The sub-agent operates in a completely isolated context and returns a final structured report. Useful to avoid context window explosions."
 
 func (t *CallSubAgentTool) Descriptor() tools.ToolDescriptor {
@@ -90,6 +93,11 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (tools
 	workerLoop.DynamicContext = agent.DynamicContextFuncFromContext(ctx)
 	workerLoop.ConfirmHITL = agent.ConfirmHITLFromContext(ctx)
 	workerLoop.ConfirmHITLTimeout = agent.ConfirmHITLTimeoutFromContext(ctx)
+	// Nest the worker's run under this tool's span when the parent traces. The
+	// agent name is fixed: input.AgentName is model-generated, and the name is
+	// a metric label, so a free-form value would make cardinality unbounded.
+	// The persona stays visible in the worker's session key on the span.
+	workerLoop.Configure(agent.WithTelemetryFromContext(ctx), agent.WithAgentName(subAgentTelemetryName))
 
 	instruction := fmt.Sprintf("[%s Sub-Agent Task]\n%s", input.AgentName, input.TaskDescription)
 

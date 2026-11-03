@@ -77,7 +77,9 @@ func (al *AgentLoop) runHITLGate(ctx context.Context, sessionKey string, streamC
 		defer cancel()
 	}
 
+	confirmCtx, endWait := al.startHITLSpan(confirmCtx, tc)
 	if al.ConfirmHITL(confirmCtx, tc.Name, tc.ArgsJSON) {
+		endWait("approved")
 		return hitlApproved
 	}
 
@@ -85,6 +87,7 @@ func (al *AgentLoop) runHITLGate(ctx context.Context, sessionKey string, streamC
 	// not a parent cancellation propagated downward. Treat that as the
 	// timeout outcome so the directive text matches what the operator saw.
 	if al.ConfirmHITLTimeout > 0 && ctx.Err() == nil && confirmCtx.Err() != nil {
+		endWait("timed_out")
 		al.emit(ctx, sessionKey, streamChan, Event(HITLTimedOutEvent{
 			Tool:    tc.Name,
 			Args:    tc.ArgsJSON,
@@ -93,6 +96,11 @@ func (al *AgentLoop) runHITLGate(ctx context.Context, sessionKey string, streamC
 		return hitlTimedOut
 	}
 
+	if ctx.Err() != nil {
+		endWait("cancelled") // the run was stopped mid-wait; nobody decided
+	} else {
+		endWait("denied")
+	}
 	al.emit(ctx, sessionKey, streamChan, Event(HITLDeniedEvent{Tool: tc.Name, Args: tc.ArgsJSON}))
 	return hitlDenied
 }

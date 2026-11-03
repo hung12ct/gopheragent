@@ -4,11 +4,21 @@ GopherAgent emits OpenTelemetry **traces** and **metrics** for the whole agent
 run. One conversation turn is a single trace:
 
 ```
-agent.run                    ← per turn, tagged gopheragent.session.key
-└── agent.iteration          ← per ReAct step
-    ├── chat <model>         ← LLM call: latency + input/output token attrs
-    └── execute_tool <name>  ← each tool: latency
+agent.run                       ← per turn (invoke_agent); session key + gopheragent.run.outcome
+└── agent.iteration             ← per ReAct step
+    ├── chat <model>            ← LLM call: latency + input/output token attrs
+    ├── hitl.await_approval     ← time blocked on a human; gopheragent.hitl.decision
+    └── execute_tool <name>     ← each tool: latency
+        └── agent.run           ← sub-agent run (call_sub_agent / call_sql_agent)
 ```
+
+The run span ends with `gopheragent.run.outcome` — one of `done`,
+`max_iterations`, `tool_call_cap`, `loop_detected`, `cancelled`,
+`hook_rejected`, `approval_pending`, `llm_error`, `error` — and an Error status
+for failures (a `cancelled` user stop and an `approval_pending` pause stay
+Unset). `hitl.await_approval` records `approved`, `denied`, `timed_out`, or
+`cancelled`. Human approval time sits in
+its own span, so it never inflates model or tool latency.
 
 The core imports only the OpenTelemetry **API**, so instrumentation is a no-op
 (and allocation-free) until you wire a provider. The SDK and OTLP exporters live
@@ -19,7 +29,29 @@ telemetry does not link them.
 
 `otelsetup.Setup` builds an OTLP TracerProvider + MeterProvider and returns
 ready-to-use handles plus a shutdown func. Endpoint and credentials follow the
-standard `OTEL_*` environment variables.
+standard `OTEL_*` environment variables. **Export is off until an endpoint is
+configured** — an unconfigured process never dials a default collector, and the
+returned `Tracer`/`Meter` are no-op handles (`tel.Enabled == false`).
+
+| Variable | Values | Effect |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT` | URL or host:port | Turns export on (generic or per signal) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_{TRACES,METRICS}_PROTOCOL` | `grpc` (default), `http/protobuf` | OTLP transport |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` (default), `none` | Turn one signal off |
+| `OTEL_SDK_DISABLED` | `true` | Kill switch — everything off |
+
+`Config.Endpoint` / `Config.Protocol` take precedence over the environment.
+
+When tracing is on, `Setup` installs the W3C **TraceContext + Baggage**
+propagators globally. To make an agent run join the caller's distributed
+trace, extract the inbound headers before calling the loop:
+
+```go
+ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+for ev := range loop.RunText(ctx, sessionKey, input) { /* ... */ }
+```
+
+`examples/demo` does this in its `withTraceContext` middleware.
 
 ```go
 tel, shutdown, err := otelsetup.Setup(ctx, otelsetup.Config{ServiceName: "my-agent"})
@@ -82,9 +114,87 @@ Jaeger:            Tags → gopheragent.session.key=<session-key>
 ```
 
 Open the trace to see the full `run → iteration → chat → tool` tree with
-per-step latency. For exact message content (prompts, completions, tool
-arguments/results) read the session history — spans intentionally carry
-metadata, not payloads, to keep PII and cost out of the telemetry backend.
+per-step latency. By default spans carry metadata, not payloads, to keep PII
+and cost out of the telemetry backend — read the session history for exact
+content, or opt in to content capture below.
+
+## Content capture (opt-in)
+
+To see *why* the model did something, record prompts, completions, and tool
+payloads on the spans:
+
+```bash
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true   # or span_only
+```
+
+or per component: `otelllm.WithContentCapture(true)` /
+`oteltools.WithContentCapture(true)` (an explicit option overrides the env).
+
+| Span | Attributes (GenAI semconv JSON) |
+|---|---|
+| `chat <model>` | `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages` |
+| `execute_tool <name>` | `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` |
+
+Guardrails: each text field is truncated (default 8 KiB,
+`WithContentMaxBytes`) *before* serialization so the JSON stays valid; the
+input payload keeps the newest messages within a fixed budget; media bytes are
+never recorded (only the part type and MIME); and nothing is serialized unless
+the span is sampled. Treat a backend receiving captured content as holding user
+data.
+
+## Request-scoped attributes (tenant, user, …)
+
+Set attributes once at the request boundary and every span of the turn —
+run, iteration, chat, execute_tool, and sub-agent runs — carries them:
+
+```go
+ctx = spanattr.With(ctx,
+    attribute.String("tenant.id", tenantID),
+    attribute.String("enduser.id", userID))
+for ev := range loop.RunText(ctx, sessionKey, input) { /* ... */ }
+```
+
+The span processor `otelsetup` installs does the stamping. Rules:
+
+- **Spans only, never metrics** — per-tenant metric labels make series
+  cardinality unbounded. Filter traces by tenant; aggregate metrics without it.
+- **In-process only** — unlike W3C Baggage, `spanattr` values are never written
+  to outbound headers.
+- **Precedence** (lowest → highest): allowlisted baggage, `spanattr`, then the
+  instrumentation's own attributes (a `spanattr` value can't spoof
+  `gen_ai.tool.name`).
+- **Inbound baggage is allowlisted** — set `otelsetup.Config{BaggageKeys:
+  []string{"tenant.id"}}` to copy members an upstream service sent; other
+  members are ignored, since baggage is caller-controlled.
+
+## GenAI semantic conventions and the schema knob
+
+The run span carries the GenAI `invoke_agent` attributes —
+`gen_ai.operation.name=invoke_agent`, `gen_ai.conversation.id` (the session
+key), and `gen_ai.agent.name` (set by `agent.WithAgentName`; the YAML builder
+fills it from the agent's `name`) — so GenAI-aware backends recognize agent
+runs. Sub-agents (`call_sub_agent`, `call_sql_agent`) nest as their own named
+run span under the parent's `execute_tool` span. A worker loop you build inside
+your own tool gets the same nesting with one option:
+
+```go
+worker := agent.New(sm, reg, llm,
+    agent.WithTelemetryFromContext(ctx), // adopt the parent's tracer + meter instruments
+    agent.WithAgentName("researcher"))
+```
+
+GenAI semconv is still experimental and renames things between releases, so the
+emitted shape is selected by the standard `OTEL_SEMCONV_STABILITY_OPT_IN`
+variable, resolved once at construction:
+
+| | Default (legacy) | `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` |
+|---|---|---|
+| Run span name | `agent.run` | `invoke_agent <agent name>` |
+| Vendor on `chat` spans | `gen_ai.system` **and** `gen_ai.provider.name` | `gen_ai.provider.name` |
+| Vendor metric label | `gen_ai.system` | `gen_ai.provider.name` |
+
+The default never renames an existing span or splits a metric series, so
+dashboards survive the upgrade; opt in when you migrate them.
 
 ## Metrics
 
@@ -93,11 +203,20 @@ conventional `_seconds` / `_total` suffixes:
 
 | Instrument | Prometheus name | Labels |
 |---|---|---|
-| LLM call latency | `gen_ai_client_operation_duration_seconds` | `gen_ai.system`, `gen_ai.request.model` |
+| LLM call latency | `gen_ai_client_operation_duration_seconds` | `gen_ai.system` (legacy) or `gen_ai.provider.name` (latest), `gen_ai.request.model` |
 | LLM token usage | `gen_ai_client_token_usage_total` | `gen_ai.token.type` = input\|output |
 | Tool latency | `gopheragent_tool_execution_duration_seconds` | `gen_ai.tool.name` |
 | Tool errors | `gopheragent_tool_errors_total` | `gen_ai.tool.name` |
 | Iteration latency | `gopheragent_agent_iteration_duration_seconds` | — |
+| Finished runs | `gopheragent_agent_runs_total` | `gopheragent.run.outcome`, `gen_ai.agent.name` |
+| Run cost (USD) | `gopheragent_agent_cost_total` | `gen_ai.agent.name` |
+
+Sub-agents record into the parent's instruments under a fixed
+`gen_ai.agent.name` per worker type (`sub_agent`, `sql_agent`), so cost and
+failure rate break down by worker. The name is a metric label, so
+`WithAgentName` must come from static config — never model or user input (the
+model-chosen sub-agent persona stays in the worker's session key on the span). Cost is
+recorded when a `PriceTable` is set or the provider reports a per-call cost.
 
 Duration histograms ship LLM-tuned explicit buckets (`0.01 … 81.92` s, the
 GenAI-convention ladder) instead of the SDK's millisecond defaults, so
