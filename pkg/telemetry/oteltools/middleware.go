@@ -95,6 +95,9 @@ func Instrument(opts ...Option) tools.Middleware {
 	}
 
 	return func(next tools.Tool) tools.Tool {
+		if _, done := next.(*instrumentedTool); done {
+			return next // already instrumented: wrapping again would double every span
+		}
 		return &instrumentedTool{
 			Tool:     next,
 			name:     next.Descriptor().Name,

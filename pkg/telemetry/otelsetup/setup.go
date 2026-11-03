@@ -142,7 +142,7 @@ func Setup(ctx context.Context, cfg Config) (*Providers, func(context.Context) e
 func buildProviders(ctx context.Context, cfg Config, tracesPlan, metricsPlan signalPlan, res *resource.Resource) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, error) {
 	var tp *sdktrace.TracerProvider
 	if tracesPlan.enabled {
-		exp, err := newTraceExporter(ctx, cfg, tracesPlan.protocol)
+		exp, err := newTraceExporter(ctx, cfg, tracesPlan)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -154,7 +154,7 @@ func buildProviders(ctx context.Context, cfg Config, tracesPlan, metricsPlan sig
 	}
 	var mp *sdkmetric.MeterProvider
 	if metricsPlan.enabled {
-		exp, err := newMetricExporter(ctx, cfg, metricsPlan.protocol)
+		exp, err := newMetricExporter(ctx, cfg, metricsPlan)
 		if err != nil {
 			if tp != nil {
 				_ = tp.Shutdown(ctx)
@@ -204,15 +204,16 @@ func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) 
 	return res, nil
 }
 
-func newTraceExporter(ctx context.Context, cfg Config, protocol string) (sdktrace.SpanExporter, error) {
+func newTraceExporter(ctx context.Context, cfg Config, plan signalPlan) (sdktrace.SpanExporter, error) {
+	protocol := plan.protocol
 	var (
 		exp sdktrace.SpanExporter
 		err error
 	)
 	if protocol == ProtocolHTTP {
 		var opts []otlptracehttp.Option
-		if cfg.Endpoint != "" {
-			opts = append(opts, otlptracehttp.WithEndpoint(cfg.Endpoint))
+		if plan.endpoint != "" {
+			opts = append(opts, otlptracehttp.WithEndpoint(plan.endpoint))
 		}
 		if cfg.Insecure {
 			opts = append(opts, otlptracehttp.WithInsecure())
@@ -220,8 +221,8 @@ func newTraceExporter(ctx context.Context, cfg Config, protocol string) (sdktrac
 		exp, err = otlptracehttp.New(ctx, opts...)
 	} else {
 		var opts []otlptracegrpc.Option
-		if cfg.Endpoint != "" {
-			opts = append(opts, otlptracegrpc.WithEndpoint(cfg.Endpoint))
+		if plan.endpoint != "" {
+			opts = append(opts, otlptracegrpc.WithEndpoint(plan.endpoint))
 		}
 		if cfg.Insecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())
@@ -234,15 +235,16 @@ func newTraceExporter(ctx context.Context, cfg Config, protocol string) (sdktrac
 	return exp, nil
 }
 
-func newMetricExporter(ctx context.Context, cfg Config, protocol string) (sdkmetric.Exporter, error) {
+func newMetricExporter(ctx context.Context, cfg Config, plan signalPlan) (sdkmetric.Exporter, error) {
+	protocol := plan.protocol
 	var (
 		exp sdkmetric.Exporter
 		err error
 	)
 	if protocol == ProtocolHTTP {
 		var opts []otlpmetrichttp.Option
-		if cfg.Endpoint != "" {
-			opts = append(opts, otlpmetrichttp.WithEndpoint(cfg.Endpoint))
+		if plan.endpoint != "" {
+			opts = append(opts, otlpmetrichttp.WithEndpoint(plan.endpoint))
 		}
 		if cfg.Insecure {
 			opts = append(opts, otlpmetrichttp.WithInsecure())
@@ -250,8 +252,8 @@ func newMetricExporter(ctx context.Context, cfg Config, protocol string) (sdkmet
 		exp, err = otlpmetrichttp.New(ctx, opts...)
 	} else {
 		var opts []otlpmetricgrpc.Option
-		if cfg.Endpoint != "" {
-			opts = append(opts, otlpmetricgrpc.WithEndpoint(cfg.Endpoint))
+		if plan.endpoint != "" {
+			opts = append(opts, otlpmetricgrpc.WithEndpoint(plan.endpoint))
 		}
 		if cfg.Insecure {
 			opts = append(opts, otlpmetricgrpc.WithInsecure())

@@ -232,6 +232,25 @@ func (r *Registry) Register(t Tool) {
 	}
 }
 
+// Use wraps every tool currently registered with mws, applied in order like
+// Chain — the way to instrument a registry that is already populated (e.g.
+// one a YAML builder produced). It wraps the registered tools themselves, not
+// their debug-logging views, and tools registered afterwards are not wrapped.
+// Middleware must preserve Descriptor().Name. Call it before the loop runs.
+func (r *Registry) Use(mws ...Middleware) {
+	if len(mws) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name, t := range r.tools {
+		r.tools[name] = Chain(t, mws...)
+	}
+	if r.debug {
+		r.rebuildWrappedLocked()
+	}
+}
+
 // Get retrieves a tool by name. Returns false if not found.
 // When debug mode is enabled the tool is transparently wrapped with WithLogging.
 func (r *Registry) Get(name string) (Tool, bool) {
