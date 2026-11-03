@@ -114,8 +114,15 @@ The run span carries the GenAI `invoke_agent` attributes —
 `gen_ai.operation.name=invoke_agent`, `gen_ai.conversation.id` (the session
 key), and `gen_ai.agent.name` (set by `agent.WithAgentName`; the YAML builder
 fills it from the agent's `name`) — so GenAI-aware backends recognize agent
-runs. Sub-agents nest as their own run span under the parent's
-`execute_tool` span.
+runs. Sub-agents (`call_sub_agent`, `call_sql_agent`) nest as their own named
+run span under the parent's `execute_tool` span. A worker loop you build inside
+your own tool gets the same nesting with one option:
+
+```go
+worker := agent.New(sm, reg, llm,
+    agent.WithTracerFromContext(ctx), // adopt the parent's tracer from the span on ctx
+    agent.WithAgentName("researcher"))
+```
 
 GenAI semconv is still experimental and renames things between releases, so the
 emitted shape is selected by the standard `OTEL_SEMCONV_STABILITY_OPT_IN`

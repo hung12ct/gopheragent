@@ -450,6 +450,7 @@ func (t *CallSQLAgentTool) runOnce(ctx context.Context, query string, idx int) s
 
 	subAgent := agent.NewAgentLoop(t.sessionManager, sqlTools, t.provider)
 	subAgent.DynamicContext = agent.DynamicContextFuncFromContext(ctx)
+	subAgent.Configure(agent.WithTracerFromContext(ctx), agent.WithAgentName("sql_agent"))
 	// Propagate the parent loop's HITL gate so RequiresConfirmation on
 	// execute_sql surfaces through the same approval path as the outer
 	// call_sql_agent boundary. Nil-safe — when the parent has no

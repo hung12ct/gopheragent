@@ -46,10 +46,12 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
+	gasemconv "github.com/hung12ct/gopheragent/pkg/telemetry/semconv"
 )
 
 // scopeName is the instrumentation scope reported on all gopheragent telemetry.
-const scopeName = "github.com/hung12ct/gopheragent"
+const scopeName = gasemconv.ScopeName
 
 // Config controls the OTLP pipeline. The zero value is usable: it names the
 // service "gopheragent" and reads everything else from the standard OTEL_*

@@ -17,6 +17,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// ScopeName is the instrumentation scope reported on all gopheragent telemetry.
+const ScopeName = "github.com/hung12ct/gopheragent"
+
 // GenAI span/metric attribute keys (OpenTelemetry GenAI semantic conventions).
 const (
 	// GenAISystem identifies the model vendor, e.g. "anthropic", "openai", "gemini".

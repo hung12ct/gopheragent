@@ -90,6 +90,8 @@ func (t *CallSubAgentTool) Execute(ctx context.Context, inputJSON string) (tools
 	workerLoop.DynamicContext = agent.DynamicContextFuncFromContext(ctx)
 	workerLoop.ConfirmHITL = agent.ConfirmHITLFromContext(ctx)
 	workerLoop.ConfirmHITLTimeout = agent.ConfirmHITLTimeoutFromContext(ctx)
+	// Nest the worker's run span under this tool's span when the parent traces.
+	workerLoop.Configure(agent.WithTracerFromContext(ctx), agent.WithAgentName(input.AgentName))
 
 	instruction := fmt.Sprintf("[%s Sub-Agent Task]\n%s", input.AgentName, input.TaskDescription)
 

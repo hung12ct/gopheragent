@@ -73,6 +73,21 @@ func WithTracer(t trace.Tracer) Option {
 	}
 }
 
+// WithTracerFromContext makes a loop built inside a tool — a sub-agent or SQL
+// worker — trace under its parent: it adopts the TracerProvider of the
+// recording span already on ctx (the parent's execute_tool or iteration span),
+// so the worker's run span nests as a child in the same trace. No-op when the
+// span on ctx is not recording, i.e. when the parent has tracing off.
+func WithTracerFromContext(ctx context.Context) Option {
+	return func(al *AgentLoop) {
+		sp := trace.SpanFromContext(ctx)
+		if !sp.IsRecording() {
+			return
+		}
+		WithTracer(sp.TracerProvider().Tracer(semconv.ScopeName))(al)
+	}
+}
+
 // WithAgentName sets gen_ai.agent.name on the run span (and, under
 // semconv.SchemaLatest, the span name "invoke_agent <name>"). The YAML builder
 // sets it from the agent's name, so sub-agents are distinguishable in a trace.
