@@ -278,7 +278,7 @@ func assertTree(t *testing.T, r *receiver, runName func(agent string) string) {
 		t.Fatalf("parent run missing gen_ai.conversation.id")
 	}
 	subTool := spanByName(t, r.spans, "execute_tool call_sub_agent", "")
-	workerRun := spanByName(t, r.spans, runName("worker"), "worker")
+	workerRun := spanByName(t, r.spans, runName("sub_agent"), "sub_agent")
 	assertParent(t, workerRun, subTool)
 
 	echo := spanByName(t, r.spans, "execute_tool echo", "")
@@ -323,8 +323,11 @@ func assertMetrics(t *testing.T, r *receiver) {
 	for _, dp := range seen[semconv.MetricAgentRuns].GetSum().GetDataPoints() {
 		runs[strAttr(dp.GetAttributes(), string(semconv.GenAIAgentName))] = strAttr(dp.GetAttributes(), string(semconv.RunOutcome))
 	}
-	if runs["planner"] != semconv.RunOutcomeDone || runs["worker"] != semconv.RunOutcomeDone {
-		t.Fatalf("runs counter = %v, want planner and worker both done (worker must inherit the meter)", runs)
+	if runs["planner"] != semconv.RunOutcomeDone || runs["sub_agent"] != semconv.RunOutcomeDone {
+		t.Fatalf("runs counter = %v, want planner and sub_agent both done (worker must inherit the meter)", runs)
+	}
+	if _, ok := runs["worker"]; ok {
+		t.Fatal("model-chosen sub-agent persona leaked into a metric label (unbounded cardinality)")
 	}
 }
 

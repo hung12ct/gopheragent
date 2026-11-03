@@ -96,8 +96,10 @@ func WithTelemetryFromContext(ctx context.Context) Option {
 }
 
 // WithAgentName sets gen_ai.agent.name on the run span (and, under
-// semconv.SchemaLatest, the span name "invoke_agent <name>"). The YAML builder
-// sets it from the agent's name, so sub-agents are distinguishable in a trace.
+// semconv.SchemaLatest, the span name "invoke_agent <name>"). It is also a
+// label on the runs and cost metrics, so it must come from a bounded set —
+// static configuration, never model or user input. The YAML builder sets it
+// from the agent's configured name.
 func WithAgentName(name string) Option {
 	return func(al *AgentLoop) { al.agentName = name }
 }

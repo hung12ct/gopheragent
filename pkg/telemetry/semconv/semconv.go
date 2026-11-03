@@ -60,7 +60,7 @@ const (
 	// values), on the run span and the gopheragent.agent.runs counter.
 	RunOutcome = attribute.Key("gopheragent.run.outcome")
 	// HITLDecision is the human-approval result on a hitl.await_approval span:
-	// "approved", "denied", or "timed_out".
+	// "approved", "denied", "timed_out", or "cancelled" (run stopped mid-wait).
 	HITLDecision = attribute.Key("gopheragent.hitl.decision")
 )
 

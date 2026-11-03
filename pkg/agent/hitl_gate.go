@@ -96,7 +96,11 @@ func (al *AgentLoop) runHITLGate(ctx context.Context, sessionKey string, streamC
 		return hitlTimedOut
 	}
 
-	endWait("denied")
+	if ctx.Err() != nil {
+		endWait("cancelled") // the run was stopped mid-wait; nobody decided
+	} else {
+		endWait("denied")
+	}
 	al.emit(ctx, sessionKey, streamChan, Event(HITLDeniedEvent{Tool: tc.Name, Args: tc.ArgsJSON}))
 	return hitlDenied
 }

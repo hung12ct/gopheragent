@@ -15,7 +15,9 @@ agent.run                       ← per turn (invoke_agent); session key + gophe
 The run span ends with `gopheragent.run.outcome` — one of `done`,
 `max_iterations`, `tool_call_cap`, `loop_detected`, `cancelled`,
 `hook_rejected`, `approval_pending`, `llm_error`, `error` — and an Error status
-for failures (a `cancelled` user stop stays Unset). Human approval time sits in
+for failures (a `cancelled` user stop and an `approval_pending` pause stay
+Unset). `hitl.await_approval` records `approved`, `denied`, `timed_out`, or
+`cancelled`. Human approval time sits in
 its own span, so it never inflates model or tool latency.
 
 The core imports only the OpenTelemetry **API**, so instrumentation is a no-op
@@ -160,8 +162,11 @@ conventional `_seconds` / `_total` suffixes:
 | Finished runs | `gopheragent_agent_runs_total` | `gopheragent.run.outcome`, `gen_ai.agent.name` |
 | Run cost (USD) | `gopheragent_agent_cost_total` | `gen_ai.agent.name` |
 
-Sub-agents record into the parent's instruments under their own
-`gen_ai.agent.name`, so cost and failure rate break down per worker. Cost is
+Sub-agents record into the parent's instruments under a fixed
+`gen_ai.agent.name` per worker type (`sub_agent`, `sql_agent`), so cost and
+failure rate break down by worker. The name is a metric label, so
+`WithAgentName` must come from static config — never model or user input (the
+model-chosen sub-agent persona stays in the worker's session key on the span). Cost is
 recorded when a `PriceTable` is set or the provider reports a per-call cost.
 
 Duration histograms ship LLM-tuned explicit buckets (`0.01 … 81.92` s, the

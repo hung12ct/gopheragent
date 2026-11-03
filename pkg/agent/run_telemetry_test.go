@@ -205,3 +205,43 @@ func TestRunAndHITLPaths_ZeroAllocWhenDisabled(t *testing.T) {
 		t.Fatalf("disabled run/HITL telemetry allocated %v times", allocs)
 	}
 }
+
+func TestRunOutcome_ApprovalPendingIsNotAFailure(t *testing.T) {
+	r := newRunRecorders()
+	p := &scriptProvider{turns: []LLMResult{{ToolCalls: []PendingToolCall{{ID: "c1", Name: "danger", ArgsJSON: `{}`}}}}}
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{name: "danger", confirm: true})
+	loop := New(history.NewInMemSessionManager("sys"), reg, p, r.opts...)
+	loop.DeferApprovals = true
+	_, _ = loop.RunIteration(context.Background(), "s", "q")
+
+	run := r.rootSpan(t)
+	if got := spanAttr(run, semconv.RunOutcome); got != semconv.RunOutcomeApprovalPending {
+		t.Fatalf("outcome = %q, want approval_pending", got)
+	}
+	if run.Status().Code != codes.Unset {
+		t.Fatalf("paused run status = %v, want Unset (a pause is not a failure)", run.Status())
+	}
+}
+
+func TestHITLSpan_CancelledMidWait(t *testing.T) {
+	r := newRunRecorders()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := &scriptProvider{turns: []LLMResult{{ToolCalls: []PendingToolCall{{ID: "c1", Name: "danger", ArgsJSON: `{}`}}}}}
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{name: "danger", confirm: true})
+	loop := New(history.NewInMemSessionManager("sys"), reg, p, r.opts...)
+	loop.ConfirmHITL = func(context.Context, string, string) bool { cancel(); return false }
+	_, _ = loop.RunIteration(ctx, "s", "q")
+
+	for _, s := range r.spans.Ended() {
+		if s.Name() == "hitl.await_approval" {
+			if got := spanAttr(s, semconv.HITLDecision); got != "cancelled" {
+				t.Fatalf("decision = %q, want cancelled (nobody decided)", got)
+			}
+			return
+		}
+	}
+	t.Fatal("no hitl.await_approval span")
+}

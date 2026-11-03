@@ -125,8 +125,8 @@ func classifyRunError(err error) string {
 }
 
 // endRun closes the run span with its outcome and records the run and cost
-// metrics. A cancelled run keeps an unset span status: a user stop is not a
-// failure.
+// metrics. A cancelled run and a run paused for deferred approval keep an
+// unset span status: neither is a failure.
 func (al *AgentLoop) endRun(ctx context.Context, span trace.Span, rt *runTelemetry) {
 	outcome, err := rt.result()
 	if m := al.metrics; m != nil {
@@ -147,7 +147,7 @@ func (al *AgentLoop) endRun(ctx context.Context, span trace.Span, rt *runTelemet
 	switch {
 	case outcome == semconv.RunOutcomeDone:
 		span.SetStatus(codes.Ok, "")
-	case err != nil && outcome != semconv.RunOutcomeCancelled:
+	case err != nil && outcome != semconv.RunOutcomeCancelled && outcome != semconv.RunOutcomeApprovalPending:
 		span.RecordError(err)
 		span.SetStatus(codes.Error, outcome)
 	}
