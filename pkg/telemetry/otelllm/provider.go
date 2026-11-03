@@ -37,10 +37,28 @@ import (
 type Option func(*config)
 
 type config struct {
-	tracer trace.Tracer
-	meter  metric.Meter
-	system string
-	model  string
+	tracer     trace.Tracer
+	meter      metric.Meter
+	system     string
+	model      string
+	capture    *bool
+	contentMax int
+}
+
+// WithContentCapture records prompts and completions on the chat span as
+// gen_ai.system_instructions / gen_ai.input.messages / gen_ai.output.messages.
+// It overrides OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT. Off by
+// default: content is PII and the largest telemetry cost driver. Media bytes
+// are never captured.
+func WithContentCapture(enabled bool) Option {
+	return func(c *config) { c.capture = &enabled }
+}
+
+// WithContentMaxBytes caps each captured text field (default
+// semconv.DefaultContentMaxBytes); the whole input payload is bounded to a
+// fixed multiple of it, keeping the newest messages.
+func WithContentMaxBytes(n int) Option {
+	return func(c *config) { c.contentMax = n }
 }
 
 // WithSystem sets the model vendor, e.g. "anthropic". It is emitted as
@@ -70,17 +88,23 @@ func WithMeter(m metric.Meter) Option {
 // Meter is supplied it returns next unchanged, so wiring the decorator without
 // providers costs nothing on the hot path.
 func NewProvider(next agent.LLMProvider, opts ...Option) agent.LLMProvider {
-	cfg := &config{}
+	cfg := &config{contentMax: semconv.DefaultContentMaxBytes}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 	if cfg.tracer == nil && cfg.meter == nil {
 		return next
 	}
+	capture := semconv.CaptureContentFromEnv()
+	if cfg.capture != nil {
+		capture = *cfg.capture
+	}
 	p := &instrumentedProvider{
-		next:   next,
-		tracer: cfg.tracer,
-		model:  cfg.model,
+		next:       next,
+		tracer:     cfg.tracer,
+		model:      cfg.model,
+		capture:    capture,
+		contentMax: cfg.contentMax,
 	}
 	p.initAttributes(cfg.system, semconv.SchemaFromEnv())
 	p.initInstruments(cfg.meter)
@@ -108,9 +132,11 @@ func (p *capableProvider) Capabilities() agent.LLMCapabilities {
 
 // instrumentedProvider decorates an agent.LLMProvider with OTel spans/metrics.
 type instrumentedProvider struct {
-	next   agent.LLMProvider
-	tracer trace.Tracer
-	model  string
+	next       agent.LLMProvider
+	tracer     trace.Tracer
+	model      string
+	capture    bool
+	contentMax int
 
 	// Attribute sets are fixed per provider, so they are built once in
 	// initAttributes instead of per call: the metric options carry
@@ -187,9 +213,17 @@ func (p *instrumentedProvider) GenerateStream(
 	streamChan chan<- agent.StreamEvent,
 ) (agent.LLMResult, error) {
 	ctx, span := p.startSpan(ctx)
+	// Serialization only runs for a sampled span with capture on.
+	capture := p.capture && span != nil && span.IsRecording()
+	if capture {
+		span.SetAttributes(inputAttrs(memory, p.contentMax)...)
+	}
 	start := time.Now()
 
 	res, err := p.next.GenerateStream(ctx, memory, availableTools, streamChan)
+	if capture && err == nil {
+		span.SetAttributes(outputAttr(res, p.contentMax))
+	}
 
 	p.recordDuration(ctx, time.Since(start))
 	p.recordResult(ctx, span, res, err)

@@ -114,9 +114,58 @@ Jaeger:            Tags → gopheragent.session.key=<session-key>
 ```
 
 Open the trace to see the full `run → iteration → chat → tool` tree with
-per-step latency. For exact message content (prompts, completions, tool
-arguments/results) read the session history — spans intentionally carry
-metadata, not payloads, to keep PII and cost out of the telemetry backend.
+per-step latency. By default spans carry metadata, not payloads, to keep PII
+and cost out of the telemetry backend — read the session history for exact
+content, or opt in to content capture below.
+
+## Content capture (opt-in)
+
+To see *why* the model did something, record prompts, completions, and tool
+payloads on the spans:
+
+```bash
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true   # or span_only
+```
+
+or per component: `otelllm.WithContentCapture(true)` /
+`oteltools.WithContentCapture(true)` (an explicit option overrides the env).
+
+| Span | Attributes (GenAI semconv JSON) |
+|---|---|
+| `chat <model>` | `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages` |
+| `execute_tool <name>` | `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` |
+
+Guardrails: each text field is truncated (default 8 KiB,
+`WithContentMaxBytes`) *before* serialization so the JSON stays valid; the
+input payload keeps the newest messages within a fixed budget; media bytes are
+never recorded (only the part type and MIME); and nothing is serialized unless
+the span is sampled. Treat a backend receiving captured content as holding user
+data.
+
+## Request-scoped attributes (tenant, user, …)
+
+Set attributes once at the request boundary and every span of the turn —
+run, iteration, chat, execute_tool, and sub-agent runs — carries them:
+
+```go
+ctx = spanattr.With(ctx,
+    attribute.String("tenant.id", tenantID),
+    attribute.String("enduser.id", userID))
+for ev := range loop.RunText(ctx, sessionKey, input) { /* ... */ }
+```
+
+The span processor `otelsetup` installs does the stamping. Rules:
+
+- **Spans only, never metrics** — per-tenant metric labels make series
+  cardinality unbounded. Filter traces by tenant; aggregate metrics without it.
+- **In-process only** — unlike W3C Baggage, `spanattr` values are never written
+  to outbound headers.
+- **Precedence** (lowest → highest): allowlisted baggage, `spanattr`, then the
+  instrumentation's own attributes (a `spanattr` value can't spoof
+  `gen_ai.tool.name`).
+- **Inbound baggage is allowlisted** — set `otelsetup.Config{BaggageKeys:
+  []string{"tenant.id"}}` to copy members an upstream service sent; other
+  members are ignored, since baggage is caller-controlled.
 
 ## GenAI semantic conventions and the schema knob
 

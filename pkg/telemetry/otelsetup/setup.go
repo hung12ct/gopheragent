@@ -70,6 +70,11 @@ type Config struct {
 	// Protocol overrides OTEL_EXPORTER_OTLP_[<SIGNAL>_]PROTOCOL: ProtocolGRPC
 	// (the default) or ProtocolHTTP.
 	Protocol string
+	// BaggageKeys allowlists W3C Baggage members copied onto every span as
+	// attributes (e.g. "tenant.id" set by an upstream service). Inbound
+	// baggage is caller-controlled, so only listed keys are copied. Attributes
+	// set in-process via spanattr.With are always stamped.
+	BaggageKeys []string
 }
 
 // Providers holds the ready-to-use Tracer and Meter handles for the gopheragent
@@ -141,7 +146,11 @@ func buildProviders(ctx context.Context, cfg Config, tracesPlan, metricsPlan sig
 		if err != nil {
 			return nil, nil, err
 		}
-		tp = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
+		tp = sdktrace.NewTracerProvider(
+			sdktrace.WithSpanProcessor(attrProcessor{baggageKeys: cfg.BaggageKeys}),
+			sdktrace.WithBatcher(exp),
+			sdktrace.WithResource(res),
+		)
 	}
 	var mp *sdkmetric.MeterProvider
 	if metricsPlan.enabled {

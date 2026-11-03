@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	colmetricpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -28,6 +29,7 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/telemetry/otelsetup"
 	"github.com/hung12ct/gopheragent/pkg/telemetry/oteltools"
 	"github.com/hung12ct/gopheragent/pkg/telemetry/semconv"
+	"github.com/hung12ct/gopheragent/pkg/telemetry/spanattr"
 	"github.com/hung12ct/gopheragent/pkg/tools"
 	"github.com/hung12ct/gopheragent/pkg/tools/builtin"
 )
@@ -198,7 +200,9 @@ func runPipeline(t *testing.T, cfg otelsetup.Config) {
 
 	carrier := propagation.HeaderCarrier(http.Header{})
 	carrier.Set("traceparent", "00-"+inboundTraceID+"-"+inboundSpanID+"-01")
+	carrier.Set("baggage", "team.id=core,secret=leak")
 	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	ctx = spanattr.With(ctx, attribute.String("tenant.id", "acme"))
 	if _, err := loop.RunIteration(ctx, "sess-1", "parent-task"); err != nil {
 		t.Fatalf("RunIteration: %v", err)
 	}
@@ -269,6 +273,13 @@ func assertTree(t *testing.T, r *receiver, runName func(agent string) string) {
 		if hex.EncodeToString(s.GetTraceId()) != inboundTraceID {
 			t.Fatalf("span %q trace = %x — did not join the inbound traceparent", s.GetName(), s.GetTraceId())
 		}
+		// Request-scoped attributes reach every span, sub-agent spans included.
+		if strAttr(s.GetAttributes(), "tenant.id") != "acme" || strAttr(s.GetAttributes(), "team.id") != "core" {
+			t.Fatalf("span %q missing request-scoped attrs: %v", s.GetName(), s.GetAttributes())
+		}
+		if hasAttr(s.GetAttributes(), "secret") {
+			t.Fatalf("span %q copied non-allowlisted baggage", s.GetName())
+		}
 	}
 	parentRun := spanByName(t, r.spans, runName("planner"), "planner")
 	if hex.EncodeToString(parentRun.GetParentSpanId()) != inboundSpanID {
@@ -329,6 +340,11 @@ func assertMetrics(t *testing.T, r *receiver) {
 	if _, ok := runs["worker"]; ok {
 		t.Fatal("model-chosen sub-agent persona leaked into a metric label (unbounded cardinality)")
 	}
+	for _, dp := range seen[semconv.MetricLLMTokenUsage].GetSum().GetDataPoints() {
+		if hasAttr(dp.GetAttributes(), "tenant.id") {
+			t.Fatalf("request-scoped attrs leaked onto metrics (unbounded cardinality)")
+		}
+	}
 }
 
 func keys(m map[string]*metricpb.Metric) []string {
@@ -345,7 +361,7 @@ func clearOTelEnv(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-		semconv.EnvStabilityOptIn,
+		semconv.EnvStabilityOptIn, semconv.EnvCaptureContent,
 	} {
 		t.Setenv(k, "")
 	}
@@ -370,6 +386,9 @@ func TestE2E_ExportsFullTreeOverRealOTLP(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearOTelEnv(t)
 			t.Setenv(semconv.EnvStabilityOptIn, tc.optIn)
+			if tc.optIn != "" {
+				t.Setenv(semconv.EnvCaptureContent, "true") // latest variant also exercises content capture
+			}
 			prevTP, prevMP, prevProp := otel.GetTracerProvider(), otel.GetMeterProvider(), otel.GetTextMapPropagator()
 			t.Cleanup(func() {
 				otel.SetTracerProvider(prevTP)
@@ -382,7 +401,10 @@ func TestE2E_ExportsFullTreeOverRealOTLP(t *testing.T) {
 			if tc.protocol == otelsetup.ProtocolHTTP {
 				addr = startHTTP(t, r)
 			}
-			runPipeline(t, otelsetup.Config{ServiceName: "e2e", Endpoint: addr, Insecure: true, Protocol: tc.protocol})
+			runPipeline(t, otelsetup.Config{
+				ServiceName: "e2e", Endpoint: addr, Insecure: true, Protocol: tc.protocol,
+				BaggageKeys: []string{"team.id"},
+			})
 			assertTree(t, r, tc.runName)
 			assertMetrics(t, r)
 
@@ -391,6 +413,15 @@ func TestE2E_ExportsFullTreeOverRealOTLP(t *testing.T) {
 				if hasAttr(chat.GetAttributes(), string(semconv.GenAISystem)) {
 					t.Fatalf("latest schema chat span still carries gen_ai.system")
 				}
+				if !strings.Contains(strAttr(chat.GetAttributes(), string(semconv.GenAIInputMessages)), "task") {
+					t.Fatalf("content capture: chat span lacks gen_ai.input.messages")
+				}
+				echo := spanByName(t, r.spans, "execute_tool echo", "")
+				if strAttr(echo.GetAttributes(), string(semconv.GenAIToolCallResult)) != "hi" {
+					t.Fatalf("content capture: echo span lacks gen_ai.tool.call.result")
+				}
+			} else if hasAttr(spanByName(t, r.spans, "chat m", "").GetAttributes(), string(semconv.GenAIInputMessages)) {
+				t.Fatalf("content captured without opt-in")
 			}
 		})
 	}

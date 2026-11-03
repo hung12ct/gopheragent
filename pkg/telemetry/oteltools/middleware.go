@@ -32,8 +32,23 @@ import (
 type Option func(*config)
 
 type config struct {
-	tracer trace.Tracer
-	meter  metric.Meter
+	tracer     trace.Tracer
+	meter      metric.Meter
+	capture    *bool
+	contentMax int
+}
+
+// WithContentCapture records tool arguments and results on the execute_tool
+// span as gen_ai.tool.call.arguments / gen_ai.tool.call.result. It overrides
+// OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT. Off by default.
+func WithContentCapture(enabled bool) Option {
+	return func(c *config) { c.capture = &enabled }
+}
+
+// WithContentMaxBytes caps each captured field (default
+// semconv.DefaultContentMaxBytes).
+func WithContentMaxBytes(n int) Option {
+	return func(c *config) { c.contentMax = n }
 }
 
 // WithTracer supplies the Tracer used to open per-Execute spans.
@@ -51,12 +66,16 @@ func WithMeter(m metric.Meter) Option {
 // a Meter it returns an identity middleware (the tool is passed through
 // unwrapped).
 func Instrument(opts ...Option) tools.Middleware {
-	cfg := &config{}
+	cfg := &config{contentMax: semconv.DefaultContentMaxBytes}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 	if cfg.tracer == nil && cfg.meter == nil {
 		return func(next tools.Tool) tools.Tool { return next }
+	}
+	capture := semconv.CaptureContentFromEnv()
+	if cfg.capture != nil {
+		capture = *cfg.capture
 	}
 
 	var duration metric.Float64Histogram
@@ -82,6 +101,8 @@ func Instrument(opts ...Option) tools.Middleware {
 			tracer:   cfg.tracer,
 			duration: duration,
 			errors:   errCounter,
+			capture:  capture,
+			maxBytes: cfg.contentMax,
 		}
 	}
 }
@@ -94,6 +115,8 @@ type instrumentedTool struct {
 	tracer   trace.Tracer
 	duration metric.Float64Histogram
 	errors   metric.Int64Counter
+	capture  bool
+	maxBytes int
 }
 
 func (t *instrumentedTool) Execute(ctx context.Context, argsJSON string) (tools.Result, error) {
@@ -109,9 +132,16 @@ func (t *instrumentedTool) Execute(ctx context.Context, argsJSON string) (tools.
 		)
 	}
 
+	capture := t.capture && span != nil && span.IsRecording()
+	if capture {
+		span.SetAttributes(semconv.GenAIToolCallArguments.String(semconv.Truncate(argsJSON, t.maxBytes)))
+	}
 	start := time.Now()
 	result, err := t.Tool.Execute(ctx, argsJSON)
 	elapsed := time.Since(start)
+	if capture && err == nil {
+		span.SetAttributes(semconv.GenAIToolCallResult.String(semconv.Truncate(result.Text, t.maxBytes)))
+	}
 
 	if t.duration != nil {
 		t.duration.Record(ctx, elapsed.Seconds(),
