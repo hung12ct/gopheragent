@@ -32,20 +32,25 @@ var noopRunEnd = func() {}
 // semconv.SchemaLatest; both carry the GenAI invoke_agent attributes. Returns
 // the original ctx and a shared no-op when tracing is disabled (zero cost).
 func (al *AgentLoop) startRunSpan(ctx context.Context, sessionKey string) (context.Context, func()) {
-	if al.tracer == nil {
+	if al.tracer == nil && al.metrics == nil {
 		return ctx, noopRunEnd
 	}
-	attrs := make([]attribute.KeyValue, 0, 4)
-	attrs = append(attrs,
-		semconv.GenAIOperationName.String(semconv.OperationInvokeAgent),
-		semconv.GenAIConversationID.String(sessionKey),
-		semconv.SessionKey.String(sessionKey),
-	)
-	if al.agentName != "" {
-		attrs = append(attrs, semconv.GenAIAgentName.String(al.agentName))
+	rt := &runTelemetry{metrics: al.metrics}
+	ctx = context.WithValue(ctx, runTelemetryKey{}, rt)
+	var span trace.Span
+	if al.tracer != nil {
+		attrs := make([]attribute.KeyValue, 0, 4)
+		attrs = append(attrs,
+			semconv.GenAIOperationName.String(semconv.OperationInvokeAgent),
+			semconv.GenAIConversationID.String(sessionKey),
+			semconv.SessionKey.String(sessionKey),
+		)
+		if al.agentName != "" {
+			attrs = append(attrs, semconv.GenAIAgentName.String(al.agentName))
+		}
+		ctx, span = al.tracer.Start(ctx, al.runSpanName(), trace.WithAttributes(attrs...))
 	}
-	ctx, span := al.tracer.Start(ctx, al.runSpanName(), trace.WithAttributes(attrs...))
-	return ctx, func() { span.End() }
+	return ctx, func() { al.endRun(ctx, span, rt) }
 }
 
 // runSpanName picks the run span name for the configured semconv schema.
@@ -73,18 +78,20 @@ func WithTracer(t trace.Tracer) Option {
 	}
 }
 
-// WithTracerFromContext makes a loop built inside a tool — a sub-agent or SQL
-// worker — trace under its parent: it adopts the TracerProvider of the
+// WithTelemetryFromContext makes a loop built inside a tool — a sub-agent or
+// SQL worker — report under its parent. It adopts the TracerProvider of the
 // recording span already on ctx (the parent's execute_tool or iteration span),
-// so the worker's run span nests as a child in the same trace. No-op when the
-// span on ctx is not recording, i.e. when the parent has tracing off.
-func WithTracerFromContext(ctx context.Context) Option {
+// so the worker's run span nests as a child in the same trace, and the
+// parent's metric instruments, so worker runs and cost are counted (labeled by
+// the worker's agent name). No-op for whichever signal the parent has off.
+func WithTelemetryFromContext(ctx context.Context) Option {
 	return func(al *AgentLoop) {
-		sp := trace.SpanFromContext(ctx)
-		if !sp.IsRecording() {
-			return
+		if sp := trace.SpanFromContext(ctx); sp.IsRecording() {
+			WithTracer(sp.TracerProvider().Tracer(semconv.ScopeName))(al)
 		}
-		WithTracer(sp.TracerProvider().Tracer(semconv.ScopeName))(al)
+		if rt, ok := ctx.Value(runTelemetryKey{}).(*runTelemetry); ok && rt.metrics != nil {
+			al.metrics = rt.metrics
+		}
 	}
 }
 
@@ -95,24 +102,19 @@ func WithAgentName(name string) Option {
 	return func(al *AgentLoop) { al.agentName = name }
 }
 
-// WithMeter enables OpenTelemetry metrics for the loop. It records a
-// per-iteration latency histogram (gopheragent.agent.iteration.duration). The
-// instrument is built once here so no allocation happens per iteration. nil
-// (the default) disables metrics.
+// WithMeter enables OpenTelemetry metrics for the loop: a per-iteration latency
+// histogram (gopheragent.agent.iteration.duration), a run counter by outcome
+// (gopheragent.agent.runs), and a run cost counter (gopheragent.agent.cost,
+// recorded when a PriceTable or the provider yields a cost). Instruments are
+// built once here so nothing allocates per iteration. nil (the default)
+// disables metrics.
 func WithMeter(m metric.Meter) Option {
 	return func(al *AgentLoop) {
 		if m == nil {
-			al.iterHist = nil
+			al.metrics = nil
 			return
 		}
-		if h, err := m.Float64Histogram(
-			semconv.MetricIterationDuration,
-			metric.WithUnit("s"),
-			metric.WithDescription("Duration of a single ReAct iteration."),
-			metric.WithExplicitBucketBoundaries(semconv.DurationBucketsSeconds...),
-		); err == nil {
-			al.iterHist = h
-		}
+		al.metrics = newLoopMetrics(m)
 	}
 }
 
@@ -122,7 +124,7 @@ func WithMeter(m metric.Meter) Option {
 // no-op end function, performing no allocation — this keeps the loop's hot path
 // free when telemetry is off.
 func (al *AgentLoop) startIterationSpan(ctx context.Context, sessionKey string, iteration int) (context.Context, func(err error)) {
-	if al.tracer == nil && al.iterHist == nil {
+	if al.tracer == nil && al.metrics == nil {
 		return ctx, noopEndSpan
 	}
 
@@ -138,10 +140,10 @@ func (al *AgentLoop) startIterationSpan(ctx context.Context, sessionKey string, 
 	start := time.Now()
 
 	return ctx, func(err error) {
-		if al.iterHist != nil {
+		if al.metrics != nil && al.metrics.iterHist != nil {
 			// No session label: one series per conversation would make
 			// metric cardinality unbounded. Session lives on the span.
-			al.iterHist.Record(ctx, time.Since(start).Seconds())
+			al.metrics.iterHist.Record(ctx, time.Since(start).Seconds())
 		}
 		if span != nil {
 			if err != nil {

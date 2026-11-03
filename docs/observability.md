@@ -4,11 +4,19 @@ GopherAgent emits OpenTelemetry **traces** and **metrics** for the whole agent
 run. One conversation turn is a single trace:
 
 ```
-agent.run                    ← per turn (invoke_agent); tagged gopheragent.session.key
-└── agent.iteration          ← per ReAct step
-    ├── chat <model>         ← LLM call: latency + input/output token attrs
-    └── execute_tool <name>  ← each tool: latency
+agent.run                       ← per turn (invoke_agent); session key + gopheragent.run.outcome
+└── agent.iteration             ← per ReAct step
+    ├── chat <model>            ← LLM call: latency + input/output token attrs
+    ├── hitl.await_approval     ← time blocked on a human; gopheragent.hitl.decision
+    └── execute_tool <name>     ← each tool: latency
+        └── agent.run           ← sub-agent run (call_sub_agent / call_sql_agent)
 ```
+
+The run span ends with `gopheragent.run.outcome` — one of `done`,
+`max_iterations`, `tool_call_cap`, `loop_detected`, `cancelled`,
+`hook_rejected`, `approval_pending`, `llm_error`, `error` — and an Error status
+for failures (a `cancelled` user stop stays Unset). Human approval time sits in
+its own span, so it never inflates model or tool latency.
 
 The core imports only the OpenTelemetry **API**, so instrumentation is a no-op
 (and allocation-free) until you wire a provider. The SDK and OTLP exporters live
@@ -120,7 +128,7 @@ your own tool gets the same nesting with one option:
 
 ```go
 worker := agent.New(sm, reg, llm,
-    agent.WithTracerFromContext(ctx), // adopt the parent's tracer from the span on ctx
+    agent.WithTelemetryFromContext(ctx), // adopt the parent's tracer + meter instruments
     agent.WithAgentName("researcher"))
 ```
 
@@ -149,6 +157,12 @@ conventional `_seconds` / `_total` suffixes:
 | Tool latency | `gopheragent_tool_execution_duration_seconds` | `gen_ai.tool.name` |
 | Tool errors | `gopheragent_tool_errors_total` | `gen_ai.tool.name` |
 | Iteration latency | `gopheragent_agent_iteration_duration_seconds` | — |
+| Finished runs | `gopheragent_agent_runs_total` | `gopheragent.run.outcome`, `gen_ai.agent.name` |
+| Run cost (USD) | `gopheragent_agent_cost_total` | `gen_ai.agent.name` |
+
+Sub-agents record into the parent's instruments under their own
+`gen_ai.agent.name`, so cost and failure rate break down per worker. Cost is
+recorded when a `PriceTable` is set or the provider reports a per-call cost.
 
 Duration histograms ship LLM-tuned explicit buckets (`0.01 … 81.92` s, the
 GenAI-convention ladder) instead of the SDK's millisecond defaults, so

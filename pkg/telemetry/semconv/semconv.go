@@ -56,6 +56,26 @@ const (
 	SessionKey = attribute.Key("gopheragent.session.key")
 	// Iteration is the zero-based ReAct iteration index on an iteration span.
 	Iteration = attribute.Key("gopheragent.iteration")
+	// RunOutcome is the closed-enum terminal outcome of a run (RunOutcome*
+	// values), on the run span and the gopheragent.agent.runs counter.
+	RunOutcome = attribute.Key("gopheragent.run.outcome")
+	// HITLDecision is the human-approval result on a hitl.await_approval span:
+	// "approved", "denied", or "timed_out".
+	HITLDecision = attribute.Key("gopheragent.hitl.decision")
+)
+
+// RunOutcome values. A closed set keeps the runs counter low-cardinality.
+const (
+	RunOutcomeDone            = "done"
+	RunOutcomeMaxIterations   = "max_iterations"
+	RunOutcomeToolCallCap     = "tool_call_cap"
+	RunOutcomeLoopDetected    = "loop_detected"
+	RunOutcomeCancelled       = "cancelled"
+	RunOutcomeHookRejected    = "hook_rejected"
+	RunOutcomeApprovalPending = "approval_pending"
+	RunOutcomeLLMError        = "llm_error"
+	RunOutcomeError           = "error"
+	RunOutcomeUnknown         = "unknown"
 )
 
 // GenAI operation values.
@@ -134,4 +154,8 @@ const (
 	MetricToolErrors = "gopheragent.tool.errors"
 	// MetricIterationDuration is the ReAct iteration latency histogram (seconds).
 	MetricIterationDuration = "gopheragent.agent.iteration.duration"
+	// MetricAgentRuns counts finished runs by RunOutcome and gen_ai.agent.name.
+	MetricAgentRuns = "gopheragent.agent.runs"
+	// MetricAgentCost sums run cost in USD by gen_ai.agent.name.
+	MetricAgentCost = "gopheragent.agent.cost"
 )

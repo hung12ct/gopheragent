@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/hung12ct/gopheragent/pkg/cache"
@@ -542,12 +541,12 @@ type AgentLoop struct {
 	// via the caller's ctx and the iterator's range-loop exit.
 	bgWg sync.WaitGroup
 
-	// tracer, when non-nil, opens a span per ReAct iteration (WithTracer).
-	// iterHist, when non-nil, records per-iteration latency in seconds; it is
-	// built once by WithMeter. Both nil (default) means zero instrumentation
-	// cost on the hot path (see telemetry.go).
-	tracer   trace.Tracer
-	iterHist metric.Float64Histogram
+	// tracer, when non-nil, opens run and iteration spans (WithTracer).
+	// metrics, when non-nil, holds the instruments built once by WithMeter.
+	// Both nil (default) means zero instrumentation cost on the hot path
+	// (see telemetry.go).
+	tracer  trace.Tracer
+	metrics *loopMetrics
 	// agentName (WithAgentName) labels the run span; semconvSchema is
 	// resolved once by WithTracer so the hot path never reads the env.
 	agentName     string
@@ -630,6 +629,9 @@ func (al *AgentLoop) ClearSession(sessionKey string) {
 // indefinitely.
 func (al *AgentLoop) emit(ctx context.Context, sessionKey string, streamChan chan<- StreamEvent, ev StreamEvent) {
 	streamChan <- ev
+	if al.tracer != nil || al.metrics != nil {
+		observeTerminal(ctx, ev)
+	}
 	for _, h := range al.EventHandlers {
 		safeCallHandler(h, ctx, sessionKey, ev)
 	}

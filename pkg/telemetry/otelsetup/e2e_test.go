@@ -319,6 +319,13 @@ func assertMetrics(t *testing.T, r *receiver) {
 			t.Fatalf("iteration histogram carries session label (unbounded cardinality)")
 		}
 	}
+	runs := map[string]string{}
+	for _, dp := range seen[semconv.MetricAgentRuns].GetSum().GetDataPoints() {
+		runs[strAttr(dp.GetAttributes(), string(semconv.GenAIAgentName))] = strAttr(dp.GetAttributes(), string(semconv.RunOutcome))
+	}
+	if runs["planner"] != semconv.RunOutcomeDone || runs["worker"] != semconv.RunOutcomeDone {
+		t.Fatalf("runs counter = %v, want planner and worker both done (worker must inherit the meter)", runs)
+	}
 }
 
 func keys(m map[string]*metricpb.Metric) []string {
