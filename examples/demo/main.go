@@ -13,6 +13,8 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
 	"github.com/hung12ct/gopheragent/pkg/builder"
@@ -582,16 +584,14 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// setupTelemetry wires OpenTelemetry OTLP export when OTEL_EXPORTER_OTLP_ENDPOINT
-// is set, and attaches the lightweight per-iteration span bridge to the loop.
+// setupTelemetry wires OpenTelemetry OTLP export. otelsetup.Setup stays off
+// unless OTEL_EXPORTER_OTLP_ENDPOINT (or a per-signal endpoint) is set, and
+// honors OTEL_SDK_DISABLED / OTEL_*_EXPORTER=none / OTEL_EXPORTER_OTLP_PROTOCOL.
 // Returns a shutdown func to flush exporters, or nil when telemetry is disabled.
 // It sets telProviders; the rest of the wiring (provider decorator, catalog tool
 // middleware, loop.Configure) reads that global so a YAML-built agent still gets
-// fully nested run → iteration → LLM → tool spans.
+// fully nested invoke_agent → iteration → chat → execute_tool spans.
 func setupTelemetry() func(context.Context) error {
-	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
-		return nil
-	}
 	tel, shutdown, err := otelsetup.Setup(context.Background(), otelsetup.Config{
 		ServiceName: "gopheragent-demo",
 		Insecure:    true,
@@ -600,9 +600,23 @@ func setupTelemetry() func(context.Context) error {
 		log.Printf("OpenTelemetry disabled: %v", err)
 		return nil
 	}
+	if !tel.Enabled {
+		return nil
+	}
 	telProviders = tel
 	log.Printf("OpenTelemetry export enabled (endpoint=%s)", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	return shutdown
+}
+
+// withTraceContext extracts an inbound W3C traceparent/baggage header into the
+// request ctx, so a caller that is already tracing sees the agent run as a
+// child of its own span instead of a disconnected trace. It is a no-op until
+// otelsetup installs the propagators.
+func withTraceContext(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		next(w, r.WithContext(ctx))
+	}
 }
 
 func main() {
@@ -615,7 +629,7 @@ func main() {
 	}
 	initApp()
 	http.Handle("/", http.FileServer(http.Dir("./frontend")))
-	http.HandleFunc("/api/chat", ChatHandler)
+	http.HandleFunc("/api/chat", withTraceContext(ChatHandler))
 	http.HandleFunc("/api/approve", ApproveHandler)
 	http.HandleFunc("/api/memory", MemoryHandler)
 	http.HandleFunc("/api/info", InfoHandler)

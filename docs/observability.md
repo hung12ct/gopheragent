@@ -19,7 +19,29 @@ telemetry does not link them.
 
 `otelsetup.Setup` builds an OTLP TracerProvider + MeterProvider and returns
 ready-to-use handles plus a shutdown func. Endpoint and credentials follow the
-standard `OTEL_*` environment variables.
+standard `OTEL_*` environment variables. **Export is off until an endpoint is
+configured** — an unconfigured process never dials a default collector, and the
+returned `Tracer`/`Meter` are no-op handles (`tel.Enabled == false`).
+
+| Variable | Values | Effect |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT` | URL or host:port | Turns export on (generic or per signal) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_{TRACES,METRICS}_PROTOCOL` | `grpc` (default), `http/protobuf` | OTLP transport |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` (default), `none` | Turn one signal off |
+| `OTEL_SDK_DISABLED` | `true` | Kill switch — everything off |
+
+`Config.Endpoint` / `Config.Protocol` take precedence over the environment.
+
+When tracing is on, `Setup` installs the W3C **TraceContext + Baggage**
+propagators globally. To make an agent run join the caller's distributed
+trace, extract the inbound headers before calling the loop:
+
+```go
+ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+for ev := range loop.RunText(ctx, sessionKey, input) { /* ... */ }
+```
+
+`examples/demo` does this in its `withTraceContext` middleware.
 
 ```go
 tel, shutdown, err := otelsetup.Setup(ctx, otelsetup.Config{ServiceName: "my-agent"})
