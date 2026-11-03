@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/hung12ct/gopheragent/pkg/agent"
+	"github.com/hung12ct/gopheragent/pkg/auditlog"
 	"github.com/hung12ct/gopheragent/pkg/builder"
 	"github.com/hung12ct/gopheragent/pkg/history"
 	"github.com/hung12ct/gopheragent/pkg/llm/anthropic"
@@ -24,13 +25,16 @@ import (
 	"github.com/hung12ct/gopheragent/pkg/llm/openai"
 	"github.com/hung12ct/gopheragent/pkg/telemetry/otelllm"
 	"github.com/hung12ct/gopheragent/pkg/telemetry/otelsetup"
-	"github.com/hung12ct/gopheragent/pkg/telemetry/oteltools"
 	"github.com/hung12ct/gopheragent/pkg/tools/builtin"
 )
 
 // telProviders holds the OTel Tracer/Meter when export is enabled; nil disables
 // all demo instrumentation.
 var telProviders *otelsetup.Providers
+
+// auditClient ships audit events when GOPHERAGENT_AUDIT_ENDPOINT is set; nil
+// (a disabled client) otherwise.
+var auditClient *auditlog.Client
 
 var myAgentApp *agent.AgentLoop
 
@@ -68,48 +72,42 @@ func loadEnvFiles() {
 	}
 }
 
-// instrumentLLM wraps p with the OTel decorator when telemetry is enabled,
-// tagging spans/metrics with the vendor and model. A no-op otherwise.
-func instrumentLLM(p agent.LLMProvider, system, model string) agent.LLMProvider {
-	if telProviders == nil {
-		return p
-	}
-	return otelllm.NewProvider(p,
-		otelllm.WithSystem(system), otelllm.WithModel(model),
-		otelllm.WithTracer(telProviders.Tracer), otelllm.WithMeter(telProviders.Meter))
-}
-
-func buildProvider() agent.LLMProvider {
+// buildProvider returns the configured LLM plus its vendor and model, which
+// label the telemetry.
+func buildProvider() (p agent.LLMProvider, system, model string) {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER")))
 	log.Printf("LLM_PROVIDER=%q", provider)
 	switch provider {
 	case "openai":
 		model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
-		p, err := openai.New("", model)
+		op, err := openai.New("", model)
+		p = op
 		if err == nil {
 			log.Printf("Using OpenAI provider")
-			return instrumentLLM(p, "openai", model)
+			return p, "openai", model
 		}
 		log.Printf("Warning: OpenAI provider init failed: %v", err)
 	case "anthropic", "claude":
 		model := strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL"))
-		p, err := anthropic.New("", model)
+		ap, err := anthropic.New("", model)
+		p = ap
 		if err == nil {
 			log.Printf("Using Anthropic provider")
-			return instrumentLLM(p, "anthropic", model)
+			return p, "anthropic", model
 		}
 		log.Printf("Warning: Anthropic provider init failed: %v", err)
 	case "gemini":
 		model := strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
-		p, err := gemini.New("", model)
+		gp, err := gemini.New("", model)
+		p = gp
 		if err == nil {
 			log.Printf("Using Gemini provider")
-			return instrumentLLM(p, "gemini", model)
+			return p, "gemini", model
 		}
 		log.Printf("Warning: Gemini provider init failed: %v", err)
 	}
 	log.Printf("Using Mock provider (set LLM_PROVIDER=openai|anthropic|gemini to use real model)")
-	return agent.NewMockProvider()
+	return agent.NewMockProvider(), "mock", ""
 }
 
 func SecurityHook(ctx context.Context, sessionKey string, userInput string) error {
@@ -370,14 +368,6 @@ func getStream(sessionKey string) chan<- agent.StreamEvent {
 func initApp() {
 	catalog := builder.NewGlobalCatalog()
 
-	// Instrument every catalog tool with per-Execute spans + latency metrics.
-	// Must run before the loop is built so tools are wrapped at registration.
-	if telProviders != nil {
-		catalog.Use(oteltools.Instrument(
-			oteltools.WithTracer(telProviders.Tracer),
-			oteltools.WithMeter(telProviders.Meter)))
-	}
-
 	// Web tools — Register* helpers use tools.RegisterFunc internally
 	// so the catalog gets a typed-args funcTool without the per-tool
 	// struct boilerplate.
@@ -434,7 +424,8 @@ func initApp() {
 		log.Printf("Background summarizer enabled (gpt-4o-mini)")
 	}
 
-	loop, _, _, err := builder.BuildFromYAMLWithSession(yamlPath, catalog, buildProvider(), SecurityHook, sm)
+	llm, llmSystem, llmModel := buildProvider()
+	loop, _, _, err := builder.BuildFromYAMLWithSession(yamlPath, catalog, llm, SecurityHook, sm)
 	if err != nil {
 		log.Fatalf("Failed to build demo agent from YAML (%s): %v", yamlPath, err)
 	}
@@ -444,11 +435,10 @@ func initApp() {
 	loop.ConfirmPlan = buildConfirmPlan()
 	planModeDefault = os.Getenv("PLAN_MODE") == "true"
 
-	// Open a run/iteration span per turn so LLM (via the decorated provider) and
-	// tool (via catalog middleware) spans nest into one trace per conversation.
-	if telProviders != nil {
-		loop.Configure(agent.WithTracer(telProviders.Tracer), agent.WithMeter(telProviders.Meter))
-	}
+	// One call each, after the loop is fully configured. Both are no-ops when
+	// their endpoint isn't set (telProviders / auditClient are nil).
+	telProviders.Instrument(loop, otelllm.WithSystem(llmSystem), otelllm.WithModel(llmModel))
+	auditClient.Instrument(loop)
 
 	myAgentApp = loop
 	log.Printf("Demo loaded: %s", yamlPath)
@@ -587,10 +577,8 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 // setupTelemetry wires OpenTelemetry OTLP export. otelsetup.Setup stays off
 // unless OTEL_EXPORTER_OTLP_ENDPOINT (or a per-signal endpoint) is set, and
 // honors OTEL_SDK_DISABLED / OTEL_*_EXPORTER=none / OTEL_EXPORTER_OTLP_PROTOCOL.
-// Returns a shutdown func to flush exporters, or nil when telemetry is disabled.
-// It sets telProviders; the rest of the wiring (provider decorator, catalog tool
-// middleware, loop.Configure) reads that global so a YAML-built agent still gets
-// fully nested invoke_agent → iteration → chat → execute_tool spans.
+// Returns a shutdown func to flush exporters, or nil when telemetry is
+// disabled. initApp instruments the loop with one telProviders.Instrument call.
 func setupTelemetry() func(context.Context) error {
 	tel, shutdown, err := otelsetup.Setup(context.Background(), otelsetup.Config{
 		ServiceName: "gopheragent-demo",
@@ -627,6 +615,12 @@ func main() {
 	if shutdown != nil {
 		defer func() { _ = shutdown(context.Background()) }()
 	}
+	// Auditing is on only when GOPHERAGENT_AUDIT_ENDPOINT is set.
+	var err error
+	if auditClient, err = auditlog.FromEnv(context.Background()); err != nil {
+		log.Fatalf("audit log config: %v", err)
+	}
+	defer func() { _ = auditClient.Close(context.Background()) }()
 	initApp()
 	http.Handle("/", http.FileServer(http.Dir("./frontend")))
 	http.HandleFunc("/api/chat", withTraceContext(ChatHandler))
