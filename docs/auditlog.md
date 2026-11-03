@@ -1,5 +1,8 @@
 # Audit log — who did what, over OTLP
 
+> **Experimental.** The `pkg/auditlog` API may change in a minor release until
+> an adopter's production use settles it.
+
 `pkg/auditlog` records an agent's consequential actions — tool executions,
 human approvals, permission verdicts, rejected requests, data and
 configuration changes — as structured audit events, shipped as **OTLP log

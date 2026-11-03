@@ -73,7 +73,7 @@ go get github.com/hung12ct/gopheragent
   into notes the loader prepends to future sessions.
 - **Observability** — OpenTelemetry traces + metrics (one trace per turn, nested
   LLM/tool spans, GenAI-convention token metrics), zero-cost when off.
-- **Audit log** — `pkg/auditlog` ships who-did-what records (tool runs,
+- **Audit log** *(experimental)* — `pkg/auditlog` ships who-did-what records (tool runs,
   approvals, policy verdicts, data changes) over OTLP logs — validated,
   HMAC-signed and sequenced for tamper detection, blocking or batched,
   optionally fail-closed.

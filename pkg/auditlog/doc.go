@@ -24,6 +24,9 @@
 // a span, the record carries its trace and span IDs, linking the audit trail to
 // the trace of the run that produced it.
 //
+// Experimental: the API may change in a minor release until an adopter's
+// production use settles it.
+//
 // Minimal use:
 //
 //	c, err := auditlog.New(ctx, auditlog.Config{Endpoint: "collector:4317", ServiceName: "billing-agent"})
