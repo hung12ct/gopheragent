@@ -135,6 +135,9 @@ func ToolMiddleware(e Emitter, opts ...Option) tools.Middleware {
 	o := newOptions(opts)
 	fp, _ := e.(Fingerprinter)
 	return func(next tools.Tool) tools.Tool {
+		if _, done := next.(*auditedTool); done {
+			return next // already audited: wrapping again would double every record
+		}
 		desc := next.Descriptor()
 		level := LevelMetadata
 		if o.policy != nil {

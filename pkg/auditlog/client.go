@@ -65,7 +65,9 @@ type exporter interface {
 }
 
 // Client ships audit events to an OTLP collector. It is safe for concurrent
-// use.
+// use. A nil *Client is a valid, disabled client: every method is a no-op, so
+// code can audit unconditionally and leave enabling it to configuration (see
+// FromEnv).
 type Client struct {
 	cfg     Config
 	res     *resourcepb.Resource
@@ -118,6 +120,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 // Send validates every event and delivers them per the client's Mode. If any
 // event is invalid, none is sent.
 func (c *Client) Send(ctx context.Context, events ...Event) error {
+	if c == nil {
+		return nil
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock() // held only across the non-blocking enqueue, never I/O
 	if c.closed {
@@ -134,6 +139,9 @@ func (c *Client) Send(ctx context.Context, events ...Event) error {
 
 // SendSync delivers synchronously regardless of Mode, like ModeBlocking.
 func (c *Client) SendSync(ctx context.Context, events ...Event) error {
+	if c == nil {
+		return nil
+	}
 	c.mu.RLock()
 	closed := c.closed
 	c.mu.RUnlock()
@@ -148,7 +156,7 @@ func (c *Client) SendSync(ctx context.Context, events ...Event) error {
 
 // Fingerprint returns Hash(HMACKey, value), or "" without a key.
 func (c *Client) Fingerprint(value string) string {
-	if c.cfg.HMACKey == nil {
+	if c == nil || c.cfg.HMACKey == nil {
 		return ""
 	}
 	return Hash(c.cfg.HMACKey, value)
@@ -157,7 +165,7 @@ func (c *Client) Fingerprint(value string) string {
 // Flush blocks until every event queued before the call is exported (or its
 // failure reported to OnError). A no-op in ModeBlocking.
 func (c *Client) Flush(ctx context.Context) error {
-	if c.batch == nil {
+	if c == nil || c.batch == nil {
 		return nil
 	}
 	return c.batch.flush(ctx)
@@ -166,6 +174,9 @@ func (c *Client) Flush(ctx context.Context) error {
 // Close drains the batch buffer (ModeBatch) and releases the connection.
 // Send fails with ErrClosed afterwards.
 func (c *Client) Close(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
