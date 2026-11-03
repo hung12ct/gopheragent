@@ -16,7 +16,42 @@ acknowledged the record, or with the error that prevented it.** Nothing is
 buffered; a nil return means written. High-volume events can opt into
 `ModeBatch` — see [Delivery modes](#delivery-modes).
 
-## Set up
+## The short way: env + one call
+
+```go
+audit, err := auditlog.FromEnv(ctx) // GOPHERAGENT_AUDIT_ENDPOINT unset → nil client: auditing off
+if err != nil { /* set but invalid configuration */ }
+defer audit.Close(ctx)
+
+audit.Instrument(loop) // tools, HITL approvals, permission verdicts, hook rejections
+```
+
+```bash
+export GOPHERAGENT_AUDIT_ENDPOINT=collector:4317
+export GOPHERAGENT_AUDIT_INSECURE=true          # local collectors only
+export GOPHERAGENT_AUDIT_HMAC_KEY=...            # optional: signed records, keyed fingerprints
+```
+
+A nil `*Client` is a valid, disabled client — every method is a no-op — so
+the same code runs with auditing on or off. Call `Instrument` last, after
+`ConfirmHITL`, `Permissions`, and the tools are set, and once per loop.
+Records fall back to `GOPHERAGENT_AUDIT_TENANT_ID` (default `"default"`)
+when the request ctx carries no `Actor`; multi-tenant apps set the actor per
+request with `auditlog.WithActor`.
+
+| Variable | Meaning |
+|---|---|
+| `GOPHERAGENT_AUDIT_ENDPOINT` | `host:port` — set it to turn auditing on |
+| `GOPHERAGENT_AUDIT_PROTOCOL` | `grpc` (default) or `http/protobuf` |
+| `GOPHERAGENT_AUDIT_INSECURE` | `true` for plaintext |
+| `GOPHERAGENT_AUDIT_SERVICE_NAME` | default `OTEL_SERVICE_NAME`, then `gopheragent` |
+| `GOPHERAGENT_AUDIT_TENANT_ID` | tenant when ctx has no `Actor`; default `default` |
+| `GOPHERAGENT_AUDIT_HMAC_KEY` | ≥16 bytes: keyed fingerprints and signed records |
+| `GOPHERAGENT_AUDIT_HEADERS` | `k=v,k2=v2`, values percent-encoded |
+| `GOPHERAGENT_AUDIT_MODE` | `blocking` (default) or `batch` |
+| `GOPHERAGENT_AUDIT_CA_FILE` / `_CERT_FILE` / `_KEY_FILE` | TLS / mTLS |
+
+## Set up in code
 
 ```go
 c, err := auditlog.New(ctx, auditlog.Config{
