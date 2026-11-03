@@ -124,8 +124,9 @@ func (al *AgentLoop) startIterationSpan(ctx context.Context, sessionKey string, 
 
 	return ctx, func(err error) {
 		if al.iterHist != nil {
-			al.iterHist.Record(ctx, time.Since(start).Seconds(),
-				metric.WithAttributes(semconv.SessionKey.String(sessionKey)))
+			// No session label: one series per conversation would make
+			// metric cardinality unbounded. Session lives on the span.
+			al.iterHist.Record(ctx, time.Since(start).Seconds())
 		}
 		if span != nil {
 			if err != nil {

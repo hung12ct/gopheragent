@@ -7,6 +7,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -237,4 +239,32 @@ func TestRunSpan_LatestSchemaUsesInvokeAgentName(t *testing.T) {
 	if got := runSpanFor(t).Name(); got != "invoke_agent" {
 		t.Fatalf("unnamed latest run span = %q, want invoke_agent", got)
 	}
+}
+
+func TestIterationMetric_HasNoSessionLabel(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	al := New(history.NewInMemSessionManager("sys"), tools.NewRegistry(), nil, WithMeter(mp.Meter("test")))
+
+	for _, s := range []string{"s1", "s2", "s3"} {
+		_, end := al.startIterationSpan(context.Background(), s, 0)
+		end(nil)
+	}
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			h, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok || m.Name != semconv.MetricIterationDuration {
+				continue
+			}
+			if len(h.DataPoints) != 1 {
+				t.Fatalf("got %d series for 3 sessions, want 1 (session must not be a label)", len(h.DataPoints))
+			}
+			return
+		}
+	}
+	t.Fatal("iteration histogram not recorded")
 }
