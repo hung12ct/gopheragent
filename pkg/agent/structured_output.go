@@ -16,9 +16,10 @@ import (
 //     so validate the result.
 //   - Gemini (1.5+): response_mime_type:"application/json" +
 //     response_schema. Native; Strict is ignored (Gemini always enforces).
-//   - Anthropic Claude: no native JSON mode. Providers synthesize a single
-//     tool with the given Schema and force tool_choice, then surface the
-//     tool's Input as the assistant's Content. Transparent to callers.
+//   - Anthropic Claude: output_config.format with the schema. Native; every
+//     object is closed with additionalProperties:false and constraints the
+//     grammar rejects (minimum, maxLength, maxItems, …) move into the
+//     field's description, so validate those yourself if they matter.
 //
 // Set via WithStructuredOutput before calling GenerateStream (or use the
 // GenerateJSON helper for one-shot generation outside the ReAct loop).
@@ -41,8 +42,7 @@ type StructuredOutput struct {
 	Schema map[string]any
 	// Strict asks providers to reject any field not declared in Schema.
 	// OpenAI honors this via json_schema.strict=true; Gemini enforces
-	// strictly regardless; Anthropic's tool-synthesis path is implicitly
-	// strict (the tool only accepts the declared shape).
+	// strictly regardless, and so does Anthropic (every object is closed).
 	Strict bool
 }
 

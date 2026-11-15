@@ -17,7 +17,7 @@ type GenerateJSONRequest struct {
 	Messages []history.Message
 	// Output describes the JSON shape the caller wants back. Schema must
 	// be non-empty; Name and Description are forwarded when the provider
-	// supports them (OpenAI, Anthropic synthesizer).
+	// supports them (OpenAI).
 	Output StructuredOutput
 }
 

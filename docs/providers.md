@@ -61,8 +61,7 @@ wrong one is a 400 on every structured call.
 `JSONModeObject` guarantees only that the reply parses as JSON. Schema
 conformance degrades from a server-side constraint to a prompt instruction, so
 validate the result and be ready to retry; `Strict` becomes a request rather
-than a rule. This is the same trade the Anthropic adapter avoids by
-synthesizing a tool — an option `json_object` endpoints do not offer.
+than a rule.
 
 ### Point the non-chat clients at the same endpoint
 
@@ -134,6 +133,17 @@ The OpenAI provider also takes `WithReasoningEffort(effort)`, sent verbatim as
 `reasoning_effort`. Models that reason by default reject function tools on Chat
 Completions; `WithReasoningEffort("none")` switches reasoning off so tools work.
 Models that also reject `"none"` cannot use tools through this provider.
+
+The Anthropic provider takes `WithEffort(effort)`, sent verbatim as
+`output_config.effort`. A `ThinkingBudget` turns adaptive thinking on and picks
+an effort level when `WithEffort` is unset; models that predate adaptive
+thinking keep the token budget. Current Claude models reject `temperature` and
+`top_p`, so leave `WithTemperature` / `WithTopP` unset for them.
+
+Structured output on Anthropic uses the API's native JSON-schema format. The
+adapter closes every object and moves constraints the API rejects (`minimum`,
+`maxLength`, `maxItems`, ...) into the field description; validate those in
+your own code if they matter.
 
 ## Multimodal input
 

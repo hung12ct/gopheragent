@@ -1,118 +1,81 @@
 package anthropic
 
 import (
-	"encoding/json"
 	"reflect"
-	"sort"
 	"testing"
-
-	"github.com/hung12ct/gopheragent/pkg/agent"
 )
 
-func TestSynthesizeAnthropicStructuredTool_BasicShape(t *testing.T) {
-	so := &agent.StructuredOutput{
-		Name:        "person",
-		Description: "a human",
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"name": map[string]any{"type": "string"},
-				"age":  map[string]any{"type": "integer"},
-			},
-			"required": []string{"name"},
+func TestStructuredSchema_ClosesEveryObject(t *testing.T) {
+	// The API rejects any object without additionalProperties:false, at
+	// every depth: properties, array items, $defs and anyOf branches.
+	in := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tags": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "properties": map[string]any{"t": map[string]any{"type": "string"}},
+			}},
+			"either": map[string]any{"anyOf": []any{
+				map[string]any{"type": "object", "additionalProperties": true},
+				map[string]any{"type": "string"},
+			}},
+		},
+		"$defs": map[string]any{"Point": map[string]any{"type": []any{"object", "null"}}},
+	}
+	out := structuredSchema(in)
+	props := out["properties"].(map[string]any)
+	item := props["tags"].(map[string]any)["items"].(map[string]any)
+	branches := props["either"].(map[string]any)["anyOf"].([]any)
+	point := out["$defs"].(map[string]any)["Point"].(map[string]any)
+	for name, obj := range map[string]map[string]any{"root": out, "item": item, "anyOf": branches[0].(map[string]any), "$defs": point} {
+		if obj["additionalProperties"] != false {
+			t.Fatalf("%s: additionalProperties must be false, got %v", name, obj["additionalProperties"])
+		}
+	}
+	if _, ok := branches[1].(map[string]any)["additionalProperties"]; ok {
+		t.Fatal("a string schema must not gain additionalProperties")
+	}
+}
+
+func TestStructuredSchema_MovesUnsupportedConstraintsIntoDescription(t *testing.T) {
+	in := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"age":  map[string]any{"type": "integer", "minimum": 0, "maximum": 150, "description": "years"},
+			"tags": map[string]any{"type": "array", "minItems": 2, "maxItems": 5, "items": map[string]any{"type": "string"}},
+			"one":  map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+			"when": map[string]any{"type": "string", "format": "date"},
+			"host": map[string]any{"type": "string", "format": "idn-hostname"},
 		},
 	}
-	tool, name := synthesizeStructuredTool(so)
-	if name != "person" {
-		t.Fatalf("name: want person, got %q", name)
+	props := structuredSchema(in)["properties"].(map[string]any)
+	age := props["age"].(map[string]any)
+	want := map[string]any{"type": "integer", "description": "years {maximum: 150, minimum: 0}"}
+	if !reflect.DeepEqual(age, want) {
+		t.Fatalf("age: want %v, got %v", want, age)
 	}
-	if tool.OfTool == nil {
-		t.Fatal("OfTool is nil")
+	tags := props["tags"].(map[string]any)
+	if tags["description"] != "{maxItems: 5, minItems: 2}" || tags["minItems"] != nil || tags["maxItems"] != nil {
+		t.Fatalf("tags: constraints must move to the description, got %v", tags)
 	}
-	if tool.OfTool.Name != "person" {
-		t.Fatalf("tool.Name: got %q", tool.OfTool.Name)
+	if one := props["one"].(map[string]any); one["minItems"] != 1 {
+		t.Fatalf("minItems 1 is supported and must stay, got %v", one)
 	}
-	if !reflect.DeepEqual(tool.OfTool.InputSchema.Required, []string{"name"}) {
-		t.Fatalf("Required: got %v", tool.OfTool.InputSchema.Required)
+	if when := props["when"].(map[string]any); when["format"] != "date" {
+		t.Fatalf("a supported format must stay, got %v", when)
 	}
-	props, ok := tool.OfTool.InputSchema.Properties.(map[string]any)
-	if !ok {
-		t.Fatalf("Properties type: got %T", tool.OfTool.InputSchema.Properties)
-	}
-	if _, ok := props["name"]; !ok {
-		t.Fatalf("Properties missing 'name': %v", props)
-	}
-}
-
-func TestSynthesizeAnthropicStructuredTool_FallbackName(t *testing.T) {
-	so := &agent.StructuredOutput{
-		Schema: map[string]any{"type": "object"},
-	}
-	_, name := synthesizeStructuredTool(so)
-	if name == "" {
-		t.Fatal("expected non-empty fallback name, got empty")
+	if host := props["host"].(map[string]any); host["format"] != nil || host["description"] != "{format: idn-hostname}" {
+		t.Fatalf("an unsupported format must move to the description, got %v", host)
 	}
 }
 
-func TestSynthesizeAnthropicStructuredTool_RequiredFromAnyList(t *testing.T) {
-	// JSON-decoded schemas come back with []any for "required"; the helper
-	// must accept both that and the more ergonomic []string form.
-	so := &agent.StructuredOutput{
-		Schema: map[string]any{
-			"type":     "object",
-			"required": []any{"a", "b", 42, "c"}, // 42 should be filtered out
-		},
+func TestStructuredSchema_LeavesCallerSchemaUntouched(t *testing.T) {
+	age := map[string]any{"type": "integer", "minimum": 0}
+	in := map[string]any{"type": "object", "properties": map[string]any{"age": age}}
+	structuredSchema(in)
+	if _, ok := in["additionalProperties"]; ok {
+		t.Fatal("the caller's root schema was mutated")
 	}
-	tool, _ := synthesizeStructuredTool(so)
-	got := tool.OfTool.InputSchema.Required
-	sort.Strings(got)
-	want := []string{"a", "b", "c"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Required: got %v, want %v", got, want)
-	}
-}
-
-func TestSynthesizeAnthropicStructuredTool_ExtrasPreserved(t *testing.T) {
-	// Uncommon JSON-Schema keywords must round-trip via ExtraFields so
-	// callers can use additionalProperties / $defs / etc.
-	so := &agent.StructuredOutput{
-		Schema: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"$defs": map[string]any{
-				"Point": map[string]any{"type": "object"},
-			},
-		},
-	}
-	tool, _ := synthesizeStructuredTool(so)
-	if _, ok := tool.OfTool.InputSchema.ExtraFields["additionalProperties"]; !ok {
-		t.Fatalf("additionalProperties not preserved in ExtraFields: %+v", tool.OfTool.InputSchema.ExtraFields)
-	}
-	if _, ok := tool.OfTool.InputSchema.ExtraFields["$defs"]; !ok {
-		t.Fatalf("$defs not preserved: %+v", tool.OfTool.InputSchema.ExtraFields)
-	}
-	// Marshal the schema and confirm the extras land at the top level.
-	raw, err := json.Marshal(tool.OfTool.InputSchema)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var back map[string]any
-	if err := json.Unmarshal(raw, &back); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if back["additionalProperties"] != false {
-		t.Fatalf("additionalProperties lost on marshal: %v", back)
-	}
-}
-
-func TestSynthesizeAnthropicStructuredTool_DefaultDescription(t *testing.T) {
-	// Anthropic tool descriptions materially affect model behavior, so a
-	// blank description should fall back to something instructive.
-	so := &agent.StructuredOutput{
-		Schema: map[string]any{"type": "object"},
-	}
-	tool, _ := synthesizeStructuredTool(so)
-	if tool.OfTool.Description.Value == "" {
-		t.Fatal("expected non-empty fallback description")
+	if age["minimum"] != 0 || age["description"] != nil {
+		t.Fatalf("the caller's nested schema was mutated: %v", age)
 	}
 }
