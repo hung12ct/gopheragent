@@ -164,7 +164,7 @@ func pendingToolTurn(msgs []history.Message) (int, []PendingToolCall) {
 func pendingCallsOf(m history.Message) []PendingToolCall {
 	calls := make([]PendingToolCall, len(m.ToolCalls))
 	for i, tc := range m.ToolCalls {
-		calls[i] = PendingToolCall{ID: tc.ID, Name: tc.Name, ArgsJSON: tc.Arguments}
+		calls[i] = PendingToolCall{ID: tc.ID, Name: tc.Name, ArgsJSON: tc.Arguments, ProviderMeta: tc.ProviderMeta}
 	}
 	return calls
 }

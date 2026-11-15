@@ -137,6 +137,11 @@ type PendingToolCall struct {
 	ID       string
 	Name     string
 	ArgsJSON string
+	// ProviderMeta is opaque state the provider attached to this call and
+	// needs back, byte for byte, when the call is replayed in history (for
+	// example Gemini's thought signature). The loop only carries it; it is
+	// nil for providers that have nothing to round-trip.
+	ProviderMeta []byte
 }
 
 // TokenUsage carries per-call token accounting returned by an LLM provider.
