@@ -37,6 +37,7 @@ type Provider struct {
 	temperature *float64
 	topP        *float64
 	seed        *int64
+	effort      string
 	jsonMode    JSONMode
 	imageInput  bool
 	cfg         clientConfig
@@ -63,6 +64,19 @@ func WithTopP(v float64) Option {
 // temperature for the strongest reproducibility OpenAI offers.
 func WithSeed(n int64) Option {
 	return providerOptionFunc(func(p *Provider) { p.seed = &n })
+}
+
+// WithReasoningEffort sends reasoning_effort verbatim on every request and
+// takes precedence over the agent.ThinkingBudget mapping. Unset (or "") keeps
+// the default behavior. The value is not validated: the accepted set ("none",
+// "minimal", "low", "medium", "high", "xhigh", "max") differs per model, and
+// the API rejects what a model does not support.
+//
+// The main use is "none": models that reason by default reject function tools
+// on Chat Completions unless reasoning is switched off. Models that also
+// reject "none" cannot use tools through this provider at all.
+func WithReasoningEffort(effort string) Option {
+	return providerOptionFunc(func(p *Provider) { p.effort = effort })
 }
 
 // Capabilities reports what this provider's endpoint accepts, as configured.
@@ -216,9 +230,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		},
 	}
 	p.applySampling(&req)
-	if effort := reasoningEffortFor(p.model, agent.ThinkingBudgetFromContext(ctx)); effort != "" {
-		req.ReasoningEffort = effort
-	}
+	req.ReasoningEffort = p.reasoningEffort(ctx)
 	stream, err := p.client.CreateChatCompletionStream(ctx, req)
 	if err != nil {
 		return agent.LLMResult{}, fmt.Errorf("openai streaming error: %w", classifyErr(err))
@@ -347,6 +359,16 @@ func nonZeroFloat32(v float64) float32 {
 		return math.SmallestNonzeroFloat32
 	}
 	return float32(v)
+}
+
+// reasoningEffort returns the reasoning_effort for one request: the
+// WithReasoningEffort value when set, otherwise the ThinkingBudget mapping.
+// An empty result omits the field.
+func (p *Provider) reasoningEffort(ctx context.Context) string {
+	if p.effort != "" {
+		return p.effort
+	}
+	return reasoningEffortFor(p.model, agent.ThinkingBudgetFromContext(ctx))
 }
 
 // reasoningEffortFor maps a generic ThinkingBudget token count to the

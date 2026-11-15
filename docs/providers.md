@@ -130,6 +130,11 @@ the Anthropic API has no seed parameter, so temperature 0 there is best-effort,
 not bit-exact). Unset options keep each provider's defaults, so the feature is
 zero-cost when unused.
 
+The OpenAI provider also takes `WithReasoningEffort(effort)`, sent verbatim as
+`reasoning_effort`. Models that reason by default reject function tools on Chat
+Completions; `WithReasoningEffort("none")` switches reasoning off so tools work.
+Models that also reject `"none"` cannot use tools through this provider.
+
 ## Multimodal input
 
 Conversation history accepts typed `MediaPart`s — images go straight into the

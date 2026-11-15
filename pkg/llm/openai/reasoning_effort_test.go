@@ -1,6 +1,11 @@
 package openai
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/hung12ct/gopheragent/pkg/agent"
+)
 
 func TestReasoningEffortFor_OffForNonReasoningModel(t *testing.T) {
 	if got := reasoningEffortFor("gpt-4o", 4096); got != "" {
@@ -45,5 +50,42 @@ func TestReasoningEffortFor_ReasoningModelPrefixes(t *testing.T) {
 func TestReasoningEffortFor_IgnoresCase(t *testing.T) {
 	if got := reasoningEffortFor("O3-Mini", 4096); got != "medium" {
 		t.Fatalf("case-insensitive match expected, got %q", got)
+	}
+}
+
+func TestReasoningEffort_OptionSentVerbatim(t *testing.T) {
+	// "none" is what lets reasoning-by-default models accept function tools
+	// on Chat Completions; no model allow-list may stand in its way.
+	p, err := New("test-key", "gpt-6-luna", WithReasoningEffort("none"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := p.reasoningEffort(context.Background()); got != "none" {
+		t.Fatalf("expected none, got %q", got)
+	}
+}
+
+func TestReasoningEffort_OptionBeatsThinkingBudget(t *testing.T) {
+	p, err := New("test-key", "o3-mini", WithReasoningEffort("none"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := agent.WithThinkingBudget(context.Background(), 4096)
+	if got := p.reasoningEffort(ctx); got != "none" {
+		t.Fatalf("explicit option must win over the budget mapping, got %q", got)
+	}
+}
+
+func TestReasoningEffort_UnsetKeepsBudgetMapping(t *testing.T) {
+	p, err := New("test-key", "o3-mini")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := p.reasoningEffort(context.Background()); got != "" {
+		t.Fatalf("unset option and no budget must omit the field, got %q", got)
+	}
+	ctx := agent.WithThinkingBudget(context.Background(), 4096)
+	if got := p.reasoningEffort(ctx); got != "medium" {
+		t.Fatalf("expected medium from the budget mapping, got %q", got)
 	}
 }
