@@ -2,6 +2,28 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.47.0] — 2026-11-16
+
+Provider request shapes brought up to date with current models. Each fix was found and verified against the live APIs.
+
+### Added
+
+- **`openai.WithReasoningEffort(effort)` — send `reasoning_effort` verbatim.** Models that reason by default (`gpt-6-luna`, `gpt-6.1-terra`) answer every Chat Completions request that carries function tools with a 400 unless `reasoning_effort` is `"none"`, and the provider could only send `low`/`medium`/`high` to o-series models. The option is sent as given and wins over the `ThinkingBudget` mapping; nothing is sent automatically. Models that also reject `"none"` (`gpt-6-astra`, `gpt-6.1-sol`) still cannot use tools through this provider. (`pkg/llm/openai/openai.go`)
+- **`anthropic.WithEffort(effort)` — send `output_config.effort` verbatim.** Wins over the effort derived from `ThinkingBudget`. (`pkg/llm/anthropic/anthropic.go`)
+- **`PendingToolCall.ProviderMeta` and `history.ToolCall.ProviderMeta` — opaque per-call provider state that survives history.** Stored as `provider_meta` and omitted when empty, so existing sessions and all three history backends need no migration. (`pkg/agent/loop_stream.go`, `pkg/history/types.go`)
+
+### Changed (breaking)
+
+- **Anthropic structured output uses the API's native JSON-schema format instead of a synthesized tool.** The adapter closes every object with `additionalProperties:false` and moves constraints the API rejects (`minimum`, `maximum`, `multipleOf`, `minLength`, `maxLength`, `maxItems`, `uniqueItems`, `minItems` above 1, unsupported string formats) into the field's description — they become guidance, so validate them in your own code if they matter. Models older than the Claude 4.5 generation, which have no native structured output, can no longer be used with `GenerateJSONInto`. (`pkg/llm/anthropic/structured_schema.go`)
+- **On Claude 4.6 and later, `ThinkingBudget` selects an effort level instead of a token budget.** It turns adaptive thinking on and maps to `low` (up to 2048), `medium` (up to 8192) or `high`, the same thresholds the OpenAI provider uses. Models that predate adaptive thinking keep `budget_tokens`. (`pkg/llm/anthropic/anthropic.go`)
+
+### Fixed
+
+- **Gemini tool loops failed on the default model.** Gemini 3 signs the first function call of each model turn and rejects a replayed call whose signature is missing, so the request after any tool call returned `400 Function call is missing a thought_signature`. The provider now stores the signature in `ProviderMeta` and replays it; calls recorded without one (older sessions, history written by another provider) get the placeholder that switches validation off. (`pkg/llm/gemini/gemini.go`)
+- **`ThinkingBudget` was a 400 on Claude Sonnet 5.5, Opus 5.5 and Haiku 5.5**, which reject `thinking: {type: "enabled"}`. See the adaptive-thinking change above.
+- **Structured output was a 400 on Claude Sonnet 5.5 and Opus 5.5**, which reject forced `tool_choice`. See the native-format change above.
+- **Documented that current Claude models reject `temperature` and `top_p`.** `WithTemperature` / `WithTopP` are still sent as given; leave them unset for those models. (`docs/providers.md`)
+
 ## [v0.46.0] — 2026-11-03
 
 ### Added
@@ -726,6 +748,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.47.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.47.0
 [v0.46.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.46.0
 [v0.45.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.45.0
 [v0.44.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.44.0
