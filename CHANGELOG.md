@@ -2,6 +2,12 @@
 
 All notable changes to GopherAgent are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) — pre-1.0, breaking API changes only require a minor bump.
 
+## [v0.47.1] — 2026-11-16
+
+### Fixed
+
+- **The SSRF guard on `read_url` and `http_request` could be bypassed in three ways.** The dialer validated the resolved addresses but then connected by hostname, which resolves a second time; it now connects to the addresses that passed validation. The guarded transport inherited the environment proxy, so the dialer saw only the proxy's address; the proxy is now disabled on it. The unspecified addresses `::` and `0.0.0.0`, which reach the local machine, were not in the blocked ranges; they are now rejected. (`pkg/tools/builtin/ssrf.go`)
+
 ## [v0.47.0] — 2026-11-16
 
 Provider request shapes brought up to date with current models. Each fix was found and verified against the live APIs.
@@ -748,6 +754,7 @@ Multi-user, long-running, audit-friendly chat surface — the foundation for sid
 - README section on the permission flow — documents `RequiresConfirmation` × `ConfirmHITL` × `Permissions` interaction.
 - Enum struct tag support in `tools.SchemaFor[T]()` — emit values into JSON-Schema's `enum` array so providers reject invalid values upstream.
 
+[v0.47.1]: https://github.com/hung12ct/gopheragent/releases/tag/v0.47.1
 [v0.47.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.47.0
 [v0.46.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.46.0
 [v0.45.0]: https://github.com/hung12ct/gopheragent/releases/tag/v0.45.0
