@@ -158,6 +158,10 @@ type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"` // raw JSON string
+	// ProviderMeta is opaque provider state for this call that must be sent
+	// back unchanged with it (for example Gemini's thought signature).
+	// Bounded by the provider (a few hundred bytes per call); nil otherwise.
+	ProviderMeta []byte `json:"provider_meta,omitempty"`
 }
 
 // Session represents a chat session with its full message history.

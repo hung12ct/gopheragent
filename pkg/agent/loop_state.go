@@ -150,9 +150,10 @@ func appendAssistantToolCallMsg(msgs []history.Message, content string, calls []
 	m := history.Message{Role: "assistant", Content: content}
 	for _, tc := range calls {
 		m.ToolCalls = append(m.ToolCalls, history.ToolCall{
-			ID:        tc.ID,
-			Name:      tc.Name,
-			Arguments: tc.ArgsJSON,
+			ID:           tc.ID,
+			Name:         tc.Name,
+			Arguments:    tc.ArgsJSON,
+			ProviderMeta: tc.ProviderMeta,
 		})
 	}
 	return append(msgs, m)

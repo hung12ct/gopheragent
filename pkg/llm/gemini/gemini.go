@@ -137,7 +137,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 			if m.Content != "" {
 				parts = append(parts, &genai.Part{Text: m.Content})
 			}
-			for _, tc := range m.ToolCalls {
+			for i, tc := range m.ToolCalls {
 				if callNames == nil {
 					callNames = make(map[string]string, len(m.ToolCalls))
 				}
@@ -151,6 +151,7 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 						Name: tc.Name,
 						Args: argsMap,
 					},
+					ThoughtSignature: thoughtSignatureFor(tc, i),
 				})
 			}
 		case "tool":
@@ -246,9 +247,10 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 			if part.FunctionCall != nil {
 				argsBytes, _ := json.Marshal(part.FunctionCall.Args)
 				pendingCalls = append(pendingCalls, agent.PendingToolCall{
-					ID:       pendingCallID(part.FunctionCall, pendingCalls),
-					Name:     part.FunctionCall.Name,
-					ArgsJSON: string(argsBytes),
+					ID:           pendingCallID(part.FunctionCall, pendingCalls),
+					Name:         part.FunctionCall.Name,
+					ArgsJSON:     string(argsBytes),
+					ProviderMeta: part.ThoughtSignature,
 				})
 			}
 		}
@@ -273,7 +275,25 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	return result, nil
 }
 
-// applySampling stamps the configured temperature/top_p/seed onto config.
+// skipThoughtSignature is the placeholder Gemini accepts in place of a real
+// thought signature. It switches off signature validation for that call.
+var skipThoughtSignature = []byte("skip_thought_signature_validator")
+
+// thoughtSignatureFor returns the signature to replay with a function call.
+// Gemini signs the first call of each model turn and rejects the request
+// when that signature is missing, so a call that never had one (history
+// written by another provider, or before signatures were stored) gets the
+// placeholder. Later calls in the same turn are unsigned by design.
+func thoughtSignatureFor(tc history.ToolCall, index int) []byte {
+	if len(tc.ProviderMeta) > 0 {
+		return tc.ProviderMeta
+	}
+	if index == 0 {
+		return skipThoughtSignature
+	}
+	return nil
+}
+
 // pendingCallID returns a call ID unique within one response. Most Gemini
 // models return no ID, and the loop keys tool results by ID, so parallel
 // calls of one tool sharing the bare name would overwrite each other's

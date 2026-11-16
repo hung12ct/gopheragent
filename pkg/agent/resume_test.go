@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"strings"
@@ -192,5 +193,30 @@ func TestDeferApprovals_PartialDecisionsSuspendAgain(t *testing.T) {
 	pending, _ := loop.PendingApprovals(context.Background(), "s1")
 	if len(pending) != 1 || pending[0].ID != "c2" {
 		t.Fatalf("PendingApprovals = %v, want [c2]", pending)
+	}
+}
+
+// A provider's opaque per-call state has to survive the trip into history
+// and back out of it, or the provider cannot replay the call.
+func TestToolCallProviderMetaSurvivesHistoryRoundTrip(t *testing.T) {
+	calls := []PendingToolCall{
+		{ID: "a", Name: "search", ArgsJSON: `{}`, ProviderMeta: []byte("sig-1")},
+		{ID: "b", Name: "fetch", ArgsJSON: `{}`},
+	}
+	msgs := appendAssistantToolCallMsg(nil, "", calls)
+	raw, err := json.Marshal(msgs[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var stored history.Message
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	back := pendingCallsOf(stored)
+	if string(back[0].ProviderMeta) != "sig-1" || back[1].ProviderMeta != nil {
+		t.Fatalf("ProviderMeta lost in the round trip: %q / %q", back[0].ProviderMeta, back[1].ProviderMeta)
+	}
+	if strings.Contains(string(raw), `"provider_meta":null`) {
+		t.Fatalf("an empty ProviderMeta must be omitted from stored JSON: %s", raw)
 	}
 }

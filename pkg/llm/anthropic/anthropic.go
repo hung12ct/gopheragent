@@ -1,6 +1,6 @@
 // Package anthropic implements agent.LLMProvider for Anthropic's Claude
-// models via the Messages API, including prompt caching, extended
-// thinking, and structured output (synthesized-tool JSON mode).
+// models via the Messages API, including prompt caching, adaptive
+// thinking, and native structured output.
 package anthropic
 
 import (
@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -32,6 +33,7 @@ type Provider struct {
 	MaxTokens   int64
 	temperature *float64
 	topP        *float64
+	effort      string
 }
 
 var _ agent.CapabilityProvider = (*Provider)(nil)
@@ -51,19 +53,32 @@ func WithMaxTokens(n int64) Option {
 	return func(p *Provider) { p.MaxTokens = n }
 }
 
+// WithEffort sends output_config.effort verbatim on every request and takes
+// precedence over the effort derived from agent.ThinkingBudget. Unset (or "")
+// keeps the model's default. The value is not validated: the accepted set
+// ("low", "medium", "high", "xhigh", "max") differs per model, and the API
+// rejects what a model does not support.
+func WithEffort(effort string) Option {
+	return func(p *Provider) { p.effort = effort }
+}
+
 // WithTemperature pins the sampling temperature (0.0–1.0 for Anthropic).
 // Use 0 for maximally reproducible classification/extraction turns; unset
-// keeps the provider default. Ignored while extended thinking is enabled —
-// the API rejects sampling overrides alongside thinking. Anthropic exposes
-// no seed parameter, so temperature 0 is best-effort reproducibility, not
-// bit-exact.
+// keeps the provider default. Ignored while thinking is enabled — the API
+// rejects sampling overrides alongside thinking. Anthropic exposes no seed
+// parameter, so temperature 0 is best-effort reproducibility, not bit-exact.
+//
+// Models from Claude Opus 4.7 on reject temperature and top_p outright
+// ("temperature is deprecated for this model"). The option is sent as given,
+// so leave it unset for those models.
 func WithTemperature(t float64) Option {
 	return func(p *Provider) { p.temperature = &t }
 }
 
 // WithTopP pins nucleus sampling. Anthropic recommends adjusting either
 // temperature or top_p, not both. Unset keeps the provider default.
-// Ignored while extended thinking is enabled.
+// Ignored while thinking is enabled; see WithTemperature for the models that
+// reject it.
 func WithTopP(v float64) Option {
 	return func(p *Provider) { p.topP = &v }
 }
@@ -195,19 +210,6 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 		}
 	}
 
-	// Anthropic has no native JSON mode — synthesize a single tool whose
-	// input schema matches the requested shape and force the model to call
-	// it. The tool's Input is surfaced back to the caller as .Content on the
-	// LLMResult so Mode A / GenerateJSON consumers see a plain JSON string
-	// and never learn about the tool trick.
-	so := agent.StructuredOutputFromContext(ctx)
-	structuredToolName := ""
-	if so != nil && len(so.Schema) > 0 {
-		tool, name := synthesizeStructuredTool(so)
-		sdkTools = append(sdkTools, tool)
-		structuredToolName = name
-	}
-
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: p.MaxTokens,
@@ -219,14 +221,10 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	if len(sdkTools) > 0 {
 		params.Tools = sdkTools
 	}
-	if structuredToolName != "" {
-		params.ToolChoice = anthropic.ToolChoiceParamOfTool(structuredToolName)
+	if so := agent.StructuredOutputFromContext(ctx); so != nil && len(so.Schema) > 0 {
+		params.OutputConfig.Format = anthropic.JSONOutputFormatParam{Schema: structuredSchema(so.Schema)}
 	}
-	thinkingBudget := resolveThinkingBudget(ctx, p.MaxTokens)
-	if thinkingBudget > 0 {
-		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(thinkingBudget)
-	}
-	p.applySampling(&params, thinkingBudget > 0)
+	p.applySampling(&params, p.applyThinking(ctx, &params))
 
 	streamChan <- agent.Event(agent.ThoughtEvent{Message: fmt.Sprintf("Analyzing with Claude (%s)...", p.model)})
 
@@ -316,15 +314,6 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 				// just produce a bad-args tool error.
 				continue
 			}
-			// When the caller requested structured output, Anthropic answers
-			// by calling the synthesized tool — its Input IS the JSON the
-			// caller asked for. Surface it as Content so downstream code
-			// (GenerateJSON, etc.) sees the same shape OpenAI and Gemini
-			// return natively, and do not leak the tool call upstream.
-			if structuredToolName != "" && v.Name == structuredToolName {
-				finalContent = string(argsBytes)
-				continue
-			}
 			pendingCalls = append(pendingCalls, agent.PendingToolCall{
 				ID:       v.ID,
 				Name:     v.Name,
@@ -356,68 +345,10 @@ func (p *Provider) GenerateStream(ctx context.Context, memory []history.Message,
 	return result, nil
 }
 
-// synthesizeStructuredTool builds a fake tool whose InputSchema
-// mirrors the user's StructuredOutput and returns it alongside the tool
-// name the caller should pass to ToolChoiceParamOfTool. Anthropic exposes
-// no native JSON mode, so forcing the model to call this tool is the
-// standard trick for schema-constrained output.
-//
-// Top-level type/properties/required are extracted into the typed fields;
-// any other JSON-Schema keywords (additionalProperties, $defs, oneOf, …)
-// ride along via ExtraFields, which the SDK merges at marshal time.
-func synthesizeStructuredTool(so *agent.StructuredOutput) (anthropic.ToolUnionParam, string) {
-	name := so.Name
-	if name == "" {
-		name = "structured_response"
-	}
-	inputSchema := anthropic.ToolInputSchemaParam{}
-	extras := map[string]any{}
-	for k, v := range so.Schema {
-		switch k {
-		case "properties":
-			inputSchema.Properties = v
-		case "required":
-			switch req := v.(type) {
-			case []string:
-				inputSchema.Required = req
-			case []any:
-				out := make([]string, 0, len(req))
-				for _, e := range req {
-					if s, ok := e.(string); ok {
-						out = append(out, s)
-					}
-				}
-				inputSchema.Required = out
-			}
-		case "type":
-			// ToolInputSchemaParam.Type is pinned to "object" — anything
-			// else from the caller is dropped silently. That matches the
-			// practical reality: Anthropic's tool inputs must be objects.
-		default:
-			extras[k] = v
-		}
-	}
-	if len(extras) > 0 {
-		inputSchema.ExtraFields = extras
-	}
-	description := so.Description
-	if description == "" {
-		description = "Return the response as JSON matching the provided schema."
-	}
-	tool := anthropic.ToolUnionParam{
-		OfTool: &anthropic.ToolParam{
-			Name:        name,
-			Description: anthropic.String(description),
-			InputSchema: inputSchema,
-		},
-	}
-	return tool, name
-}
-
 // applySampling stamps the configured temperature/top_p onto params.
-// Skipped when extended thinking is enabled: the API rejects temperature
-// and top_p overrides alongside thinking, so thinking wins by construction
-// instead of 400ing the call.
+// Skipped when thinking is enabled: the API rejects temperature and top_p
+// overrides alongside thinking, so thinking wins by construction instead of
+// 400ing the call.
 func (p *Provider) applySampling(params *anthropic.MessageNewParams, thinkingEnabled bool) {
 	if thinkingEnabled {
 		return
@@ -427,6 +358,68 @@ func (p *Provider) applySampling(params *anthropic.MessageNewParams, thinkingEna
 	}
 	if p.topP != nil {
 		params.TopP = anthropic.Float(*p.topP)
+	}
+}
+
+// applyThinking translates agent.ThinkingBudget and WithEffort into the
+// request and reports whether thinking was switched on.
+//
+// Current models take adaptive thinking plus an effort level and reject a
+// token budget, so a budget turns adaptive thinking on and picks the effort
+// unless WithEffort already did. The models in budgetThinkingModel predate
+// that and keep the token budget.
+func (p *Provider) applyThinking(ctx context.Context, params *anthropic.MessageNewParams) bool {
+	effort := p.effort
+	if budgetThinkingModel(string(p.model)) {
+		params.OutputConfig.Effort = anthropic.OutputConfigEffort(effort)
+		budget := resolveThinkingBudget(ctx, p.MaxTokens)
+		if budget > 0 {
+			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
+		}
+		return budget > 0
+	}
+	budget := agent.ThinkingBudgetFromContext(ctx)
+	if budget > 0 {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}}
+		if effort == "" {
+			effort = effortForBudget(budget)
+		}
+	}
+	params.OutputConfig.Effort = anthropic.OutputConfigEffort(effort)
+	return budget > 0
+}
+
+// budgetThinkingPrefixes lists the model families released before adaptive
+// thinking. The set is closed: every later model takes adaptive thinking, so
+// a new model never needs an entry here.
+var budgetThinkingPrefixes = []string{
+	"claude-3",
+	"claude-opus-4-0", "claude-opus-4-1", "claude-opus-4-5", "claude-opus-4-2025",
+	"claude-sonnet-4-0", "claude-sonnet-4-5", "claude-sonnet-4-2025",
+	"claude-haiku-4-5",
+}
+
+// budgetThinkingModel reports whether model only accepts thinking as
+// {type: "enabled", budget_tokens: N}.
+func budgetThinkingModel(model string) bool {
+	for _, prefix := range budgetThinkingPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// effortForBudget maps a thinking budget to an effort level, with the same
+// thresholds the OpenAI adapter uses for reasoning_effort.
+func effortForBudget(budget int) string {
+	switch {
+	case budget <= 2048:
+		return "low"
+	case budget <= 8192:
+		return "medium"
+	default:
+		return "high"
 	}
 }
 

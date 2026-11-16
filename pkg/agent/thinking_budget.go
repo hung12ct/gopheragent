@@ -5,9 +5,10 @@ import "context"
 // ThinkingBudget is a provider-neutral hint for extended reasoning effort.
 // Providers translate the integer to the closest native knob they support:
 //
-//   - Anthropic Claude 4.x (extended thinking):
-//     attaches thinking: {type:"enabled", budget_tokens: N}. Values below
-//     the API minimum (1024) are raised to that floor.
+//   - Anthropic Claude: turns adaptive thinking on and maps the value to an
+//     effort level with the OpenAI thresholds below. Models that predate
+//     adaptive thinking (Claude 4.5 and earlier) get thinking:
+//     {type:"enabled", budget_tokens: N}, raised to the 1024 floor.
 //   - OpenAI o-series (reasoning_effort): values > 0 map by threshold —
 //     (0, 2048] → "low", (2048, 8192] → "medium", >8192 → "high".
 //   - Providers without a reasoning knob (Gemini, stock gpt-4o, …) ignore it.
