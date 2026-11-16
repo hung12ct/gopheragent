@@ -43,6 +43,10 @@ func init() {
 
 // isPrivateIP reports whether ip falls within any private or reserved range.
 func isPrivateIP(ip net.IP) bool {
+	// The unspecified address (0.0.0.0, ::) dials the local machine.
+	if ip.IsUnspecified() {
+		return true
+	}
 	for _, r := range privateRanges {
 		if r.Contains(ip) {
 			return true
@@ -59,16 +63,20 @@ func isPrivateIP(ip net.IP) bool {
 // services. The allowedHosts list in HTTPRequestTool feeds directly into
 // skipHosts so that allowlisted destinations are not double-blocked.
 //
-// Protection is post-DNS: the dialer resolves the hostname to IP(s) before
-// opening a socket, preventing DNS-rebinding attacks where a hostname first
-// resolves to a public IP (passing any name-based check) and then to a private
-// IP at connection time.
+// Protection is post-DNS: the dialer resolves the hostname once, validates
+// every returned address, and connects to those validated IPs directly. The
+// name is never resolved a second time, so a DNS-rebinding host cannot answer
+// public for the check and private for the connection.
+//
+// The environment proxy is disabled: through a proxy the dialer only ever sees
+// the proxy's address, so the real target would go unchecked.
 func newSSRFSafeTransport(skipHosts map[string]bool) *http.Transport {
 	base := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
 	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -98,7 +106,21 @@ func newSSRFSafeTransport(skipHosts map[string]bool) *http.Transport {
 				return nil, fmt.Errorf("tools: SSRF blocked: %s resolves to private/reserved address %s", host, a.IP)
 			}
 		}
-		return base.DialContext(ctx, network, net.JoinHostPort(host, port))
+		return dialValidated(ctx, base, network, host, port, resolved)
 	}
 	return t
+}
+
+// dialValidated connects to the first reachable address in addrs, which the
+// caller has already checked. Dialing the IP rather than host is what keeps
+// the connection pinned to the addresses that passed validation.
+func dialValidated(ctx context.Context, d *net.Dialer, network, host, port string, addrs []net.IPAddr) (net.Conn, error) {
+	err := fmt.Errorf("tools: dns lookup %s: no addresses", host)
+	for _, a := range addrs {
+		var conn net.Conn
+		if conn, err = d.DialContext(ctx, network, net.JoinHostPort(a.IP.String(), port)); err == nil {
+			return conn, nil
+		}
+	}
+	return nil, err
 }
